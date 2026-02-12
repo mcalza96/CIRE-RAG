@@ -1,0 +1,1 @@
+"""MAS Simple subsystem package."""

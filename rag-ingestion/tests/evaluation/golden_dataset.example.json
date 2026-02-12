@@ -1,0 +1,38 @@
+{
+  "cases": [
+    {
+      "id": "iso_table_b1_integrity",
+      "question": "¿Con que capitulos se relaciona la ISO 10005 segun la Tabla B.1?",
+      "ground_truth_answer": "Segun la Tabla B.1, ISO 10005 se relaciona con los capitulos 4, 5, 6, 7 y 8.",
+      "predicted_markdown_table": "| Norma ISO | Capitulos relacionados |\n|---|---|\n| ISO 10005 | 4, 5, 6, 7, 8 |",
+      "expected": {
+        "is_visual": true,
+        "visual_node_ids": [
+          "b1f2f740-aaaa-bbbb-cccc-6f4e501f2c10"
+        ],
+        "markdown_table": "| Norma ISO | Capitulos relacionados |\n|---|---|\n| ISO 10005 | 4, 5, 6, 7, 8 |",
+        "key_cells": [
+          {
+            "row": "ISO 10005",
+            "column": "Capitulos relacionados",
+            "value": "4, 5, 6, 7, 8"
+          }
+        ]
+      }
+    },
+    {
+      "id": "iso_clause_8_4_textual",
+      "question": "Resume los requisitos de la clausula 8.4 en maximo 2 frases.",
+      "ground_truth_answer": "La clausula 8.4 exige control de procesos, productos y servicios suministrados externamente, definiendo criterios de evaluacion, seleccion, seguimiento y reevaluacion de proveedores.",
+      "expected": {
+        "is_visual": false,
+        "visual_node_ids": [],
+        "context_keywords": [
+          "8.4",
+          "proveedores",
+          "control externo"
+        ]
+      }
+    }
+  ]
+}

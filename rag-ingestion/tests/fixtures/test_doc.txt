@@ -1,0 +1,1 @@
+Este es un documento de prueba para validar la integración del worker de CISRE. El objetivo es verificar que el Late Chunking y la persistencia funcionen correctamente después de la refactorización de arquitectura limpia.

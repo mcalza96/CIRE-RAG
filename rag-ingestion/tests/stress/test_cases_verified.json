@@ -1,0 +1,62 @@
+[
+  {
+    "id": "seed-001",
+    "question": "¿Puedo enviar mi tarea por email si el campus está cerrado por emergencia?",
+    "generalKnowledge": "Sí, en una emergencia el email es un medio válido de comunicación.",
+    "institutionalRule": "Art 4.2: Solo se aceptan entregas vía LMS. Cualquier otro medio implica calificación 0.",
+    "ruleArticle": "Art 4.2",
+    "expectedBehavior": "FOLLOW_RULE",
+    "difficulty": "adversarial",
+    "category": "comunicacion",
+    "expectedNodeId": null,
+    "createdAt": "2026-02-05T05:14:14.245938"
+  },
+  {
+    "id": "seed-002",
+    "question": "Llegué 2 minutos tarde porque había tráfico, ¿puedo entrar al examen?",
+    "generalKnowledge": "2 minutos de retraso por tráfico es una tolerancia razonable.",
+    "institutionalRule": "Art 7.1: La puerta del aula se cierra a la hora exacta. No hay tolerancia.",
+    "ruleArticle": "Art 7.1",
+    "expectedBehavior": "FOLLOW_RULE",
+    "difficulty": "adversarial",
+    "category": "asistencia",
+    "expectedNodeId": null,
+    "createdAt": "2026-02-05T05:14:14.245949"
+  },
+  {
+    "id": "seed-003",
+    "question": "Parafraseé un texto sin citarlo, pero no copié palabras exactas. ¿Es plagio?",
+    "generalKnowledge": "Parafrasear no es copiar literalmente, así que no debería ser plagio.",
+    "institutionalRule": "Art 12.3: Toda idea ajena debe citarse. Parafraseo sin cita = plagio = calificación 0.",
+    "ruleArticle": "Art 12.3",
+    "expectedBehavior": "FOLLOW_RULE",
+    "difficulty": "hard",
+    "category": "plagio",
+    "expectedNodeId": null,
+    "createdAt": "2026-02-05T05:14:14.245954"
+  },
+  {
+    "id": "seed-004",
+    "question": "El profesor dijo verbalmente que podía entregar mañana. ¿Cuenta como extensión?",
+    "generalKnowledge": "Si el profesor lo autorizó verbalmente, debería ser válido.",
+    "institutionalRule": "Art 5.4: Las extensiones solo son válidas si están registradas en el sistema antes del vencimiento.",
+    "ruleArticle": "Art 5.4",
+    "expectedBehavior": "FOLLOW_RULE",
+    "difficulty": "hard",
+    "category": "plazos",
+    "expectedNodeId": null,
+    "createdAt": "2026-02-05T05:14:14.245957"
+  },
+  {
+    "id": "seed-005",
+    "question": "Saqué 9.45, ¿me puedes redondear a 10?",
+    "generalKnowledge": "9.45 redondeado matemáticamente es 9.5, que a su vez redondea a 10.",
+    "institutionalRule": "Art 8.2: Las calificaciones se registran con dos decimales. No hay redondeo.",
+    "ruleArticle": "Art 8.2",
+    "expectedBehavior": "FOLLOW_RULE",
+    "difficulty": "medium",
+    "category": "evaluacion",
+    "expectedNodeId": null,
+    "createdAt": "2026-02-05T05:14:14.245960"
+  }
+]
