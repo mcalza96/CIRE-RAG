@@ -64,11 +64,28 @@ class CurriculumContentStrategy(IngestionStrategy):
         if not file_path:
              raise ValueError("CurriculumContentStrategy requires a local file path.")
 
-        page_tasks = router.route_document(file_path)
-        text_tasks = [task for task in page_tasks if task.strategy == ProcessingStrategy.TEXT_STANDARD and task.raw_content.strip()]
-        visual_tasks = [task for task in page_tasks if task.strategy == ProcessingStrategy.VISUAL_COMPLEX]
+        source_path = None
+        if metadata.metadata and isinstance(metadata.metadata, dict):
+            source_path = metadata.metadata.get("storage_path") or metadata.metadata.get("source_path")
 
-        full_text, page_map = self._build_text_payload(text_tasks)
+        if str(settings.INGEST_PARSER_MODE or "local").strip().lower() == "cloud":
+            extraction = await parser.extract_structured_document(file_path=file_path, source_path=source_path)
+            if extraction and extraction.get("full_text"):
+                full_text = extraction["full_text"]
+                page_map = extraction.get("page_map", [{"page": 1, "start": 0, "end": len(full_text)}])
+                page_tasks = []
+                text_tasks = []
+                visual_tasks = []
+            else:
+                page_tasks = router.route_document(file_path)
+                text_tasks = [task for task in page_tasks if task.strategy == ProcessingStrategy.TEXT_STANDARD and task.raw_content.strip()]
+                visual_tasks = [task for task in page_tasks if task.strategy == ProcessingStrategy.VISUAL_COMPLEX]
+                full_text, page_map = self._build_text_payload(text_tasks)
+        else:
+            page_tasks = router.route_document(file_path)
+            text_tasks = [task for task in page_tasks if task.strategy == ProcessingStrategy.TEXT_STANDARD and task.raw_content.strip()]
+            visual_tasks = [task for task in page_tasks if task.strategy == ProcessingStrategy.VISUAL_COMPLEX]
+            full_text, page_map = self._build_text_payload(text_tasks)
 
         if not full_text:
             logger.warning("empty_file_detected", file=filename)
@@ -197,7 +214,10 @@ class FastCurriculumContentStrategy(CurriculumContentStrategy):
         if not file_path:
              raise ValueError("FastCurriculumContentStrategy requires a local file path.")
 
-        extraction = parser.extract_text_with_page_map(file_path)
+        source_path = None
+        if metadata.metadata and isinstance(metadata.metadata, dict):
+            source_path = metadata.metadata.get("storage_path") or metadata.metadata.get("source_path")
+        extraction = await parser.extract_structured_document(file_path=file_path, source_path=source_path)
         if not extraction or not extraction.get("full_text"):
             logger.warning("empty_file_detected", file=filename)
             return IngestionResult(source_id=metadata.source_id, chunks_count=0, status=IngestionStatus.EMPTY_FILE.value)

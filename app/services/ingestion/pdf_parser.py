@@ -1,6 +1,8 @@
 from typing import List, Dict, Optional, Any
 import structlog
 import re
+import aiohttp
+from app.core.settings import settings
 
 logger = structlog.get_logger(__name__)
 
@@ -30,6 +32,57 @@ class PdfParserService:
         except ImportError:
             logger.warning("pymupdf4llm_not_installed_fallback_to_plain_text")
             return self.extract_text_with_page_map(file_path)
+
+    async def extract_structured_document(
+        self,
+        file_path: str,
+        source_path: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Unified parser entrypoint with cloud->local fallback.
+
+        Modes:
+        - local: use pymupdf4llm/fitz
+        - cloud: try Jina Reader URL template, then fallback local
+        """
+        mode = str(settings.INGEST_PARSER_MODE or "local").strip().lower()
+        if mode == "cloud":
+            cloud = await self._extract_markdown_cloud_reader(source_path=source_path)
+            if cloud is not None:
+                return cloud
+            logger.warning("cloud_reader_failed_fallback_local", source_path=source_path or "")
+        return self.extract_markdown_with_structure(file_path)
+
+    async def _extract_markdown_cloud_reader(self, source_path: Optional[str]) -> Optional[Dict[str, Any]]:
+        template = str(settings.JINA_READER_URL_TEMPLATE or "").strip()
+        source_value = str(source_path or "").strip()
+        if not template or not source_value:
+            return None
+
+        url = template.replace("{path}", source_value)
+        timeout = aiohttp.ClientTimeout(total=30)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url) as response:
+                    if response.status != 200:
+                        body = await response.text()
+                        logger.warning("jina_reader_http_error", status=response.status, body_preview=body[:200])
+                        return None
+                    markdown = (await response.text()).strip()
+        except Exception as exc:
+            logger.warning("jina_reader_request_failed", error=str(exc))
+            return None
+
+        if not markdown:
+            return None
+
+        return {
+            "full_text": markdown,
+            "page_map": [{"page": 1, "start": 0, "end": len(markdown)}],
+            "page_chunks": [{"page": 1, "markdown": markdown, "char_start": 0, "char_end": len(markdown)}],
+            "visual_tasks": [],
+            "total_pages": 1,
+        }
 
         try:
             # Create a directory for images relative to the PDF

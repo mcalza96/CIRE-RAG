@@ -21,20 +21,23 @@ else
     UVICORN_CMD="$PYTHON_CMD -m uvicorn"
 fi
 
-# Start Protocol API (FastAPI) on port 8000
-echo "🌍 Serving API on http://0.0.0.0:8000"
+PORT_VALUE="${PORT:-8000}"
+echo "🌍 Serving API on http://0.0.0.0:${PORT_VALUE}"
+
+# Production-safe defaults (reload disabled unless explicitly enabled)
 RELOAD_FLAG="${UVICORN_RELOAD:-false}"
 ACCESS_LOG_FLAG="${UVICORN_ACCESS_LOG:-false}"
+WORKERS_FLAG="${UVICORN_WORKERS:-1}"
 if [ "$RELOAD_FLAG" = "true" ]; then
     if [ "$ACCESS_LOG_FLAG" = "true" ]; then
-        $UVICORN_CMD app.main:app --host 0.0.0.0 --port 8000 --reload --access-log
+        $UVICORN_CMD app.main:app --host 0.0.0.0 --port "$PORT_VALUE" --reload --access-log
     else
-        $UVICORN_CMD app.main:app --host 0.0.0.0 --port 8000 --reload --no-access-log
+        $UVICORN_CMD app.main:app --host 0.0.0.0 --port "$PORT_VALUE" --reload --no-access-log
     fi
 else
     if [ "$ACCESS_LOG_FLAG" = "true" ]; then
-        $UVICORN_CMD app.main:app --host 0.0.0.0 --port 8000 --access-log
+        $UVICORN_CMD app.main:app --host 0.0.0.0 --port "$PORT_VALUE" --workers "$WORKERS_FLAG" --access-log
     else
-        $UVICORN_CMD app.main:app --host 0.0.0.0 --port 8000 --no-access-log
+        $UVICORN_CMD app.main:app --host 0.0.0.0 --port "$PORT_VALUE" --workers "$WORKERS_FLAG" --no-access-log
     fi
 fi

@@ -1,0 +1,30 @@
+services:
+  api:
+    build:
+      context: .
+      target: api_image
+    image: cire-rag-api
+    container_name: cire-rag-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env.local
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  worker:
+    build:
+      context: .
+      target: worker_image
+    image: cire-rag-worker
+    container_name: cire-rag-worker
+    env_file:
+      - .env.local
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy

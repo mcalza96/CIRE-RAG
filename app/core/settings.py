@@ -96,6 +96,10 @@ class Settings(BaseSettings):
     QA_LITERAL_SEMANTIC_FALLBACK_ENABLED: bool = True
     QA_LITERAL_SEMANTIC_MIN_KEYWORD_OVERLAP: int = 2
     QA_LITERAL_SEMANTIC_MIN_SIMILARITY: float = 0.3
+    INGEST_PARSER_MODE: str = "local"  # local | cloud
+    JINA_READER_URL_TEMPLATE: Optional[str] = None  # e.g. https://r.jina.ai/http://host/{path}
+    RERANK_MODE: str = "hybrid"  # local | jina | hybrid
+    AUTHORITY_CLASSIFIER_MODE: str = "rules"  # rules | embedding_first
 
     # Visual router
     VISUAL_ROUTER_MAX_VISUAL_RATIO: float = 0.35

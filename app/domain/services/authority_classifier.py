@@ -6,6 +6,9 @@ Designed to be extensible - add new rules to CLASSIFICATION_RULES.
 """
 import re
 from typing import Optional, List, Tuple
+import math
+import hashlib
+from collections import Counter
 
 from app.domain.types.authority import AuthorityLevel
 
@@ -40,13 +43,21 @@ class AuthorityClassifier:
             AuthorityLevel.CANONICAL
         ),
     ]
+
+    EMBEDDING_PROTOTYPES = {
+        AuthorityLevel.CONSTITUTION: "rubric integrity grading hard constraint reglamento evaluacion",
+        AuthorityLevel.POLICY: "policy procedimiento guia calendario admin schedule",
+        AuthorityLevel.CANONICAL: "standard norma manual oficial approved reference",
+        AuthorityLevel.SUPPLEMENTARY: "supplementary note annex support extra",
+    }
     
     @classmethod
     def classify(
         cls, 
         storage_path: Optional[str] = None, 
         doc_type: Optional[str] = None,
-        filename: Optional[str] = None
+        filename: Optional[str] = None,
+        mode: str = "rules",
     ) -> AuthorityLevel:
         """
         Infers authority level from available context.
@@ -69,6 +80,11 @@ class AuthorityClassifier:
         if not search_text:
             return AuthorityLevel.SUPPLEMENTARY
         
+        if str(mode).strip().lower() == "embedding_first":
+            inferred = cls._classify_embedding_first(search_text)
+            if inferred is not None:
+                return inferred
+
         # Check rules in priority order
         for patterns, authority in cls.CLASSIFICATION_RULES:
             if cls._matches_any_pattern(search_text, patterns):
@@ -76,6 +92,38 @@ class AuthorityClassifier:
         
         # Default: lowest authority
         return AuthorityLevel.SUPPLEMENTARY
+
+    @classmethod
+    def _classify_embedding_first(cls, text: str) -> Optional[AuthorityLevel]:
+        if not text.strip():
+            return None
+        vec = cls._hash_embed(text)
+        best: tuple[AuthorityLevel, float] | None = None
+        for label, proto in cls.EMBEDDING_PROTOTYPES.items():
+            score = cls._cosine(vec, cls._hash_embed(proto))
+            if best is None or score > best[1]:
+                best = (label, score)
+        if best is None:
+            return None
+        return best[0]
+
+    @staticmethod
+    def _hash_embed(text: str, dim: int = 128) -> list[float]:
+        tokens = re.findall(r"[a-zA-Z0-9áéíóúñ]+", text.lower())
+        counts = Counter(tokens)
+        vector = [0.0] * dim
+        for token, weight in counts.items():
+            digest = hashlib.sha1(token.encode("utf-8")).hexdigest()
+            idx = int(digest[:8], 16) % dim
+            vector[idx] += float(weight)
+        norm = math.sqrt(sum(x * x for x in vector)) or 1.0
+        return [x / norm for x in vector]
+
+    @staticmethod
+    def _cosine(a: list[float], b: list[float]) -> float:
+        if not a or not b:
+            return 0.0
+        return sum(x * y for x, y in zip(a, b))
     
     @staticmethod
     def _matches_any_pattern(text: str, patterns: List[str]) -> bool:

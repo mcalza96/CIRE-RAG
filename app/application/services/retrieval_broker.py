@@ -42,6 +42,13 @@ class RetrievalBroker:
         return mode
 
     @staticmethod
+    def _rerank_mode() -> str:
+        mode = str(settings.RERANK_MODE or "hybrid").strip().lower()
+        if mode not in {"local", "jina", "hybrid"}:
+            return "hybrid"
+        return mode
+
+    @staticmethod
     def _extract_requested_standards(query: str) -> tuple[str, ...]:
         seen: set[str] = set()
         ordered: list[str] = []
@@ -313,10 +320,14 @@ class RetrievalBroker:
 
     async def _apply_reranking(self, query: str, results: List[Dict], scope_context: Dict, k: int) -> List[Dict]:
         try:
+            rerank_mode = self._rerank_mode()
             semantic_ranked = results
             requested_scopes = self._requested_scopes_from_context(scope_context)
             jina_started = time.perf_counter()
-            if self.jina_reranker.is_enabled() and results:
+            use_jina = rerank_mode in {"jina", "hybrid"}
+            use_local = rerank_mode in {"local", "hybrid"}
+
+            if use_jina and self.jina_reranker.is_enabled() and results:
                 docs = [str(item.get("content") or "") for item in results]
                 rows = await self.jina_reranker.rerank_documents(
                     query=query,
@@ -361,12 +372,16 @@ class RetrievalBroker:
                 stage="jina_rerank",
                 duration_ms=round((time.perf_counter() - jina_started) * 1000, 2),
                 enabled=self.jina_reranker.is_enabled(),
+                rerank_mode=rerank_mode,
                 candidates=len(results),
                 ranked=len(semantic_ranked),
                 requested_scopes=list(requested_scopes),
                 scope_penalized_count=scope_penalized_count,
                 scope_penalized_ratio=scope_penalized_ratio,
             )
+
+            if not use_local:
+                return semantic_ranked[:k]
 
             raw_by_id = {str(item.get("id", "")): item for item in results}
             candidates = [
@@ -380,13 +395,13 @@ class RetrievalBroker:
                     source_id=item.get("source_id")
                 ) for item in semantic_ranked
             ]
-            
+
             intent = RetrievalIntent(
                 query=query,
                 role=AgentRole(scope_context.get("role", "socratic_mentor").lower()),
-                task=TaskType.EXPLANATION 
+                task=TaskType.EXPLANATION
             )
-            
+
             ranked = self.reranker.rerank(candidates, intent)
             merged: List[Dict[str, Any]] = []
             for rc in ranked[:k]:

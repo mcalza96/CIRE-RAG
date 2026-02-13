@@ -12,7 +12,6 @@
 
 ## Deployment Notes
 
-- Historical deployment draft: `historical/deployment.md`
 - Verify deployment docs against current stack before production rollout.
 
 ## Operational Checklist

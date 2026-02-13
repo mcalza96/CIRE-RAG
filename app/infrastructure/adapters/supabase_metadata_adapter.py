@@ -2,6 +2,7 @@ from typing import Dict, Any, Optional
 from app.schemas.ingestion import IngestionMetadata
 from app.domain.types.authority import AuthorityLevel
 from app.domain.services.authority_classifier import AuthorityClassifier
+from app.core.settings import settings
 
 class SupabaseMetadataAdapter:
     """
@@ -40,7 +41,8 @@ class SupabaseMetadataAdapter:
             authority_level = AuthorityClassifier.classify(
                 storage_path=storage_path,
                 doc_type=doc_type,
-                filename=filename
+                filename=filename,
+                mode=settings.AUTHORITY_CLASSIFIER_MODE,
             )
 
         mapping_data = {

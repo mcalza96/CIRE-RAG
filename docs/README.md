@@ -42,10 +42,8 @@ Use this file as single source of truth for navigation.
 - Configuration reference: `rag-engine/configuration.md`
 - Testing guide: `rag-engine/testing.md`
 - Runbooks: `rag-engine/runbooks/common-incidents.md`
+- Cost optimization runbook: `rag-engine/runbooks/cloud-cost-on-off.md`
 
 ## Historical and Planning Notes
 
-These files are useful context but are not canonical user docs:
-
-- `historical/deployment.md`
-- `../plan_batch_ingestion_phase0.md`
+No active historical/planning files are currently tracked.

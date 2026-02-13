@@ -30,17 +30,38 @@ curl http://localhost:8000/health
 
 ## Despliegue (API y Worker separados)
 
-El repositorio usa un Dockerfile multi-stage con dos targets:
+El repositorio usa un Dockerfile multi-stage con tres targets:
 
-- `api_image`: servicio HTTP (`start_api.sh`, puerto `8000`).
-- `worker_image`: procesamiento async (`start_worker.sh`).
+- `api_image`: servicio HTTP (`start_api.sh`, puerto `${PORT:-8000}`).
+- `worker_cloud_image`: worker liviano (core-only), recomendado para Railway/Render.
+- `worker_image`: worker pesado (incluye `requirements-local.txt`, ej. torch/transformers).
 
 Build examples:
 
 ```bash
 docker build --target api_image -t cire-rag-api .
+docker build --target worker_cloud_image -t cire-rag-worker-cloud .
 docker build --target worker_image -t cire-rag-worker .
 ```
+
+Ejecucion con Docker Compose:
+
+```bash
+cp .env.example .env.local
+docker compose up --build -d api worker
+```
+
+Worker pesado local (opcional):
+
+```bash
+docker compose --profile local-heavy up --build -d worker-local
+```
+
+Recomendacion de costo cloud:
+
+- API: `api_image`
+- Worker: `worker_cloud_image`
+- Variables: `JINA_MODE=CLOUD`, `JINA_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
 
 ## Documentacion central
 

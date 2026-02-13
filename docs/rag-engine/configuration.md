@@ -36,10 +36,37 @@ Credenciales por proveedor:
 - `ANTHROPIC_API_KEY`
 - `JINA_API_KEY`
 
+Flags de pipeline cloud/local:
+
+- `INGEST_PARSER_MODE` (`local` | `cloud`)
+- `JINA_READER_URL_TEMPLATE` (opcional, usado cuando `INGEST_PARSER_MODE=cloud`)
+- `RERANK_MODE` (`local` | `jina` | `hybrid`)
+- `AUTHORITY_CLASSIFIER_MODE` (`rules` | `embedding_first`)
+
 ## Puertos y ejecucion
 
 - API local: `8000` (ver `start_api.sh`).
 - Health endpoint: `/health`.
+
+## Despliegue cloud (API + worker)
+
+- Target API recomendado: `api_image`.
+- Target worker recomendado: `worker_cloud_image` (sin dependencias locales pesadas).
+- Target `worker_image`: solo cuando necesitas runtime local con `torch/transformers`.
+
+Variables recomendadas en Railway/Render:
+
+- `JINA_MODE=CLOUD`
+- `JINA_API_KEY`
+- `SUPABASE_URL` (o `NEXT_PUBLIC_SUPABASE_URL`)
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `PORT` (API, default `8000`)
+- `UVICORN_WORKERS=1` (default recomendado para contenedores pequenos)
+
+Compose local recomendado:
+
+- `docker compose up --build -d api worker`
+- Perfil pesado local: `docker compose --profile local-heavy up --build -d worker-local`
 
 ## Concurrencia (Fase 4)
 

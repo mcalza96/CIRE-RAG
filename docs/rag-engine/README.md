@@ -123,6 +123,7 @@ Ejemplo (aclaracion de scope en `/knowledge/retrieve`):
 - Testing: `testing.md`
 - Runbooks: `runbooks/common-incidents.md`
 - Baseline Visual Anchors: `runbooks/visual-anchor-baseline.md`
+- Costos cloud ON/OFF: `runbooks/cloud-cost-on-off.md`
 
 ## Dependency management
 
