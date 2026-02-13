@@ -68,12 +68,6 @@ Flujo por defecto:
 2. `POST /api/v1/ingestion/batches/{batch_id}/files` (uno por archivo)
 3. poll de estado en `GET /api/v1/ingestion/batches/{batch_id}/status`
 
-Fallback legacy (archivo por request):
-
-```bash
-./ing.sh --legacy
-```
-
 ## Endpoints principales
 
 Base URL local: `http://localhost:8000/api/v1`
@@ -85,15 +79,11 @@ Base URL local: `http://localhost:8000/api/v1`
 - `POST /ingestion/retry/{doc_id}`: reintenta documento con estado fallido.
 - `POST /ingestion/batches`: crea batch 2-step para N archivos.
 - `POST /ingestion/batches/{batch_id}/files`: agrega archivo al batch.
-- `POST /ingestion/batches/{batch_id}/seal`: endpoint disponible (opcional/legacy en flujo CLI actual).
+- `POST /ingestion/batches/{batch_id}/seal`: sella batch cuando se requiere cierre explicito.
 - `GET /ingestion/batches/{batch_id}/status`: progreso del batch.
 - `POST /knowledge/retrieve`: retrieval de contexto grounded.
 - `POST /retrieval/chunks`: contrato v1 para retrieval de chunks.
 - `POST /retrieval/summaries`: contrato v1 para retrieval de summaries.
-- `POST /synthesis/generate`: crea job asyncrono de sintesis estructurada.
-- `GET /synthesis/jobs/{job_id}`: estado del job de sintesis estructurada.
-- `POST /curriculum/generate`: crea job asyncrono de sintesis estructurada (ruta legacy).
-- `GET /curriculum/jobs/{job_id}`: estado del job de sintesis estructurada (ruta legacy).
 
 ## Comportamiento de scope en retrieval
 

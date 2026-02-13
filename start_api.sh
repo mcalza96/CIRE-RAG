@@ -15,15 +15,11 @@ fi
 
 echo "🚀 Starting RAG API Service using $PYTHON_CMD..."
 
-# Require bootstrap to keep startup fast and deterministic
-if [ ! -f "venv/bin/activate" ]; then
-    echo "❌ Missing virtualenv for rag-engine."
-    echo "💡 Run ./bootstrap.sh once, then retry ./start_api.sh"
-    exit 1
+if [ -f "venv/bin/python" ]; then
+    UVICORN_CMD="venv/bin/python -m uvicorn"
+else
+    UVICORN_CMD="$PYTHON_CMD -m uvicorn"
 fi
-
-source venv/bin/activate
-UVICORN_CMD="venv/bin/python -m uvicorn"
 
 # Start Protocol API (FastAPI) on port 8000
 echo "🌍 Serving API on http://0.0.0.0:8000"

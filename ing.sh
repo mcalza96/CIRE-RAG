@@ -12,7 +12,6 @@ COLLECTION_ID="${COLLECTION_ID:-}"
 COLLECTION_NAME="${COLLECTION_NAME:-}"
 COLLECTION_CLEANUP_REQUIRED="false"
 EMBEDDING_MODE="${EMBEDDING_MODE:-}"
-LEGACY_MODE="false"
 WAIT_FOR_COMPLETION="true"
 BATCH_POLL_INTERVAL="${BATCH_POLL_INTERVAL:-15}"
 BATCH_POLL_MAX="${BATCH_POLL_MAX:-120}"
@@ -74,7 +73,6 @@ Opciones:
   --collection-name <texto>    Carpeta/Colección (nombre)
   --file <ruta>                Archivo a encolar (repetible)
   --glob <patron>              Patrón para encolar (repetible)
-  --legacy                     Usa loop antiguo /ingest (fallback)
   --embedding-mode <modo>      LOCAL o CLOUD (si no, se pregunta)
   --no-wait                    No espera cierre del procesamiento del batch
   --skip-estimate              Omite estimación visual pre-ingesta
@@ -84,7 +82,6 @@ Opciones:
 Ejemplos:
   ./ing.sh --tenant-id 11111111-1111-1111-1111-111111111111 --collection-name trinorma --file ./docs/iso9001.pdf --file ./docs/iso14001.pdf
   ./ing.sh --collection-name normas --glob "./docs/*.md"
-  ./ing.sh --legacy --collection-name normas --file ./docs/a.pdf
   ./ing.sh --collection-name iso-v2 --no-wait
   GEMINI_COST_PER_VISUAL_PAGE_USD=0.00003 ./ing.sh --collection-name iso-v2
 EOF
@@ -503,51 +500,6 @@ print(f"   ingestion_batches: {int(deleted.get('ingestion_batches') or 0)}")
 PY
 }
 
-build_legacy_metadata() {
-  local filename="$1"
-  python3 - "$TENANT_ID" "$COLLECTION_ID" "$COLLECTION_NAME" "$filename" "$EMBEDDING_MODE" <<'PY'
-import json
-import sys
-
-tenant_id, collection_id, collection_name, filename, embedding_mode = sys.argv[1:]
-title = filename.rsplit("/", 1)[-1]
-
-payload = {
-    "title": title,
-    "institution_id": tenant_id,
-    "is_global": False,
-    "metadata": {
-        "collection_key": collection_id,
-        "tenant_id": tenant_id,
-        "collection_id": collection_id,
-        "collection_name": collection_name,
-        "embedding_mode": embedding_mode,
-    },
-}
-print(json.dumps(payload, ensure_ascii=True))
-PY
-}
-
-ingest_file_legacy() {
-  local file_path="$1"
-  local metadata
-  metadata="$(build_legacy_metadata "$file_path")"
-
-  local status
-  status=$(curl -sS -o /tmp/rag_ing_resp.json -w "%{http_code}" \
-    -X POST "$RAG_URL/api/v1/ingestion/ingest" \
-    -F "file=@$file_path" \
-    -F "metadata=$metadata")
-
-  if [[ "$status" -ge 200 && "$status" -lt 300 ]]; then
-    return 0
-  fi
-
-  echo "❌ Error ingestando: $file_path (HTTP $status)"
-  echo "Respuesta: $(cat /tmp/rag_ing_resp.json 2>/dev/null || true)"
-  return 1
-}
-
 create_batch() {
   local payload
   payload=$(python3 - "$TENANT_ID" "$TENANT_NAME" "$COLLECTION_ID" "$COLLECTION_NAME" "${#FILE_QUEUE[@]}" <<'PY'
@@ -626,20 +578,6 @@ PY
 
   echo "❌ Error agregando archivo al batch: $file_path (HTTP $status)"
   echo "Respuesta: $(cat /tmp/rag_batch_file.json 2>/dev/null || true)"
-  return 1
-}
-
-seal_batch() {
-  local status
-  status=$(curl -sS -o /tmp/rag_batch_seal.json -w "%{http_code}" \
-    -X POST "$RAG_URL/api/v1/ingestion/batches/$BATCH_ID/seal")
-
-  if [[ "$status" -ge 200 && "$status" -lt 300 ]]; then
-    return 0
-  fi
-
-  echo "❌ Error sellando batch $BATCH_ID (HTTP $status)"
-  echo "Respuesta: $(cat /tmp/rag_batch_seal.json 2>/dev/null || true)"
   return 1
 }
 
@@ -1045,8 +983,6 @@ while [[ $# -gt 0 ]]; do
       FILE_QUEUE+=("$2"); shift 2 ;;
     --glob)
       GLOB_PATTERNS+=("$2"); shift 2 ;;
-    --legacy)
-      LEGACY_MODE="true"; shift ;;
     --embedding-mode)
       EMBEDDING_MODE="$2"; shift 2 ;;
     --no-wait)
@@ -1116,96 +1052,67 @@ fi
 
 ok=0
 failed=0
-if [[ "$LEGACY_MODE" == "true" ]]; then
-  echo "⚠️  Modo legacy activado: /api/v1/ingestion/ingest"
-  STEP_BATCH_CREATE="omitido (legacy)"
-  STEP_BATCH_SEAL="omitido (legacy)"
-  STEP_WORKER="seguimiento manual (legacy)"
-  STEP_WORKER_STATUS="n/a (legacy)"
-  STEP_WORKER_DOCS="n/a"
-  STEP_WORKER_QUEUE="n/a"
-  STEP_WORKER_ERRORS="$failed"
-  STEP_WORKER_LOSS="n/a (legacy)"
-  STEP_WORKER_PHASE="n/a (legacy)"
-  STEP_WORKER_REFS="n/a (legacy)"
-  for file_path in "${FILE_QUEUE[@]}"; do
-    echo "➡️  Ingestando (legacy): $file_path"
-    if ingest_file_legacy "$file_path"; then
-      ok=$((ok+1))
-      echo "✅ Encolado"
-    else
-      failed=$((failed+1))
-    fi
-  done
-  if (( failed == 0 )); then
-    STEP_BATCH_UPLOAD="completado (${ok}/${#FILE_QUEUE[@]} encolados)"
-  else
-    STEP_BATCH_UPLOAD="parcial (${ok} ok / ${failed} fail)"
-  fi
+if ! create_batch; then
+  STEP_BATCH_CREATE="fallido"
   render_checklist
-else
-  if ! create_batch; then
-    STEP_BATCH_CREATE="fallido"
-    render_checklist
-    exit 1
-  fi
-  STEP_BATCH_CREATE="completado (batch_id=$BATCH_ID)"
-  render_checklist
-
-  echo "🚀 Batch creado: $BATCH_ID"
-  for file_path in "${FILE_QUEUE[@]}"; do
-    echo "➡️  Subiendo al batch: $file_path"
-    if add_file_to_batch "$file_path"; then
-      ok=$((ok+1))
-      echo "✅ Agregado al batch"
-    else
-      failed=$((failed+1))
-    fi
-  done
-
-  if (( failed == 0 )); then
-    STEP_BATCH_UPLOAD="completado (${ok}/${#FILE_QUEUE[@]} cargados)"
-  else
-    STEP_BATCH_UPLOAD="parcial (${ok} ok / ${failed} fail)"
-  fi
-  render_checklist
-
-  if (( failed == 0 )); then
-    echo "🔓 Sellado automático omitido (colecciones reescribibles activadas)."
-    STEP_BATCH_SEAL="omitido (overwritable)"
-  else
-    echo "⚠️  Batch no sellado por errores de carga."
-    echo "💡 Corrige los archivos fallidos y reintenta con el mismo batch o crea uno nuevo."
-    STEP_BATCH_SEAL="omitido por fallos"
-  fi
-  render_checklist
-
-  show_batch_status || true
-  if [[ "$WAIT_FOR_COMPLETION" == "true" && "$failed" -eq 0 ]]; then
-    wait_for_batch_completion || true
-    STEP_WORKER="completado/terminal"
-    show_batch_status || true
-  elif [[ "$WAIT_FOR_COMPLETION" == "false" && "$failed" -eq 0 ]]; then
-    STEP_WORKER="pendiente (no-wait)"
-    STEP_WORKER_STATUS="processing (no-wait)"
-    STEP_WORKER_DOCS="pendiente"
-    STEP_WORKER_QUEUE="seguimiento manual"
-    STEP_WORKER_ERRORS="0"
-    STEP_WORKER_LOSS="0 eventos (no-wait)"
-    STEP_WORKER_PHASE="processing (no-wait)"
-    STEP_WORKER_REFS="consulta /batches/$BATCH_ID/status"
-  else
-    STEP_WORKER="pendiente (cargas con error)"
-    STEP_WORKER_STATUS="no iniciado"
-    STEP_WORKER_DOCS="0/${#FILE_QUEUE[@]}"
-    STEP_WORKER_QUEUE="cargas fallidas"
-    STEP_WORKER_ERRORS="$failed"
-    STEP_WORKER_LOSS="n/a (batch no iniciado)"
-    STEP_WORKER_PHASE="no iniciado"
-    STEP_WORKER_REFS="n/a"
-  fi
-  render_checklist
+  exit 1
 fi
+STEP_BATCH_CREATE="completado (batch_id=$BATCH_ID)"
+render_checklist
+
+echo "🚀 Batch creado: $BATCH_ID"
+for file_path in "${FILE_QUEUE[@]}"; do
+  echo "➡️  Subiendo al batch: $file_path"
+  if add_file_to_batch "$file_path"; then
+    ok=$((ok+1))
+    echo "✅ Agregado al batch"
+  else
+    failed=$((failed+1))
+  fi
+done
+
+if (( failed == 0 )); then
+  STEP_BATCH_UPLOAD="completado (${ok}/${#FILE_QUEUE[@]} cargados)"
+else
+  STEP_BATCH_UPLOAD="parcial (${ok} ok / ${failed} fail)"
+fi
+render_checklist
+
+if (( failed == 0 )); then
+  echo "🔓 Sellado automático omitido (colecciones reescribibles activadas)."
+  STEP_BATCH_SEAL="omitido (overwritable)"
+else
+  echo "⚠️  Batch no sellado por errores de carga."
+  echo "💡 Corrige los archivos fallidos y reintenta con el mismo batch o crea uno nuevo."
+  STEP_BATCH_SEAL="omitido por fallos"
+fi
+render_checklist
+
+show_batch_status || true
+if [[ "$WAIT_FOR_COMPLETION" == "true" && "$failed" -eq 0 ]]; then
+  wait_for_batch_completion || true
+  STEP_WORKER="completado/terminal"
+  show_batch_status || true
+elif [[ "$WAIT_FOR_COMPLETION" == "false" && "$failed" -eq 0 ]]; then
+  STEP_WORKER="pendiente (no-wait)"
+  STEP_WORKER_STATUS="processing (no-wait)"
+  STEP_WORKER_DOCS="pendiente"
+  STEP_WORKER_QUEUE="seguimiento manual"
+  STEP_WORKER_ERRORS="0"
+  STEP_WORKER_LOSS="0 eventos (no-wait)"
+  STEP_WORKER_PHASE="processing (no-wait)"
+  STEP_WORKER_REFS="consulta /batches/$BATCH_ID/status"
+else
+  STEP_WORKER="pendiente (cargas con error)"
+  STEP_WORKER_STATUS="no iniciado"
+  STEP_WORKER_DOCS="0/${#FILE_QUEUE[@]}"
+  STEP_WORKER_QUEUE="cargas fallidas"
+  STEP_WORKER_ERRORS="$failed"
+  STEP_WORKER_LOSS="n/a (batch no iniciado)"
+  STEP_WORKER_PHASE="no iniciado"
+  STEP_WORKER_REFS="n/a"
+fi
+render_checklist
 
 echo ""
 echo "📊 Resumen"

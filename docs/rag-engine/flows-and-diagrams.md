@@ -9,13 +9,9 @@ flowchart LR
     C[Cliente API] --> A[FastAPI app/main.py]
     A --> R1[/api/v1/ingestion]
     A --> R2[/api/v1/knowledge]
-    A --> R3[/api/v1/synthesis]
-    A --> R4[/api/v1/curriculum (legacy path)]
 
     R1 --> U1[Use Cases de ingesta]
     R2 --> U2[AtomicRetrievalEngine + QueryDecomposer]
-    R3 --> U3[Workflow structured synthesis]
-    R4 --> U3
 
     U1 --> S1[Servicios de parsing/chunking/embedding]
     U2 --> S2[Vector/FTS RRF + Multi-hop Graph]

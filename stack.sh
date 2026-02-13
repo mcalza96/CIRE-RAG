@@ -144,7 +144,7 @@ start_all() {
   : > "$RAG_WORKER_LOG"
   : > "$COMMUNITY_WORKER_LOG"
   start_process "RAG API" "./start_api.sh" "$RAG_DIR" "$RAG_API_PID_FILE" "$RAG_API_LOG"
-  start_process "RAG Worker" "venv/bin/python run_worker.py" "$RAG_DIR" "$RAG_WORKER_PID_FILE" "$RAG_WORKER_LOG"
+  start_process "RAG Worker" "./start_worker.sh" "$RAG_DIR" "$RAG_WORKER_PID_FILE" "$RAG_WORKER_LOG"
   start_process "Community Worker" "venv/bin/python -m app.workers.community_worker" "$RAG_DIR" "$COMMUNITY_WORKER_PID_FILE" "$COMMUNITY_WORKER_LOG"
 }
 

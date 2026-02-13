@@ -28,6 +28,20 @@ Health:
 curl http://localhost:8000/health
 ```
 
+## Despliegue (API y Worker separados)
+
+El repositorio usa un Dockerfile multi-stage con dos targets:
+
+- `api_image`: servicio HTTP (`start_api.sh`, puerto `8000`).
+- `worker_image`: procesamiento async (`start_worker.sh`).
+
+Build examples:
+
+```bash
+docker build --target api_image -t cire-rag-api .
+docker build --target worker_image -t cire-rag-worker .
+```
+
 ## Documentacion central
 
 - Hub general: `docs/README.md`
