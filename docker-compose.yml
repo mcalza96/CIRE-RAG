@@ -9,6 +9,14 @@ services:
       - "8000:8000"
     env_file:
       - .env.local
+    environment:
+      PORT: 8000
+      JINA_MODE: CLOUD
+      UVICORN_WORKERS: 1
+      UVICORN_RELOAD: "false"
+      RERANK_MODE: hybrid
+      INGEST_PARSER_MODE: local
+      AUTHORITY_CLASSIFIER_MODE: rules
     restart: unless-stopped
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
@@ -19,12 +27,37 @@ services:
   worker:
     build:
       context: .
-      target: worker_image
+      target: worker_cloud_image
     image: cire-rag-worker
     container_name: cire-rag-worker
     env_file:
       - .env.local
+    environment:
+      JINA_MODE: CLOUD
+      RERANK_MODE: hybrid
+      INGEST_PARSER_MODE: local
+      AUTHORITY_CLASSIFIER_MODE: rules
     restart: unless-stopped
     depends_on:
       api:
         condition: service_healthy
+
+  worker-local:
+    build:
+      context: .
+      target: worker_image
+    image: cire-rag-worker-local
+    container_name: cire-rag-worker-local
+    env_file:
+      - .env.local
+    environment:
+      JINA_MODE: LOCAL
+      RERANK_MODE: local
+      INGEST_PARSER_MODE: local
+      AUTHORITY_CLASSIFIER_MODE: rules
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    profiles:
+      - local-heavy

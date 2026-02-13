@@ -67,6 +67,10 @@ class CurriculumContentStrategy(IngestionStrategy):
         source_path = None
         if metadata.metadata and isinstance(metadata.metadata, dict):
             source_path = metadata.metadata.get("storage_path") or metadata.metadata.get("source_path")
+        if not source_path:
+            candidate = source.get_filename()
+            if isinstance(candidate, str) and candidate.startswith(("http://", "https://")):
+                source_path = candidate
 
         if str(settings.INGEST_PARSER_MODE or "local").strip().lower() == "cloud":
             extraction = await parser.extract_structured_document(file_path=file_path, source_path=source_path)
@@ -217,6 +221,10 @@ class FastCurriculumContentStrategy(CurriculumContentStrategy):
         source_path = None
         if metadata.metadata and isinstance(metadata.metadata, dict):
             source_path = metadata.metadata.get("storage_path") or metadata.metadata.get("source_path")
+        if not source_path:
+            candidate = source.get_filename()
+            if isinstance(candidate, str) and candidate.startswith(("http://", "https://")):
+                source_path = candidate
         extraction = await parser.extract_structured_document(file_path=file_path, source_path=source_path)
         if not extraction or not extraction.get("full_text"):
             logger.warning("empty_file_detected", file=filename)

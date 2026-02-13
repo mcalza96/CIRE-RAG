@@ -24,7 +24,7 @@
 ## Collection Behavior (Current)
 
 - Collections are treated as overwrite-friendly in CLI workflows.
-- `ing.sh` applies cleanup when reusing an existing collection before starting a new batch.
+- `ing.sh` applies cleanup when reusing an existing collection before starting a new batch (implementation: `tools/ingestion-client/ing.sh`).
 - Batch sealing endpoint remains available, but the default CLI path does not auto-seal collections.
 
 ## Observability and Reliability

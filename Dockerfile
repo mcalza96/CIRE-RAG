@@ -22,6 +22,9 @@ COPY requirements-core.txt /app/requirements-core.txt
 # ------------------------------------------------------------------------------------
 FROM base AS api_image
 
+ENV RUNNING_IN_DOCKER="true" \
+    JINA_MODE="CLOUD"
+
 RUN pip install -r /app/requirements-core.txt
 
 COPY . /app
@@ -45,6 +48,9 @@ CMD ["./start_worker.sh"]
 # WORKER IMAGE (local/heavy runtime)
 # ------------------------------------------------------------------------------------
 FROM base AS worker_image
+
+ENV RUNNING_IN_DOCKER="true" \
+    JINA_MODE="LOCAL"
 
 COPY requirements-local.txt /app/requirements-local.txt
 

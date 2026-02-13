@@ -1,7 +1,7 @@
 import structlog
 import threading
 import asyncio
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, cast
 from app.core.observability.metrics import track_span
 from app.core.settings import settings
 from app.domain.interfaces.embedding_provider import IEmbeddingProvider
@@ -30,6 +30,7 @@ class JinaEmbeddingService:
                 return
 
             self.local_provider: Optional[IEmbeddingProvider] = None
+            self.is_deployed_environment = settings.is_deployed_environment
 
             # Providers
             self.cloud_provider: Optional[IEmbeddingProvider] = (
@@ -37,11 +38,18 @@ class JinaEmbeddingService:
             )
 
             # Default behavior from env
-            self.default_mode = str(settings.JINA_MODE or "LOCAL").upper()
-            if self.default_mode == "LOCAL":
+            self.default_mode = str(settings.JINA_MODE or "CLOUD").upper()
+
+            if self.is_deployed_environment:
+                self.default_mode = "CLOUD"
+                if not self.cloud_provider:
+                    raise RuntimeError(
+                        "Deployed environment requires JINA_MODE=CLOUD with JINA_API_KEY configured."
+                    )
+            elif self.default_mode == "LOCAL":
                 self.local_provider = self._build_local_provider()
             elif self.default_mode == "CLOUD" and not self.cloud_provider:
-                logger.warning("⚠️ JINA_MODE=CLOUD but JINA_API_KEY not found. Fallback to LOCAL.")
+                logger.warning("cloud_mode_without_api_key_fallback_local")
                 self.default_mode = "LOCAL"
             
             # Caching for query embeddings
@@ -70,11 +78,21 @@ class JinaEmbeddingService:
         return JinaLocalProvider()
 
     def _get_provider(self, mode: Optional[str] = None) -> IEmbeddingProvider:
-        resolved_mode = str(mode or self.default_mode or "LOCAL").upper()
+        resolved_mode = str(mode or self.default_mode or "CLOUD").upper()
+
+        if self.is_deployed_environment:
+            if resolved_mode == "LOCAL":
+                logger.warning("local_mode_blocked_in_deployed_environment")
+            resolved_mode = "CLOUD"
 
         if resolved_mode == "CLOUD":
             if self.cloud_provider:
                 return self.cloud_provider
+            if self.is_deployed_environment:
+                raise RuntimeError(
+                    "Cloud embedding provider unavailable in deployed environment. "
+                    "Set JINA_API_KEY or use local environment for LOCAL mode."
+                )
             logger.warning("cloud_provider_unavailable_fallback_local")
 
         if self.local_provider is None:
@@ -88,7 +106,7 @@ class JinaEmbeddingService:
         
         # Cache logic
         is_query_task = task == "retrieval.query"
-        final_embeddings = [None] * len(texts)
+        final_embeddings: List[Optional[List[float]]] = [None] * len(texts)
         missing_indices = []
         missing_texts = []
         
@@ -108,7 +126,7 @@ class JinaEmbeddingService:
             missing_texts = texts
 
         if not missing_texts:
-            return final_embeddings 
+            return cast(List[List[float]], final_embeddings)
 
         # Delegate to provider
         provider = self._get_provider(mode)
@@ -126,7 +144,7 @@ class JinaEmbeddingService:
                         if len(self._cache) > self._cache_max_size:
                             self._cache.pop(next(iter(self._cache)))
             
-            return final_embeddings
+            return cast(List[List[float]], final_embeddings)
         except Exception as e:
             logger.error("embedding_generation_failed", error=str(e), texts_count=len(texts))
             raise e

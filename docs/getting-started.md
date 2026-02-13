@@ -66,6 +66,8 @@ From repository root:
 ./ing.sh
 ```
 
+`ing.sh` en raiz redirige a `tools/ingestion-client/ing.sh`.
+
 Notes:
 
 - Existing collections are overwrite-friendly in the ingestion CLI (cleanup + reingestion workflow).

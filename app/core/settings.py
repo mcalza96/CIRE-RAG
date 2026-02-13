@@ -1,7 +1,13 @@
-from pydantic import Field, AliasChoices
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import Optional
+import logging
+import os
 from pathlib import Path
+from typing import Literal, Optional
+
+from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+logger = logging.getLogger(__name__)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -46,7 +52,7 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: Optional[str] = None
     ANTHROPIC_API_KEY: Optional[str] = None
     JINA_API_KEY: Optional[str] = None
-    JINA_MODE: str = "LOCAL" # LOCAL or CLOUD
+    JINA_MODE: Literal["LOCAL", "CLOUD"] = "CLOUD"
     OPENAI_FALLBACK_MODEL: str = "gpt-4o-mini"
     JINA_BASE_URL: str = "https://api.jina.ai/v1/embeddings"
     JINA_MODEL_NAME: str = "jinaai/jina-embeddings-v3"
@@ -58,6 +64,8 @@ class Settings(BaseSettings):
     API_PORT: int = 8000
     LOG_LEVEL: str = "INFO"
     ENVIRONMENT: str = "development"
+    APP_ENV: str = "local"
+    RUNNING_IN_DOCKER: bool = False
     FORENSIC_LOGGING_LEVEL: str = "METADATA_ONLY"
 
     # Worker / Throughput controls
@@ -112,4 +120,33 @@ class Settings(BaseSettings):
     VISUAL_CACHE_KEY_V2_ENABLED: bool = True
     VISUAL_CACHE_BATCH_PREFETCH_ENABLED: bool = True
 
-settings = Settings()
+    @field_validator("JINA_MODE", mode="before")
+    @classmethod
+    def _normalize_jina_mode(cls, value: str | None) -> str:
+        return str(value or "CLOUD").strip().upper()
+
+    @field_validator("APP_ENV", "ENVIRONMENT", mode="before")
+    @classmethod
+    def _normalize_environment_labels(cls, value: str | None) -> str:
+        return str(value or "").strip().lower()
+
+    @property
+    def is_deployed_environment(self) -> bool:
+        app_env = self.APP_ENV or self.ENVIRONMENT
+        if app_env in {"staging", "production", "prod"}:
+            return True
+        if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_PROJECT_ID"):
+            return True
+        return bool(self.RUNNING_IN_DOCKER and app_env not in {"", "local", "development", "dev"})
+
+    @model_validator(mode="after")
+    def _enforce_embedding_mode_constraints(self) -> "Settings":
+        if self.is_deployed_environment and self.JINA_MODE == "LOCAL":
+            logger.warning(
+                "JINA_MODE=LOCAL is not allowed in deployed environments; forcing CLOUD",
+                extra={"app_env": self.APP_ENV, "environment": self.ENVIRONMENT},
+            )
+            self.JINA_MODE = "CLOUD"
+        return self
+
+settings = Settings()  # type: ignore[call-arg]

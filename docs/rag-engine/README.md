@@ -62,6 +62,8 @@ En la raiz del repo:
 ./ing.sh
 ```
 
+Nota: `ing.sh` en raiz es un wrapper; la implementacion vive en `tools/ingestion-client/ing.sh`.
+
 Flujo por defecto:
 
 1. `POST /api/v1/ingestion/batches`
