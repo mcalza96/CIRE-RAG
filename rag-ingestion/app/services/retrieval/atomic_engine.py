@@ -235,6 +235,13 @@ class AtomicRetrievalEngine:
             if not isinstance(relation_types, list):
                 relation_types = None
             hops = graph_max_hops if isinstance(graph_max_hops, int) else 2
+            logger.info(
+                "atomic_graph_nav_request",
+                tenant_id=str(tenant_id),
+                graph_max_hops=max(0, hops),
+                graph_filter_relation_types=relation_types or [],
+                graph_filter_node_types=node_types or [],
+            )
 
             rows = await self._graph_repo.search_multi_hop_context(
                 tenant_id=tenant_uuid,
