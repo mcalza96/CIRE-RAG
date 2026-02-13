@@ -34,13 +34,7 @@ def get_llm(
         try:
             from langchain_groq import ChatGroq
 
-            model_name = AIModelConfig.GROQ_MODEL_CHAT
-            if capability == "DESIGN":
-                model_name = AIModelConfig.GROQ_MODEL_DESIGN
-            elif capability == "FORENSIC":
-                model_name = AIModelConfig.GROQ_MODEL_FORENSIC
-            elif capability == "ORCHESTRATION":
-                model_name = AIModelConfig.GROQ_MODEL_ORCHESTRATION
+            model_name = AIModelConfig.get_groq_model_for_capability(capability)
 
             return ChatGroq(
                 model=model_name,

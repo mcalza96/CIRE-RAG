@@ -36,6 +36,12 @@ Baseline mantenible (CI/local rapido):
 venv/bin/pytest tests/unit tests/integration tests/tools -q
 ```
 
+Pruebas focalizadas del Q/A Orchestrator:
+
+```bash
+venv/bin/pytest tests/unit/test_qa_orchestrator_policies.py tests/unit/test_qa_orchestrator_use_case.py -q
+```
+
 ## Convenciones
 
 - Nombre de archivo: `test_<componente>.py`.

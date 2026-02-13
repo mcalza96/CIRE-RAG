@@ -7,8 +7,8 @@ from typing import Any, Iterable
 
 from app.core.settings import settings
 from app.core.tools.retrieval import RetrievalTools
-from app.mas_simple.domain.models import AnswerDraft, EvidenceItem, RetrievalPlan, ValidationResult
-from app.mas_simple.domain.policies import extract_requested_standards
+from app.qa_orchestrator.domain.models import AnswerDraft, EvidenceItem, RetrievalPlan, ValidationResult
+from app.qa_orchestrator.domain.policies import extract_requested_standards
 
 
 def _extract_keywords(query: str) -> set[str]:
@@ -23,6 +23,54 @@ def _extract_keywords(query: str) -> set[str]:
 
 def _extract_clause_refs(query: str) -> set[str]:
     return set(re.findall(r"\b\d+(?:\.\d+)+\b", (query or "")))
+
+
+def _extract_metadata_clause_refs(row: dict[str, Any]) -> set[str]:
+    meta_raw = row.get("metadata")
+    meta: dict[str, Any] = meta_raw if isinstance(meta_raw, dict) else {}
+    refs_raw = meta.get("clause_refs")
+    refs = {
+        str(value).strip()
+        for value in (refs_raw if isinstance(refs_raw, list) else [])
+        if isinstance(value, str) and value.strip()
+    }
+    clause_anchor = str(meta.get("clause_anchor") or "").strip()
+    if clause_anchor:
+        refs.add(clause_anchor)
+    return refs
+
+
+def _semantic_clause_match(
+    *,
+    query: str,
+    row: dict[str, Any],
+    requested_upper: set[str],
+) -> bool:
+    if not settings.QA_LITERAL_SEMANTIC_FALLBACK_ENABLED:
+        return False
+
+    row_scope = _extract_row_standard(row)
+    if requested_upper and row_scope and not any(target in row_scope for target in requested_upper):
+        return False
+
+    content = str(row.get("content") or "")
+    similarity = float(row.get("similarity") or 0.0)
+    refs = _extract_metadata_clause_refs(row)
+    meta_raw = row.get("metadata")
+    meta: dict[str, Any] = meta_raw if isinstance(meta_raw, dict) else {}
+    clause_title = str(meta.get("clause_title") or "")
+
+    query_keywords = _extract_keywords(query)
+    if not query_keywords:
+        return False
+
+    evidence_text = f"{content}\n{clause_title}\n{' '.join(refs)}".lower()
+    overlap = sum(1 for kw in query_keywords if kw in evidence_text)
+
+    if overlap < max(1, int(settings.QA_LITERAL_SEMANTIC_MIN_KEYWORD_OVERLAP)):
+        return False
+
+    return similarity >= float(settings.QA_LITERAL_SEMANTIC_MIN_SIMILARITY)
 
 
 def _extract_row_standard(row: dict[str, Any]) -> str:
@@ -58,15 +106,27 @@ def _row_matches_standards(row: dict[str, Any], standards: list[str]) -> bool:
 def _rerank_for_literal(query: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     keywords = _extract_keywords(query)
     clause_refs = _extract_clause_refs(query)
+    requested_standards = [item.upper() for item in extract_requested_standards(query)]
     if not keywords and not clause_refs:
         return rows
 
     def score(row: dict[str, Any]) -> tuple[int, float]:
         content = str(row.get("content") or "").lower()
+        meta_raw = row.get("metadata")
+        meta: dict[str, Any] = meta_raw if isinstance(meta_raw, dict) else {}
+        meta_clause_refs = _extract_metadata_clause_refs(row)
+
         overlap = sum(1 for kw in keywords if kw in content)
         clause_boost = sum(2 for ref in clause_refs if ref in content)
+        clause_meta_boost = sum(4 for ref in clause_refs if ref in meta_clause_refs)
+        standard_boost = 0
+        if requested_standards:
+            row_standard = _extract_row_standard(row)
+            if row_standard and any(target in row_standard for target in requested_standards):
+                standard_boost = 2
+
         similarity = float(row.get("similarity") or 0.0)
-        return (overlap + clause_boost, similarity)
+        return (overlap + clause_boost + clause_meta_boost + standard_boost, similarity)
 
     return sorted(rows, key=score, reverse=True)
 
@@ -269,6 +329,11 @@ RESPUESTA:
             temperature=0.05 if strict_literal else 0.3,
         )
         text = str(completion.choices[0].message.content or "").strip()
+        if not text:
+            text = (
+                "No encontrado explicitamente en el contexto recuperado. "
+                "No puedo emitir una conclusion confiable sin evidencia trazable adicional (C#/R#)."
+            )
         return AnswerDraft(text=text, mode=plan.mode, evidence=[*chunks, *summaries])
 
 
@@ -293,6 +358,8 @@ class LiteralEvidenceValidator:
         if requested and draft.evidence:
             mismatched = 0
             total_with_scope = 0
+            query_clause_refs = _extract_clause_refs(query)
+            clause_hits = 0
             for ev in draft.evidence:
                 row = ev.metadata.get("row") if isinstance(ev.metadata, dict) else {}
                 if not isinstance(row, dict):
@@ -304,9 +371,29 @@ class LiteralEvidenceValidator:
                 if not any(target in row_scope for target in requested_upper):
                     mismatched += 1
 
+                if query_clause_refs:
+                    content = str(row.get("content") or "")
+                    meta_refs = _extract_metadata_clause_refs(row)
+                    if any(ref in content for ref in query_clause_refs) or any(ref in meta_refs for ref in query_clause_refs):
+                        clause_hits += 1
+
             if total_with_scope > 0 and mismatched > 0:
                 issues.append(
                     "Scope mismatch detected: evidence includes sources outside requested standard scope."
                 )
+
+            if query_clause_refs and clause_hits == 0:
+                semantic_hits = 0
+                for ev in draft.evidence:
+                    row = ev.metadata.get("row") if isinstance(ev.metadata, dict) else {}
+                    if not isinstance(row, dict):
+                        continue
+                    if _semantic_clause_match(query=query, row=row, requested_upper=requested_upper):
+                        semantic_hits += 1
+
+                if semantic_hits == 0:
+                    issues.append(
+                        "Literal clause mismatch: no evidence chunk contains the requested clause reference."
+                    )
 
         return ValidationResult(accepted=not issues, issues=issues)

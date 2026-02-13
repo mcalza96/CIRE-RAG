@@ -41,7 +41,7 @@ class ModelSettings(BaseSettings):
 
     # Global defaults (backward-compatible keys).
     vlm_provider: ProviderName = Field(default=ProviderName.GOOGLE, alias="VLM_PROVIDER")
-    vlm_model_name: str = Field(default="gemini-2.5-flash", alias="VLM_MODEL_NAME")
+    vlm_model_name: str = Field(default="gemini-2.5-flash-lite", alias="VLM_MODEL_NAME")
     llm_temperature: float = Field(default=0.0, alias="LLM_TEMPERATURE", ge=0.0, le=2.0)
 
     # Ingestion (vision) runtime overrides.
@@ -119,7 +119,7 @@ class ModelSettings(BaseSettings):
         ):
             raise ValueError(
                 f"{scope} model '{model_name}' is incompatible with provider '{provider.value}'. "
-                "Use a Gemini model (for example: gemini-2.5-flash)."
+                "Use a Gemini model (for example: gemini-2.5-flash-lite)."
             )
 
     @property

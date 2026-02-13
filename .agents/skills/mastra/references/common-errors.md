@@ -481,7 +481,7 @@ const agent = new Agent({
 
 - OpenAI: `openai/gpt-4o`, `openai/gpt-4o-mini`, `openai/gpt-4-turbo`
 - Anthropic: `anthropic/claude-sonnet-4-5-20250929`, `anthropic/claude-opus-4-5`
-- Google: `google/gemini-2.5-pro`, `google/gemini-2.5-flash`
+- Google: `google/gemini-2.5-pro`, `google/gemini-2.5-flash-lite`
 
 **Use embedded docs to verify**:
 

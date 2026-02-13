@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from app.mas_simple.domain.models import AnswerDraft, EvidenceItem, QueryIntent, RetrievalPlan, ValidationResult
+from app.qa_orchestrator.domain.models import AnswerDraft, EvidenceItem, QueryIntent, RetrievalPlan, ValidationResult
 
 
 class IntentClassifierPort(Protocol):

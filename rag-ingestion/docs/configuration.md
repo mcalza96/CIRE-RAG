@@ -28,6 +28,11 @@ Sin estas variables, API y worker no operan de forma correcta.
 - `CHAT_LLM_MODEL_NAME`
 - `LLM_TEMPERATURE`
 
+Variables usadas por Q/A Orchestrator (`app/qa_orchestrator` y `doc_chat_cli.py`):
+
+- `GROQ_API_KEY` (requerida para ejecucion del CLI de Q/A).
+- `CHAT_LLM_PROVIDER` / `CHAT_LLM_MODEL_NAME` cuando se enruta por stack API.
+
 Credenciales por proveedor:
 
 - `OPENAI_API_KEY`

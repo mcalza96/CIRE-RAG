@@ -13,7 +13,7 @@ flowchart LR
     A --> R4[/api/v1/curriculum (legacy path)]
 
     R1 --> U1[Use Cases de ingesta]
-    R2 --> U2[UnifiedRetrievalEngine + TricameralOrchestrator]
+    R2 --> U2[UnifiedRetrievalEngine + RetrievalRouter]
     R3 --> U3[Workflow structured synthesis]
     R4 --> U3
 
@@ -183,7 +183,7 @@ sequenceDiagram
     autonumber
     participant U as Usuario
     participant API as Router knowledge
-    participant ORQ as TricameralOrchestrator
+    participant ORQ as RetrievalRouter
     participant V as Vector Retrieval
     participant LG as Local Graph Search
     participant GG as Global Graph Search
@@ -210,7 +210,32 @@ sequenceDiagram
     API-->>U: respuesta
 ```
 
-## 8) Entidades Principales (Simplificado)
+## 9) Flujo Exacto: Q/A Orchestrator (`app/qa_orchestrator`)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Cliente/CLI
+    participant QAO as HandleQuestionUseCase
+    participant RET as RetrieverPort Adapter
+    participant GEN as AnswerGeneratorPort Adapter
+    participant VAL as ValidationPort
+    participant RAG as RetrievalTools/Knowledge stack
+
+    C->>QAO: HandleQuestionCommand(query, tenant_id, collection_id)
+    QAO->>QAO: classify_intent + build_retrieval_plan
+    QAO->>RET: retrieve_chunks + retrieve_summaries
+    RET->>RAG: retrieve(...) con filtros de scope
+    RAG-->>RET: evidencia C#/R#
+    RET-->>QAO: EvidenceItem[]
+    QAO->>GEN: generate(query, plan, evidence)
+    GEN-->>QAO: AnswerDraft
+    QAO->>VAL: validate(answer, plan, query)
+    VAL-->>QAO: ValidationResult
+    QAO-->>C: respuesta final + trazabilidad
+```
+
+## 10) Entidades Principales (Simplificado)
 
 ```mermaid
 erDiagram
@@ -237,4 +262,4 @@ erDiagram
 - Chunking: `rag-ingestion/app/services/ingestion/chunking_service.py`
 - Visual parser: `rag-ingestion/app/services/ingestion/visual_parser.py`
 - Unified retrieval: `rag-ingestion/app/services/retrieval/engine.py`
-- Tricameral orchestrator: `rag-ingestion/app/application/services/tricameral_orchestrator.py`
+- Retrieval router: `rag-ingestion/app/application/services/retrieval_router.py`

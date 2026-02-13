@@ -1,8 +1,14 @@
-# MAS Simple Engine (rag-ingestion)
+# RAG Ingestion + Q/A Orchestrator
 
 Motor de servicio de CISRE para ingesta cognitiva y retrieval estructurado con trazabilidad.
 
 Disenado para operar como backend API-first en escenarios donde el naive RAG falla con tablas, figuras y dependencias entre documentos.
+
+## Componentes principales
+
+- `RAG backend`: ingestion, persistencia, retrieval hibrido y worker.
+- `Q/A Orchestrator` (`app/qa_orchestrator`): capa de bibliotecario para planificar consulta, generar respuesta y validar evidencia.
+- Contrato entre capas: `docs/qa-orchestrator-rag-boundary-contract.md`.
 
 ## Filosofia operativa
 
@@ -77,6 +83,7 @@ Base URL local: `http://localhost:8000/api/v1`
 ## Estructura del modulo
 
 - `app/`: codigo productivo (API, dominio, infraestructura y workflows).
+- `app/qa_orchestrator/`: orquestador de preguntas/respuestas (antes `app/mas_simple`).
 - `tests/unit/`: pruebas unitarias.
 - `tests/integration/`: pruebas de integracion del servicio.
 - `tests/stress/`: pruebas de carga/robustez.
@@ -92,6 +99,7 @@ Base URL local: `http://localhost:8000/api/v1`
 - Configuracion: `docs/configuration.md`
 - Testing: `docs/testing.md`
 - Runbooks: `docs/runbooks/common-incidents.md`
+- Migration note (rename): `docs/migration-note-qa-orchestrator-rename.md`
 
 ## Dependency management
 

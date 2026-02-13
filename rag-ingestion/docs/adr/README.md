@@ -20,7 +20,7 @@ This folder tracks architecture decisions that evolve from the `s.txt` research 
   - PR scope: provider defaults, deprecation policy, compatibility checks
 
 - `ADR-0003` -> retrieval query strategy
-  - Files: `app/services/retrieval/engine.py`, `app/application/services/tricameral_orchestrator.py`, SQL RPCs in migrations
+  - Files: `app/services/retrieval/engine.py`, `app/application/services/retrieval_router.py`, SQL RPCs in migrations
   - PR scope: hybrid ranking consistency and threshold tuning
 
 - `ADR-0004` -> context budget controls for tables

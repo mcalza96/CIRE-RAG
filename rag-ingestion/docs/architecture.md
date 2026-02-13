@@ -52,6 +52,16 @@
 - Repositorios Supabase en `app/infrastructure/repositories`.
 - Migraciones SQL en `app/infrastructure/migrations` y `app/infrastructure/database/migrations`.
 
+## Coexistencia Q/A Orchestrator y RAG
+
+`app/qa_orchestrator` coexiste como capa de orquestacion de Q/A (bibliotecario),
+mientras RAG mantiene el conocimiento y retrieval (biblioteca).
+
+Nota de migracion de naming: el modulo historico `app/mas_simple` fue renombrado a
+`app/qa_orchestrator` para evitar confusion con "MAS" (Multi-Agent Systems).
+
+Contrato de frontera: `docs/qa-orchestrator-rag-boundary-contract.md`.
+
 ## Observabilidad
 
 - Logs estructurados con `structlog`.

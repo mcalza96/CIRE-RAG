@@ -9,6 +9,7 @@ from app.core.settings import settings
 logger = structlog.get_logger("forensic")
 
 class ForensicLevel:
+    OFF = "OFF"
     FULL = "FULL"
     METADATA_ONLY = "METADATA_ONLY"
 
@@ -25,6 +26,9 @@ class ForensicRecorder:
         """
         Logs what the RAG retrieved before sending to the LLM.
         """
+        if cls.LEVEL == ForensicLevel.OFF:
+            return
+
         data = {
             "query": query,
             "results_count": len(results),
@@ -56,6 +60,9 @@ class ForensicRecorder:
         """
         Logs the final prompt (context + mandates) and the model's raw output.
         """
+        if cls.LEVEL == ForensicLevel.OFF:
+            return
+
         # Prompt can be a string (DSPy) or List[Dict] (OpenAI/LangChain)
         prompt_str = str(prompt)
         

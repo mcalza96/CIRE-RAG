@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from app.mas_simple.domain.models import QueryIntent, RetrievalPlan
+from app.qa_orchestrator.domain.models import QueryIntent, RetrievalPlan
 
 
 LITERAL_LIST_HINTS = (
@@ -34,16 +34,46 @@ SCOPE_HINTS: dict[str, tuple[str, ...]] = {
     "ISO 45001": ("seguridad", "salud", "sst", "riesgo laboral", "trabajador"),
 }
 
+CONFLICT_MARKERS = (
+    "conflicto",
+    "represalia",
+    "confidencial",
+    "denuncia",
+    "anonim",
+    "proteccion de datos",
+    "protección de datos",
+    "rrhh",
+    "se niega",
+)
+
+EVIDENCE_MARKERS = (
+    "evidencia",
+    "trazabilidad",
+    "verificar",
+    "registros",
+    "informacion documentada",
+    "información documentada",
+)
+
 
 def extract_requested_standards(query: str) -> tuple[str, ...]:
     seen: set[str] = set()
     ordered: list[str] = []
-    for match in re.findall(r"\biso\s*[-:]?\s*(\d{4,5})\b", (query or ""), flags=re.IGNORECASE):
+    text = query or ""
+    for match in re.findall(r"\biso\s*[-:]?\s*(\d{4,5})\b", text, flags=re.IGNORECASE):
         value = f"ISO {match}"
         if value in seen:
             continue
         seen.add(value)
         ordered.append(value)
+
+    for match in re.findall(r"\b(9001|14001|45001)\b", text):
+        value = f"ISO {match}"
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+
     return tuple(ordered)
 
 
@@ -64,6 +94,24 @@ def suggest_scope_candidates(query: str) -> tuple[str, ...]:
         return tuple(ordered)
 
     return ("ISO 9001", "ISO 14001", "ISO 45001")
+
+
+def detect_scope_candidates(query: str) -> tuple[str, ...]:
+    requested = list(extract_requested_standards(query))
+    text = (query or "").strip().lower()
+    for standard, hints in SCOPE_HINTS.items():
+        if standard in requested:
+            continue
+        if any(h in text for h in hints):
+            requested.append(standard)
+    return tuple(requested)
+
+
+def detect_conflict_objectives(query: str) -> bool:
+    text = (query or "").strip().lower()
+    has_conflict = any(marker in text for marker in CONFLICT_MARKERS)
+    has_evidence = any(marker in text for marker in EVIDENCE_MARKERS)
+    return has_conflict and has_evidence
 
 
 def classify_intent(query: str) -> QueryIntent:

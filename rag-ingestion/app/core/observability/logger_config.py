@@ -3,6 +3,7 @@ import structlog
 from structlog.contextvars import bind_contextvars, merge_contextvars
 from app.core.observability.context_vars import get_tenant_id, get_user_id, bind_context
 from app.core.observability.correlation import get_correlation_id, CorrelationLogFilter
+from app.core.settings import settings
 
 
 # bind_context is now imported from context_vars
@@ -49,9 +50,12 @@ def configure_structlog():
     )
     handler.setFormatter(standard_formatter)
     
+    resolved_level = str(settings.LOG_LEVEL or "INFO").upper()
+    log_level = getattr(logging, resolved_level, logging.INFO)
+
     logging.basicConfig(
         format="%(message)s",
-        level=logging.INFO,
+        level=log_level,
         handlers=[handler]
     )
 

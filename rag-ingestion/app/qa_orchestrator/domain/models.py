@@ -42,3 +42,9 @@ class AnswerDraft:
 class ValidationResult:
     accepted: bool
     issues: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ClarificationRequest:
+    question: str
+    options: tuple[str, ...] = ()

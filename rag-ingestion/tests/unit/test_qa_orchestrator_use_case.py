@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 import asyncio
 
-from app.mas_simple.application import HandleQuestionCommand, HandleQuestionUseCase
-from app.mas_simple.domain.models import AnswerDraft, EvidenceItem, RetrievalPlan, ValidationResult
+from app.qa_orchestrator.application import HandleQuestionCommand, HandleQuestionUseCase
+from app.qa_orchestrator.domain.models import AnswerDraft, EvidenceItem, RetrievalPlan, ValidationResult
 
 
 @dataclass
@@ -99,3 +99,53 @@ def test_use_case_requests_scope_disambiguation_for_ambiguous_clause():
 
     assert result.intent.mode == "ambigua_scope"
     assert "indica la norma objetivo" in result.answer.text.lower()
+
+
+def test_use_case_requests_clarification_for_multi_scope_explanatory_query():
+    use_case = HandleQuestionUseCase(
+        retriever=_FakeRetriever(),
+        answer_generator=_FakeAnswerGenerator(),
+        validator=_FakeValidator(),
+    )
+
+    result = asyncio.run(
+        use_case.execute(
+            HandleQuestionCommand(
+                query=(
+                    "Durante una auditoría remota, un incidente afecta emisiones y alertas de seguridad. "
+                    "Evalúa el impacto documental en ISO 9001."
+                ),
+                tenant_id="tenant-1",
+                collection_id="collection-uuid",
+                scope_label="tenant=tenant-1 / coleccion=iso",
+            )
+        )
+    )
+
+    assert result.clarification is not None
+    assert "múltiples normas" in result.clarification.question.lower()
+
+
+def test_use_case_requests_clarification_for_conflict_mode():
+    use_case = HandleQuestionUseCase(
+        retriever=_FakeRetriever(),
+        answer_generator=_FakeAnswerGenerator(),
+        validator=_FakeValidator(),
+    )
+
+    result = asyncio.run(
+        use_case.execute(
+            HandleQuestionCommand(
+                query=(
+                    "Hay conflicto entre confidencialidad de denuncia anónima y trazabilidad de evidencia "
+                    "en ISO 9001, 14001 y 45001."
+                ),
+                tenant_id="tenant-1",
+                collection_id="collection-uuid",
+                scope_label="tenant=tenant-1 / coleccion=iso",
+            )
+        )
+    )
+
+    assert result.clarification is not None
+    assert "conflicto" in result.clarification.question.lower()

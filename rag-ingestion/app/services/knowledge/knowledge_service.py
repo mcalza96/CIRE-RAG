@@ -6,7 +6,7 @@ import structlog
 from app.core.retrieval_config import retrieval_settings
 from app.core.settings import settings
 from app.core.observability.scope_metrics import scope_metrics_store
-from app.application.services.tricameral_orchestrator import TricameralOrchestrator
+from app.application.services.retrieval_router import RetrievalRouter
 from app.domain.knowledge_schemas import RetrievalIntent, AgentRole, TaskType
 
 logger = structlog.get_logger(__name__)
@@ -14,7 +14,7 @@ logger = structlog.get_logger(__name__)
 class KnowledgeService:
     """
     Application Service for Basic Knowledge Retrieval.
-    Refactored to remove tricameral logic (moved to audit-engine).
+    Uses retrieval router when enabled.
     """
 
     async def get_grounded_context(
@@ -28,7 +28,7 @@ class KnowledgeService:
         """
         retrieval_request_id = str(uuid4())
         start = time.perf_counter()
-        selected_mode = "tricameral" if self._use_tricameral() else "vector_only"
+        selected_mode = "retrieval_router" if self._use_retrieval_router() else "vector_only"
         scope_metrics_store.record_request(institution_id)
         scope_resolution = self._resolve_scope(query)
         logger.info(
@@ -73,8 +73,8 @@ class KnowledgeService:
         from app.infrastructure.container import CognitiveContainer
         container = CognitiveContainer.get_instance()
 
-        if self._use_tricameral():
-            result = await self._get_context_tricameral(
+        if self._use_retrieval_router():
+            result = await self._get_context_retrieval_router(
                 query,
                 institution_id,
                 k,
@@ -105,10 +105,10 @@ class KnowledgeService:
         return result
 
     @staticmethod
-    def _use_tricameral() -> bool:
+    def _use_retrieval_router() -> bool:
         return settings.USE_TRICAMERAL
 
-    async def _get_context_tricameral(
+    async def _get_context_retrieval_router(
         self,
         query: str,
         institution_id: str,
@@ -119,7 +119,7 @@ class KnowledgeService:
     ) -> Dict[str, Any]:
         from app.core.middleware.security import LeakCanary
 
-        orchestrator = TricameralOrchestrator(
+        orchestrator = RetrievalRouter(
             vector_tools=container.retrieval_tools,
         )
 
@@ -155,7 +155,7 @@ class KnowledgeService:
         try:
             LeakCanary.verify_isolation(institution_id, results)
         except Exception as e:
-            logger.error("Security isolation breach detected (tricameral)", error=str(e), institution_id=institution_id)
+            logger.error("Security isolation breach detected (retrieval_router)", error=str(e), institution_id=institution_id)
             return {"context_chunks": [], "context_map": {}, "citations": [], "mode": output.get("mode")}
 
         context_chunks = [r.get("content", "") for r in results if r.get("content")]

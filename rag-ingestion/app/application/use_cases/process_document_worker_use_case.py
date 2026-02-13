@@ -1,16 +1,12 @@
-import os
-import logging
 from typing import Dict, Any, Optional
 
 from app.domain.repositories.source_repository import ISourceRepository
 from app.domain.repositories.content_repository import IContentRepository
-from app.application.services.chunk_persistence_service import ChunkPersistenceService
+from app.application.services.post_ingestion_pipeline_service import PostIngestionPipelineService
 from app.workflows.ingestion.dispatcher import IngestionDispatcher
-from app.schemas.ingestion import IngestionMetadata
 from app.domain.types.ingestion_status import IngestionStatus
 from app.domain.policies.ingestion_policy import IngestionPolicy
 from app.domain.interfaces.taxonomy_manager_interface import ITaxonomyManager
-from app.domain.models.ingestion_source import IngestionSource
 from app.infrastructure.adapters.supabase_metadata_adapter import SupabaseMetadataAdapter
 from app.infrastructure.services.storage_service import StorageService
 from app.core.observability.correlation import set_correlation_id
@@ -19,9 +15,7 @@ import structlog
 from app.core.observability.logger_config import bind_context
 from app.infrastructure.repositories.supabase_raptor_repository import SupabaseRaptorRepository
 from app.application.services.document_download_service import DocumentDownloadService
-from app.application.services.graph_enrichment_service import GraphEnrichmentService
 from app.application.services.ingestion_state_manager import IngestionStateManager
-from app.application.services.raptor_enrichment_service import RaptorEnrichmentService
 from app.application.services.visual_anchor_service import VisualAnchorService
 from app.services.ingestion.visual_parser import VisualDocumentParser
 from app.services.ingestion.integrator import VisualGraphIntegrator
@@ -44,11 +38,9 @@ class ProcessDocumentWorkerUseCase:
         metadata_adapter: SupabaseMetadataAdapter,
         policy: IngestionPolicy,
         resolver: Optional[IngestionContextResolver] = None,
-        # NEW: Inject RAPTOR Processor
         raptor_processor: Optional[Any] = None,
         visual_parser: Optional[VisualDocumentParser] = None,
         visual_integrator: Optional[VisualGraphIntegrator] = None,
-        # INJECTED SERVICES
         download_service: Optional[DocumentDownloadService] = None,
         state_manager: Optional[IngestionStateManager] = None,
         raptor_repo: Optional[SupabaseRaptorRepository] = None,
@@ -64,26 +56,13 @@ class ProcessDocumentWorkerUseCase:
         self.raptor_processor = raptor_processor
         self.visual_parser = visual_parser or VisualDocumentParser()
         self.visual_integrator = visual_integrator or VisualGraphIntegrator()
-        
-        # Initialize or use injected services
+
         self.download_service = download_service or DocumentDownloadService(storage_service, repository)
         self.state_manager = state_manager or IngestionStateManager(repository)
+
         resolved_raptor_repo = raptor_repo or SupabaseRaptorRepository()
-        self.visual_anchor_service = VisualAnchorService(
-            state_manager=self.state_manager,
-            visual_parser=self.visual_parser,
-            visual_integrator=self.visual_integrator,
-        )
-        self.raptor_enrichment_service = RaptorEnrichmentService(
-            state_manager=self.state_manager,
-            raptor_processor=self.raptor_processor,
-            raptor_repo=resolved_raptor_repo,
-        )
-        self.graph_enrichment_service = GraphEnrichmentService(state_manager=self.state_manager)
-        self.chunk_persistence_service = ChunkPersistenceService(
-            content_repo=self.content_repo,
-            state_manager=self.state_manager,
-        )
+        self.visual_anchor_service = self._build_visual_anchor_service()
+        self.post_ingestion_service = self._build_post_ingestion_service(resolved_raptor_repo)
 
     async def execute(self, record: Dict[str, Any]):
         # 0. Context Recovery & Observability
@@ -99,7 +78,7 @@ class ProcessDocumentWorkerUseCase:
 
         # 1. Domain Policy Guard
         current_status = record.get('status')
-        meta = record.get('metadata', {}) or {}
+        meta: Dict[str, Any] = record.get('metadata', {}) or {}
         if not self.policy.should_process(str(current_status or ""), str(meta.get('status') or ""), metadata=meta):
             logger.debug(f"[UseCase] Document {doc_id} ignored by policy.")
             return
@@ -169,7 +148,7 @@ class ProcessDocumentWorkerUseCase:
                 # 7. Persistence Phase
                 persisted_count = 0
                 if result.chunks:
-                    persisted_count = await self.chunk_persistence_service.persist_chunks(
+                    persisted_count = await self.post_ingestion_service.persist_chunks(
                         doc_id=doc_id,
                         tenant_id=tenant_id,
                         chunks=result.chunks,
@@ -177,7 +156,7 @@ class ProcessDocumentWorkerUseCase:
                     )
 
                     # 8. Visual Anchor stitching (strict for visual pages)
-                    visual_stats = await self.visual_anchor_service.run_if_needed(
+                    visual_stats = await self._run_visual_anchor_if_needed(
                         doc_id=doc_id,
                         tenant_id=tenant_id,
                         result=result,
@@ -194,7 +173,7 @@ class ProcessDocumentWorkerUseCase:
                         }
 
                     # 9. RAPTOR Processing (Optional)
-                    await self.raptor_enrichment_service.run_if_needed(
+                    await self.post_ingestion_service.run_raptor_if_needed(
                         doc_id=doc_id,
                         tenant_id=tenant_id,
                         result=result,
@@ -202,13 +181,17 @@ class ProcessDocumentWorkerUseCase:
                     )
 
                     # 10. Graph Enrichment (Optional)
-                    await self.graph_enrichment_service.run_if_needed(doc_id=doc_id, tenant_id=tenant_id, result=result)
+                    await self.post_ingestion_service.run_graph_if_needed(
+                        doc_id=doc_id,
+                        tenant_id=tenant_id,
+                        result=result,
+                    )
 
                 # 11. Success Handler
                 await self.state_manager.handle_success(doc_id, persisted_count, current_meta, tenant_id)
 
             finally:
-                await self.chunk_persistence_service.cleanup_source(source)
+                await self.post_ingestion_service.cleanup_source(source)
 
         except Exception as e:
             # 11. Atomic Error Handling
@@ -228,3 +211,23 @@ class ProcessDocumentWorkerUseCase:
             return str(nested.get("collection_id"))
 
         return None
+
+    def _build_visual_anchor_service(self) -> VisualAnchorService:
+        return VisualAnchorService(
+            state_manager=self.state_manager,
+            visual_parser=self.visual_parser,
+            visual_integrator=self.visual_integrator,
+        )
+
+    def _build_post_ingestion_service(self, raptor_repo: SupabaseRaptorRepository) -> PostIngestionPipelineService:
+        return PostIngestionPipelineService(
+            content_repo=self.content_repo,
+            state_manager=self.state_manager,
+            raptor_processor=self.raptor_processor,
+            raptor_repo=raptor_repo,
+        )
+
+    async def _run_visual_anchor_if_needed(self, doc_id: str, tenant_id: Optional[str], result: Any) -> Dict[str, Any]:
+        self.visual_anchor_service.visual_parser = self.visual_parser
+        self.visual_anchor_service.visual_integrator = self.visual_integrator
+        return await self.visual_anchor_service.run_if_needed(doc_id=doc_id, tenant_id=tenant_id, result=result)

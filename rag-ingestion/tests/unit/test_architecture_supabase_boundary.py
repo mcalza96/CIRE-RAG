@@ -6,8 +6,7 @@ APP_ROOT = Path(__file__).resolve().parents[2] / "app" / "application"
 # Sprint 1 baseline: these files still use direct Supabase client access and
 # are scheduled for migration in follow-up slices.
 ALLOWED_DIRECT_SUPABASE_FILES = {
-    "services/graph_enrichment_service.py",
-    "services/tricameral_orchestrator.py",
+    "services/retrieval_router.py",
     "services/visual_anchor_service.py",
 }
 

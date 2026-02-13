@@ -11,10 +11,15 @@ PATTERNS = {
     "example_id": re.compile(r"(?:Ejemplo)\s+(\d+(?:\.\d+)?)", re.IGNORECASE),
     "section_id": re.compile(r"(?:Sección)\s+(\d+(?:\.\d+)?)", re.IGNORECASE),
     "figure_id": re.compile(r"(?:Figura|Imagen|Gráfico)\s+(\d+(?:\.\d+)?)", re.IGNORECASE),
+    "clause_id": re.compile(r"\b(?:cl[aá]usula\s*)?(\d+(?:\.\d+)+)\b", re.IGNORECASE),
 }
 
 ISO_PATTERN = re.compile(r"\bISO\s*[-:]?\s*(\d{4,5})(?::\s*\d{4})?\b", re.IGNORECASE)
 CLAUSE_PATTERN = re.compile(r"\b\d+(?:\.\d+)+\b")
+CLAUSE_TITLE_PATTERN = re.compile(
+    r"(?:^|\n)\s*(\d+(?:\.\d+)+)\s*[\)\.:\-]?\s*([^\n]{4,140})",
+    re.IGNORECASE,
+)
 
 
 def enrich_metadata(text: str, current_metadata: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
@@ -38,6 +43,11 @@ def enrich_metadata(text: str, current_metadata: Dict[str, Any]) -> Tuple[str, D
     clause_refs = list(dict.fromkeys(CLAUSE_PATTERN.findall(text)))
     if clause_refs:
         updates["clause_refs"] = clause_refs[:20]
+
+    clause_title_match = CLAUSE_TITLE_PATTERN.search(text)
+    if clause_title_match:
+        updates["clause_anchor"] = clause_title_match.group(1)
+        updates["clause_title"] = clause_title_match.group(2).strip()
 
     new_metadata = current_metadata.copy()
     new_metadata.update(updates)

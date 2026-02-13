@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     API_PORT: int = 8000
     LOG_LEVEL: str = "INFO"
     ENVIRONMENT: str = "development"
-    FORENSIC_LOGGING_LEVEL: str = "FULL"
+    FORENSIC_LOGGING_LEVEL: str = "METADATA_ONLY"
 
     # Worker / Throughput controls
     WORKER_CONCURRENCY: int = 3
@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     ATOMIC_RRF_FTS_WEIGHT: float = 0.3
     ATOMIC_RRF_K: int = 60
     ATOMIC_MAX_SOURCE_IDS: int = 5000
+    QA_LITERAL_SEMANTIC_FALLBACK_ENABLED: bool = True
+    QA_LITERAL_SEMANTIC_MIN_KEYWORD_OVERLAP: int = 2
+    QA_LITERAL_SEMANTIC_MIN_SIMILARITY: float = 0.3
 
     # Visual router
     VISUAL_ROUTER_MAX_VISUAL_RATIO: float = 0.35

@@ -32,9 +32,9 @@ class QueryMode(str, Enum):
     HYBRID = "HYBRID"
 
 
-class TricameralOrchestrator:
+class RetrievalRouter:
     """
-    Hybrid GraphRAG orchestrator.
+    Hybrid GraphRAG retrieval router.
 
     Router pattern:
     - SPECIFIC -> Vector + LocalGraph
@@ -346,7 +346,7 @@ class TricameralOrchestrator:
             classify_ms = round((time.perf_counter() - classify_start) * 1000, 2)
 
         logger.info(
-            "tricameral_route_selected",
+            "retrieval_router_route_selected",
             mode=mode.value,
             tenant_id=intent.tenant_id,
             retrieval_request_id=retrieval_request_id,
@@ -398,7 +398,7 @@ class TricameralOrchestrator:
 
         for label, payload in bundle.items():
             if isinstance(payload, Exception):
-                logger.warning("tricameral_source_failed", source=label, error=str(payload))
+                logger.warning("retrieval_router_source_failed", source=label, error=str(payload))
                 continue
 
             if label == "vector" and isinstance(payload, list):
@@ -451,7 +451,7 @@ class TricameralOrchestrator:
             scope_penalized_count = 0
         logger.info(
             "retrieval_pipeline_timing",
-            stage="tricameral_sources",
+            stage="retrieval_router_sources",
             retrieval_request_id=retrieval_request_id,
             tenant_id=intent.tenant_id,
             duration_ms=gather_ms,
@@ -470,7 +470,7 @@ class TricameralOrchestrator:
         if not merged:
             logger.info(
                 "retrieval_pipeline_timing",
-                stage="tricameral_total",
+                stage="retrieval_router_total",
                 retrieval_request_id=retrieval_request_id,
                 tenant_id=intent.tenant_id,
                 duration_ms=round((time.perf_counter() - total_start) * 1000, 2),
@@ -520,7 +520,7 @@ class TricameralOrchestrator:
         total_ms = round((time.perf_counter() - total_start) * 1000, 2)
         logger.info(
             "retrieval_pipeline_timing",
-            stage="tricameral_total",
+            stage="retrieval_router_total",
             retrieval_request_id=retrieval_request_id,
             tenant_id=intent.tenant_id,
             duration_ms=total_ms,

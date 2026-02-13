@@ -54,6 +54,8 @@ flowchart TD
 ```mermaid
 flowchart TD
     U[Clients / Integrations] --> API[FastAPI Service]
+    U --> QA[Q/A Orchestrator]
+    QA --> API
     API --> DB[(Supabase Postgres + pgvector)]
     DB --> RT[Supabase Realtime]
     RT --> W[Async Worker]
@@ -67,6 +69,12 @@ flowchart TD
     O --> RR[Gravity Reranker]
     O --> DB
 ```
+
+## 4) Boundary Note
+
+- `Q/A Orchestrator` (`app/qa_orchestrator`) decide intencion, plan y validacion.
+- RAG backend ejecuta retrieval/persistencia y no depende de prompts del orquestador.
+- Contrato vigente: `docs/qa-orchestrator-rag-boundary-contract.md`.
 
 ## Value in one line
 
