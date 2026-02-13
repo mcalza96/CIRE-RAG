@@ -1,6 +1,8 @@
 import structlog
 import time
 from typing import List, Dict, Any, Optional
+from app.application.services.query_decomposer import QueryDecomposer, QueryPlan
+from app.core.settings import settings
 from app.services.embedding_service import JinaEmbeddingService
 from app.services.knowledge.gravity_reranker import GravityReranker
 from app.services.knowledge.jina_reranker import JinaReranker
@@ -9,6 +11,7 @@ from app.core.observability.forensic import ForensicRecorder
 from app.domain.knowledge_schemas import RAGSearchResult, RetrievalIntent, AgentRole, TaskType
 from app.domain.interfaces.retrieval_interface import IRetrievalRepository
 from app.services.knowledge.retrieval_strategies import DirectRetrievalStrategy, IterativeRetrievalStrategy, IRetrievalStrategy
+from app.services.retrieval.atomic_engine import AtomicRetrievalEngine
 from app.services.retrieval.engine import UnifiedRetrievalEngine
 
 logger = structlog.get_logger(__name__)
@@ -27,6 +30,15 @@ class RetrievalBroker:
         self.direct_strategy = DirectRetrievalStrategy(repository)
         self.iterative_strategy = IterativeRetrievalStrategy(repository)
         self.unified_engine = UnifiedRetrievalEngine()
+        self.atomic_engine = AtomicRetrievalEngine()
+        self.query_decomposer = QueryDecomposer()
+
+    @staticmethod
+    def _engine_mode() -> str:
+        mode = str(settings.RETRIEVAL_ENGINE_MODE or "hybrid").strip().lower()
+        if mode not in {"unified", "atomic", "hybrid"}:
+            return "hybrid"
+        return mode
 
     async def retrieve(
         self, 
@@ -73,19 +85,54 @@ class RetrievalBroker:
                     **strategy_kwargs,
                 )
             else:
+                mode = self._engine_mode()
+                planner_used = bool(settings.QUERY_DECOMPOSER_ENABLED and mode in {"atomic", "hybrid"})
+                if planner_used:
+                    plan = await self.query_decomposer.decompose(query)
+                else:
+                    plan = QueryPlan(is_multihop=False, execution_mode="parallel", sub_queries=[])
+
                 logger.info(
                     "retrieval_strategy_execution",
                     query=query,
-                    strategy="UnifiedRetrievalEngine",
+                    strategy=("AtomicRetrievalEngine" if mode in {"atomic", "hybrid"} else "UnifiedRetrievalEngine"),
                     filters=filter_conditions,
+                    retrieval_engine_mode=mode,
+                    planner_used=planner_used,
+                    planner_multihop=plan.is_multihop,
                 )
-                hydrated = await self.unified_engine.retrieve_context(
-                    query=query,
-                    scope_context=filter_conditions,
-                    k=k,
-                    fetch_k=fetch_k,
-                )
-                raw_results = [item.model_dump() for item in hydrated]
+
+                raw_results = []
+                if mode in {"atomic", "hybrid"}:
+                    try:
+                        if plan.is_multihop:
+                            raw_results = await self.atomic_engine.retrieve_context_from_plan(
+                                query=query,
+                                plan=plan,
+                                scope_context=filter_conditions,
+                                k=k,
+                                fetch_k=fetch_k,
+                            )
+                        else:
+                            raw_results = await self.atomic_engine.retrieve_context(
+                                query=query,
+                                scope_context=filter_conditions,
+                                k=k,
+                                fetch_k=fetch_k,
+                            )
+                    except Exception as atomic_exc:
+                        logger.warning("atomic_engine_failed", error=str(atomic_exc), mode=mode)
+                        if mode == "atomic":
+                            raise atomic_exc
+
+                if not raw_results and mode in {"unified", "hybrid"}:
+                    hydrated = await self.unified_engine.retrieve_context(
+                        query=query,
+                        scope_context=filter_conditions,
+                        k=k,
+                        fetch_k=fetch_k,
+                    )
+                    raw_results = [item.model_dump() for item in hydrated]
 
             if not raw_results:
                 ForensicRecorder.record_retrieval(query, [], {"scope": scope_context.get("type"), "filters": filter_conditions})

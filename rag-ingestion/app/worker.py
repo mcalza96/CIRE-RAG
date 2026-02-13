@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from uuid import UUID
 from datetime import datetime, timedelta, timezone
 
@@ -60,6 +60,10 @@ class IngestionWorker:
         self.worker_per_tenant_concurrency = max(
             1,
             int(getattr(settings, "WORKER_PER_TENANT_CONCURRENCY", 1)),
+        )
+        self.worker_poll_interval_seconds = max(
+            1,
+            int(getattr(settings, "WORKER_POLL_INTERVAL_SECONDS", 2)),
         )
         self._semaphore = asyncio.Semaphore(self.worker_concurrency)
         self._tenant_semaphores: dict[str, asyncio.Semaphore] = {}
@@ -126,27 +130,18 @@ class IngestionWorker:
             self._client = await get_async_supabase_client()
         return self._client
 
-    async def on_postgres_changes(self, payload: Dict[str, Any]):
-        """
-        Callback for Realtime events.
-        """
-        data = payload.get('data', {})
-        record = data.get('record')
-
-        if not record:
-            return
-
+    async def _process_source_record(self, record: Dict[str, Any]) -> bool:
         doc_id = record.get('id')
-        status = record.get('status')
-        meta = record.get('metadata', {})
+        if not doc_id:
+            logger.warning("ingestion_job_without_document_id")
+            return False
         tenant_key = self._resolve_tenant_key(record)
-        # Purified Listener: Just delegate to Use Case
-        # The Use Case decides if it should process based on domain policy
+
         try:
             async with self._active_lock:
                 if doc_id in self._active_doc_ids:
-                    logger.debug(f"[Worker] Document {doc_id} is already being processed. Skipping redundant event.")
-                    return
+                    logger.debug("[Worker] Document %s is already being processed. Skipping redundant event.", doc_id)
+                    return False
                 self._active_doc_ids.add(doc_id)
 
             try:
@@ -166,9 +161,109 @@ class IngestionWorker:
                 async with self._active_lock:
                     if doc_id in self._active_doc_ids:
                         self._active_doc_ids.remove(doc_id)
-                        
+
+            return True
         except Exception as e:
             logger.error(f"Error en Worker para documento {doc_id}: {e}", exc_info=True)
+            return False
+
+    async def _fetch_next_ingestion_job(self) -> Optional[Dict[str, Any]]:
+        client = await self.get_client()
+        response = await client.rpc("fetch_next_job", {"p_job_type": "ingest_document"}).execute()
+        jobs = response.data if isinstance(response.data, list) else []
+        if not jobs:
+            return None
+        first = jobs[0]
+        return first if isinstance(first, dict) else None
+
+    async def _load_source_document(self, source_document_id: str) -> Optional[Dict[str, Any]]:
+        client = await self.get_client()
+        response = (
+            await client.table("source_documents")
+            .select("*")
+            .eq("id", str(source_document_id))
+            .maybe_single()
+            .execute()
+        )
+        row = response.data
+        return row if isinstance(row, dict) else None
+
+    async def _mark_job_final(self, job_id: str, status: str, result: Optional[Dict[str, Any]] = None, error_message: Optional[str] = None) -> None:
+        client = await self.get_client()
+        payload: Dict[str, Any] = {
+            "status": status,
+            "result": result or {},
+        }
+        if error_message:
+            payload["error_message"] = error_message
+        await client.table("job_queue").update(payload).eq("id", str(job_id)).execute()
+
+    async def _run_single_ingestion_job(self, poller_id: int) -> bool:
+        job = await self._fetch_next_ingestion_job()
+        if not job:
+            return False
+
+        job_id = str(job.get("id") or "")
+        payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+        source_document_id = str(payload.get("source_document_id") or "")
+        if not source_document_id:
+            logger.error("ingestion_job_invalid_payload job_id=%s payload=%s", job_id, payload)
+            await self._mark_job_final(
+                job_id=job_id,
+                status="failed",
+                error_message="Missing source_document_id in payload",
+                result={"ok": False, "reason": "invalid_payload", "payload": payload},
+            )
+            return True
+
+        logger.info("poller=%s processing_ingestion_job job_id=%s source_document_id=%s", poller_id, job_id, source_document_id)
+        record = await self._load_source_document(source_document_id=source_document_id)
+        if not record:
+            await self._mark_job_final(
+                job_id=job_id,
+                status="failed",
+                error_message=f"source_document_not_found:{source_document_id}",
+                result={"ok": False, "reason": "source_document_not_found", "source_document_id": source_document_id},
+            )
+            return True
+
+        processed = await self._process_source_record(record)
+        status = str(record.get("status") or "").lower()
+        if processed:
+            await self._mark_job_final(
+                job_id=job_id,
+                status="completed",
+                result={
+                    "ok": True,
+                    "source_document_id": source_document_id,
+                    "final_status": status,
+                },
+            )
+            return True
+
+        await self._mark_job_final(
+            job_id=job_id,
+            status="failed",
+            error_message=f"ingestion_processing_failed:{source_document_id}",
+            result={
+                "ok": False,
+                "reason": "processing_failed",
+                "source_document_id": source_document_id,
+                "final_status": status,
+            },
+        )
+        return True
+
+    async def _poller_loop(self, poller_id: int) -> None:
+        logger.info("Ingestion poller started id=%s", poller_id)
+        while self.is_running:
+            try:
+                processed = await self._run_single_ingestion_job(poller_id=poller_id)
+                if not processed:
+                    await asyncio.sleep(self.worker_poll_interval_seconds)
+            except Exception as exc:
+                logger.error("poller=%s ingestion_loop_error=%s", poller_id, exc, exc_info=True)
+                await asyncio.sleep(self.worker_poll_interval_seconds)
 
     async def _get_tenant_semaphore(self, tenant_key: str) -> asyncio.Semaphore:
         async with self._tenant_semaphores_lock:
@@ -295,59 +390,39 @@ class IngestionWorker:
             )
 
     async def start(self):
-        client = await self.get_client()
-        logger.info(f"Starting RAG Ingestion Worker... listening on {settings.SUPABASE_URL}")
+        await self.get_client()
+        logger.info("Starting RAG Ingestion Worker with pull model")
         logger.info(f"Worker concurrency configured: {self.worker_concurrency}")
         logger.info(f"Worker per-tenant concurrency: {self.worker_per_tenant_concurrency}")
+        logger.info("Worker poll interval: %ss", self.worker_poll_interval_seconds)
         logger.info(
             "Worker tenant alert settings: depth>=%s wait>=%ss sample_limit=%s",
             self.worker_tenant_queue_depth_alert,
             self.worker_tenant_queue_wait_alert_seconds,
             self.worker_tenant_queue_sample_limit,
         )
-        
-        loop = asyncio.get_running_loop()
 
-        def sync_callback(payload):
-            # Phoenix client calls this synchronously
-            asyncio.run_coroutine_threadsafe(self.on_postgres_changes(payload), loop)
+        scheduler_task: Optional[asyncio.Task] = None
 
-        channel = client.channel('rag-worker-v2')
-        
-        # Listener 1: New documents (INSERT)
-        channel.on_postgres_changes(
-            event='INSERT',
-            schema='public',
-            table='source_documents',
-            callback=sync_callback
-        )
-        
-        # Listener 2: Retry events (UPDATE to 'queued' status)
-        def retry_callback(payload):
-            """Only process UPDATE if status changed to 'queued' (retry scenario)."""
-            data = payload.get('data', {})
-            record = data.get('record', {})
-            status = record.get('status')
-            
-            if status == 'queued':
-                logger.info(f"[Worker] Retry detected for document {record.get('id')}")
-                asyncio.run_coroutine_threadsafe(self.on_postgres_changes(payload), loop)
-        
-        channel.on_postgres_changes(
-            event='UPDATE',
-            schema='public',
-            table='source_documents',
-            callback=retry_callback
-        )
-        
-        await channel.subscribe()
+        async def scheduler_loop() -> None:
+            while self.is_running:
+                if self.community_rebuild_enabled:
+                    await self._tick_community_rebuild_scheduler()
+                await asyncio.sleep(1)
 
-        logger.info("Worker successfully subscribed to source_documents (INSERT + UPDATE/retry) events.")
-        
-        while self.is_running:
-            if self.community_rebuild_enabled:
-                await self._tick_community_rebuild_scheduler()
-            await asyncio.sleep(1)
+        scheduler_task = asyncio.create_task(scheduler_loop())
+        poller_tasks = [
+            asyncio.create_task(self._poller_loop(poller_id=i + 1))
+            for i in range(self.worker_concurrency)
+        ]
+
+        try:
+            await asyncio.gather(*poller_tasks, scheduler_task)
+        finally:
+            for task in poller_tasks:
+                task.cancel()
+            if scheduler_task:
+                scheduler_task.cancel()
 
     async def _resolve_tenant_ids_for_rebuild(self) -> list[str]:
         if self.community_rebuild_tenants:

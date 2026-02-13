@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     # Worker / Throughput controls
     WORKER_CONCURRENCY: int = 3
     WORKER_PER_TENANT_CONCURRENCY: int = 1
+    WORKER_POLL_INTERVAL_SECONDS: int = 2
     EMBEDDING_CONCURRENCY: int = 5
     WORKER_TENANT_QUEUE_SAMPLE_LIMIT: int = 1000
     WORKER_TENANT_QUEUE_DEPTH_ALERT: int = 200
@@ -82,6 +83,14 @@ class Settings(BaseSettings):
     DAILY_VLM_LIMIT: Optional[int] = None
     QUERY_DECOMPOSER_ENABLED: bool = True
     QUERY_DECOMPOSER_TIMEOUT_MS: int = 800
+    RETRIEVAL_ENGINE_MODE: str = "atomic"  # unified | atomic | hybrid
+    ATOMIC_ENABLE_FTS: bool = True
+    ATOMIC_ENABLE_GRAPH_HOP: bool = True
+    ATOMIC_MATCH_THRESHOLD: float = 0.25
+    ATOMIC_RRF_VECTOR_WEIGHT: float = 0.7
+    ATOMIC_RRF_FTS_WEIGHT: float = 0.3
+    ATOMIC_RRF_K: int = 60
+    ATOMIC_MAX_SOURCE_IDS: int = 5000
 
     # Visual router
     VISUAL_ROUTER_MAX_VISUAL_RATIO: float = 0.35
