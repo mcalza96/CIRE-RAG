@@ -17,8 +17,6 @@ from app.domain.raptor_schemas import (
     SummaryNode, 
     RaptorTreeResult
 )
-from app.domain.interfaces.clustering import IClusteringService
-from app.domain.interfaces.summarization import ISummarizationService
 from app.domain.repositories.raptor_repository import IRaptorRepository
 from app.services.knowledge.clustering_service import GMMClusteringService
 from app.services.knowledge.summarization_service import SummarizationAgent
@@ -48,8 +46,8 @@ class RaptorProcessor:
         self,
         repository: IRaptorRepository,
         embedding_service: Optional[JinaEmbeddingService] = None,
-        clustering_service: Optional[IClusteringService] = None,
-        summarization_service: Optional[ISummarizationService] = None,
+        clustering_service: Optional[GMMClusteringService] = None,
+        summarization_service: Optional[SummarizationAgent] = None,
         max_depth: int = 3
     ):
         self.repository = repository

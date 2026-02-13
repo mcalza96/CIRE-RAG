@@ -6,7 +6,7 @@ from app.application.services.post_ingestion_pipeline_service import PostIngesti
 from app.workflows.ingestion.dispatcher import IngestionDispatcher
 from app.domain.types.ingestion_status import IngestionStatus
 from app.domain.policies.ingestion_policy import IngestionPolicy
-from app.domain.interfaces.taxonomy_manager_interface import ITaxonomyManager
+from app.services.database.taxonomy_manager import TaxonomyManager
 from app.infrastructure.adapters.supabase_metadata_adapter import SupabaseMetadataAdapter
 from app.infrastructure.services.storage_service import StorageService
 from app.core.observability.correlation import set_correlation_id
@@ -26,7 +26,7 @@ class ProcessDocumentWorkerUseCase:
     """
     Orchestrates the document ingestion workflow.
     Refactored to enforce SRP, Atomic State correctness, and Retry awareness.
-    Adheres to DIP by injecting all infrastructure dependencies.
+    Uses explicit dependencies to keep orchestration testable and simple.
     """
     def __init__(
         self, 
@@ -34,7 +34,7 @@ class ProcessDocumentWorkerUseCase:
         content_repo: IContentRepository,
         storage_service: StorageService,
         dispatcher: IngestionDispatcher,
-        taxonomy_manager: ITaxonomyManager,
+        taxonomy_manager: TaxonomyManager,
         metadata_adapter: SupabaseMetadataAdapter,
         policy: IngestionPolicy,
         resolver: Optional[IngestionContextResolver] = None,

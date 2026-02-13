@@ -7,39 +7,37 @@ Quick visual overview for GitHub readers.
 ```mermaid
 flowchart LR
     subgraph Ingestion
-      A[PDF/Docs Input] --> B[Parser: text + visual assets]
-      B --> C[Chunking: late + contextual fallback]
-      C --> D[Embeddings: Jina v3]
+      A[PDF/Docs Input] --> B[Structure Router: Text vs Visual]
+      B --> C[PdfParser: Markdown + Table JSON]
+      C --> D[Late Chunking: Jina v3]
       D --> E[(Supabase: chunks, visual nodes, graph)]
     end
 
     subgraph Retrieval
-      Q[User Query] --> R[Tricameral Router]
-      R --> V[Vector Search]
-      R --> G[GraphRAG Local/Global]
-      R --> H[RAPTOR Summaries]
+      Q[User Query] --> QP[Query Decomposer]
+      QP --> AE[Atomic Retrieval Engine]
+      AE --> V[Vector + FTS Fusion]
+      AE --> G[Multi-hop Graph Nav]
       V --> X[Gravity Reranking]
       G --> X
-      H --> X
       X --> Y[Grounded Context]
       Y --> Z[Answer]
     end
 
     E --> V
     E --> G
-    E --> H
 ```
 
 ## 2) Ingestion Topology (Visual Anchor Pattern)
 
 ```mermaid
 flowchart TD
-    In[Document PDF] --> P{Deep Parser}
-    P -->|Text| C[Contextual Chunking]
-    P -->|Images| V[Visual Anchor Task]
+    In[Document PDF] --> Router{Structure Router}
+    Router -->|Text| P[PdfParser: Markdown]
+    Router -->|Complex| V[Visual Anchor Task]
     
-    C --> J[Jina v3 Embedding]
-    V --> VLM[Gemini 2.5 Flash Lite + Fallback Flash]
+    P --> J[Jina v3 Embedding]
+    V --> VLM[Gemini 2.5 Flash Lite]
     
     VLM --> S[Structured JSON]
     VLM --> CR[Image Crop]
@@ -53,29 +51,26 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    U[Clients / Integrations] --> API[FastAPI Service]
-    U --> QA[Q/A Orchestrator]
-    QA --> API
-    API --> DB[(Supabase Postgres + pgvector)]
-    DB --> RT[Supabase Realtime]
-    RT --> W[Async Worker]
+    U[Clients / Integrations] --> QAO[Q/A Orchestrator]
+    QAO --> AE[Atomic Retrieval Engine]
+    AE --> DB[(Supabase Postgres + pgvector)]
+    DB --> JQ[(job_queue)]
+    JQ --> W[Async Worker (pull)]
     W --> DB
 
-    API --> K[Knowledge API]
-    API --> I[Ingestion API]
-    API --> C[Curriculum API]
+    QAO --> K[Knowledge API]
+    QAO --> I[Ingestion API]
 
-    K --> O[Tricameral Orchestrator]
-    O --> RR[Gravity Reranker]
-    O --> DB
+    AE --> QP[Query Decomposer]
+    AE --> RR[Gravity Reranker]
 ```
 
 ## 4) Boundary Note
 
 - `Q/A Orchestrator` (`app/qa_orchestrator`) decide intencion, plan y validacion.
-- RAG backend ejecuta retrieval/persistencia y no depende de prompts del orquestador.
+- RAG backend (`AtomicRetrievalEngine`) ejecuta retrieval atómico sobre múltiples capas (Vector, FTS, Graph).
 - Contrato vigente: `docs/qa-orchestrator-rag-boundary-contract.md`.
 
 ## Value in one line
 
-Multimodal ingestion + hybrid retrieval + authority-aware ranking, delivered as an API-first open-source RAG backend.
+Multimodal ingestion + multi-hop atomic retrieval + authority-aware ranking, delivered as an API-first open-source RAG backend.

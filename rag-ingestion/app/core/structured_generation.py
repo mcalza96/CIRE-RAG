@@ -16,7 +16,6 @@ from typing import TypeVar, Type, Optional, Any, Union, Dict
 from pydantic import BaseModel, RootModel
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from app.domain.interfaces.llm import IStructuredEngine
 from app.infrastructure.ai.instructor_factory import create_async_instructor_client, create_instructor_client
 
 logger = logging.getLogger(__name__)
@@ -32,7 +31,7 @@ T = TypeVar('T', bound=BaseModel)
 # STRICT ENGINE
 # =============================================================================
 
-class StrictEngine(IStructuredEngine):
+class StrictEngine:
     """
     Structured generation engine with constrained decoding.
     
@@ -48,7 +47,7 @@ class StrictEngine(IStructuredEngine):
         model: Optional[str] = None,
     ):
         """
-        Initialize the StrictEngine using Dependency Injection.
+        Initialize StrictEngine with optional injected client/model.
         """
         self.max_retries = max_retries
         self.temperature = temperature

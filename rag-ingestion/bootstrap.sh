@@ -20,6 +20,6 @@ if [ ! -d "venv" ]; then
 fi
 
 source venv/bin/activate
-python -m pip install -r requirements.txt
+./venv/bin/python -m pip install -r requirements.txt
 
 echo "✅ rag-ingestion ready"

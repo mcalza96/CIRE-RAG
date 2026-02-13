@@ -34,7 +34,8 @@ Domain agnostic. Designed for contexts where precision is critical (legal, finan
 - Tricameral routing (`SPECIFIC | GENERAL | HYBRID`) for retrieval strategy.
 - RAPTOR-style hierarchical summaries for broad and exploratory queries.
 - GraphRAG local/global retrieval plus authority-based reranking.
-- Async worker integrated with Supabase Realtime events.
+- Async worker with pull model over Supabase `job_queue` (`fetch_next_job`).
+- Human-in-the-loop response gating: asks for scope clarification before answering when query intent is ambiguous or conflicting.
 
 ### Principles
 
@@ -75,7 +76,8 @@ Agnóstico al dominio. Diseñado para contextos donde la precisión es crítica 
 - Enrutamiento tricameral (`ESPECÍFICO | GENERAL | HÍBRIDO`) para la estrategia de recuperación.
 - Resúmenes jerárquicos estilo RAPTOR para consultas amplias y exploratorias.
 - Recuperación local/global mediante GraphRAG más reranking basado en autoridad.
-- Worker asíncrono integrado con eventos en tiempo real de Supabase.
+- Worker asíncrono en modelo pull sobre `job_queue` de Supabase (`fetch_next_job`).
+- Human-in-the-loop en respuestas: solicita aclaración de alcance antes de responder cuando la intención de consulta es ambigua o conflictiva.
 
 ### Principios
 
@@ -92,7 +94,7 @@ Agnóstico al dominio. Diseñado para contextos donde la precisión es crítica 
 
 - Python 3.13+
 - FastAPI + Uvicorn
-- Supabase (PostgreSQL + pgvector + Realtime)
+- Supabase (PostgreSQL + pgvector + RPC/job_queue)
 - LangChain + LangGraph
 - Jina Embeddings v3
 - Gemini (Native Lite + Fallback Flash) / Groq / OpenAI adapters
@@ -167,4 +169,3 @@ This project is licensed under Apache License 2.0.
 Este proyecto se distribuye bajo licencia Apache 2.0.
 
 See `LICENSE` for details.
-

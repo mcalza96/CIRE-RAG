@@ -16,6 +16,28 @@ Disenado para operar como backend API-first en escenarios donde el naive RAG fal
 - **Orquestación Tricameral**: enrutamiento dinámico nativo entre Vector Search, GraphRAG SQL-native y RAPTOR.
 - **Stack unificado**: FastAPI + Supabase (Postgres 17 + pgvector), sin fragmentar en motores separados.
 
+## Arquitectura simple por defecto
+
+- Preferimos clases concretas y wiring directo para servicios internos.
+- Solo mantenemos contratos donde hay valor operativo real:
+  - `IRetrievalRepository` (`Protocol`): frontera de retrieval/DB.
+  - `IEmbeddingProvider` (`ABC`): switch real entre `JinaLocalProvider` y `JinaCloudProvider`.
+- Si una abstraccion no acelera entrega o no reduce costo de cambio en el corto plazo, se elimina.
+
+## Flujo operativo actual
+
+1. **Ingestion**: endpoints de ingesta registran documento en `queued` y devuelven snapshot de cola.
+2. **Proceso**: `run_worker.py` consume `job_queue` en modo pull (`fetch_next_job`) y ejecuta pipeline de parseo/chunking/embeddings/persistencia, con Visual Anchors + RAPTOR + Graph opcionales.
+3. **Pregunta**: consultas por `/knowledge/*` o `doc_chat_cli.py`.
+4. **Analisis**: `Q/A Orchestrator` clasifica intencion, define plan de retrieval, detecta ambiguedad/conflicto de scope y valida evidencia.
+5. **Respuesta**: aplica Human-in-the-Loop (HITL): si falta claridad de alcance pide aclaracion al usuario; con aclaracion confirmada responde grounded con trazabilidad C#/R#; si persiste inconsistencia bloquea la respuesta.
+
+## Human-in-the-Loop en respuestas
+
+- El orquestador puede emitir `ClarificationRequest` antes de responder cuando detecta escenario multinorma o conflicto entre objetivos (ej. confidencialidad vs trazabilidad).
+- En `doc_chat_cli.py`, la respuesta de aclaracion del usuario se interpreta y se reinyecta en la consulta (`__clarified_scope__=true`) para una segunda pasada controlada.
+- Si la validacion detecta `Scope mismatch` no recuperable, se bloquea la respuesta final y se solicita reformulacion explicita de la norma objetivo.
+
 ## Quickstart
 
 Desde la raiz del repo:
@@ -74,10 +96,41 @@ Base URL local: `http://localhost:8000/api/v1`
 - `POST /ingestion/batches/{batch_id}/seal`: endpoint disponible (opcional/legacy en flujo CLI actual).
 - `GET /ingestion/batches/{batch_id}/status`: progreso del batch.
 - `POST /knowledge/retrieve`: retrieval de contexto grounded.
+- `POST /knowledge/answer`: respuesta grounded final con gating HITL por scope.
 - `POST /synthesis/generate`: crea job asyncrono de sintesis estructurada.
 - `GET /synthesis/jobs/{job_id}`: estado del job de sintesis estructurada.
 - `POST /curriculum/generate`: crea job asyncrono de sintesis estructurada (ruta legacy).
 - `GET /curriculum/jobs/{job_id}`: estado del job de sintesis estructurada (ruta legacy).
+
+## Comportamiento HITL en `/knowledge/*`
+
+- Si el sistema detecta alcance ambiguo, devuelve aclaracion en vez de respuesta final (`requires_scope_clarification` en `/knowledge/retrieve`, o `answer` con mensaje de aclaracion en `/knowledge/answer`).
+- Si detecta inconsistencia de ambito entre pregunta y fuentes, bloquea respuesta final y pide reformulacion explicita de norma.
+- Si el scope es valido, responde grounded con `citations` y `mode`.
+
+Ejemplo (aclaracion de scope en `/knowledge/retrieve`):
+
+```json
+{
+  "context_chunks": [],
+  "context_map": {},
+  "citations": [],
+  "mode": "AMBIGUOUS_SCOPE",
+  "scope_candidates": ["ISO 9001", "ISO 14001", "ISO 45001"],
+  "scope_message": "Necesito desambiguar el alcance antes de responder..."
+}
+```
+
+Ejemplo (scope mismatch bloqueado en `/knowledge/answer`):
+
+```json
+{
+  "answer": "⚠️ Se detectó inconsistencia de ámbito entre la pregunta y las fuentes recuperadas...",
+  "context_chunks": [],
+  "citations": [],
+  "mode": "HYBRID"
+}
+```
 
 ## Estructura del modulo
 
@@ -92,6 +145,7 @@ Base URL local: `http://localhost:8000/api/v1`
 ## Documentacion adicional
 
 - Canonica para todo el repo: `../docs/README.md`
+- Getting started HITL: `docs/getting-started.md`
 - Arquitectura del servicio: `docs/architecture.md`
 - Flujos y diagramas: `docs/flows-and-diagrams.md`
 - Executive One-Page: `docs/one-page-architecture.md`

@@ -6,25 +6,33 @@
 
 - API y contratos HTTP en `app/api`.
 - Casos de uso en `app/application`.
-- Reglas de negocio e interfaces en `app/domain`.
+- Reglas de negocio y tipos en `app/domain`.
 - Integraciones externas en `app/infrastructure`.
 - Logica de ingestion/retrieval en `app/services`: incluye `AtomicRetrievalEngine` por defecto.
 - Orquestacion de procesos en `app/workflows`.
 
+## Flujo E2E actual (ingestion -> proceso -> pregunta -> analisis -> respuesta)
+
+1. **Ingestion**: `POST /api/v1/ingestion/ingest` o `POST /api/v1/ingestion/institutional` registran `source_documents` en estado `queued`, con metadatos de tenant/coleccion/estrategia y snapshot de cola.
+2. **Proceso**: el worker (`app/worker.py`) opera en modo pull sobre `job_queue` (`fetch_next_job`) y ejecuta `ProcessDocumentWorkerUseCase` con control de concurrencia global y por tenant.
+3. **Pregunta**: el cliente consulta por API (`/knowledge/retrieve`, `/knowledge/answer`) o por `doc_chat_cli.py` usando `HandleQuestionUseCase` en `app/qa_orchestrator`.
+4. **Analisis**: el orquestador clasifica intencion, arma `RetrievalPlan`, puede pedir aclaracion de alcance (p. ej. multinorma/conflicto), recupera evidencia C#/R#, genera borrador y valida scope/evidencia literal.
+5. **Respuesta**: se retorna respuesta grounded con trazabilidad o se bloquea/solicita aclaracion cuando hay inconsistencia de ambito.
+
 ## Flujo 1: ingesta manual
 
 1. Cliente llama `POST /api/v1/ingestion/ingest`.
-2. `ManualIngestionUseCase` valida metadata y persiste registro inicial.
-3. Se agenda background task para procesamiento.
-4. Worker y/o pipeline de ingestion ejecuta parsing, chunking, embeddings y persistencia.
+2. `ManualIngestionUseCase` valida metadata, aplica backpressure por tenant y registra `source_documents` en `queued`.
+3. Se devuelve `accepted` con snapshot de cola (`queue_depth`, `estimated_wait_seconds`, `max_pending`).
+4. El worker toma el job en modo pull y ejecuta parsing/chunking/embeddings/persistencia/etapas opcionales.
 5. El documento queda disponible para retrieval y trazabilidad.
 
 ## Flujo 2: ingesta institucional
 
 1. Servicio externo llama `POST /api/v1/ingestion/institutional`.
 2. Se valida `X-Service-Secret` contra `RAG_SERVICE_SECRET`.
-3. `InstitutionalIngestionUseCase` crea/actualiza contexto institucional.
-4. El procesamiento se delega al pipeline y repositorios de infraestructura.
+3. `InstitutionalIngestionUseCase` crea/actualiza contexto institucional y registra estrategia (`CONTENT` o `PRE_PROCESSED`).
+4. El documento queda en `queued`; el worker lo procesa por `job_queue` con el mismo pipeline de manual ingestion.
 
 ## Flujo 3: retrieval
 
@@ -43,8 +51,10 @@
 
 - Entrypoint de worker: `run_worker.py`.
 - Implementacion principal: `app/worker.py`.
-- Suscripcion Realtime a tabla `source_documents` (INSERT y UPDATE para retry).
+- Modelo pull sobre `job_queue` mediante RPC `fetch_next_job`.
+- Pollers concurrentes con limites globales y por tenant (`WORKER_CONCURRENCY`, `WORKER_PER_TENANT_CONCURRENCY`).
 - Control de concurrencia por `doc_id` en memoria para evitar reprocesos simultaneos.
+- Metricas de saturacion por tenant (active_jobs, queue_depth, queue_wait_seconds) y alertas de backlog.
 
 ## Persistencia e integraciones
 
@@ -78,6 +88,12 @@ Usar contratos solo cuando bajan complejidad total. Regla general: en Python pri
 - Para colaboraciones internas con una sola implementacion, preferir clase concreta y evitar archivos de interfaz 1:1.
 - Preferir `Protocol` sobre `ABC` cuando solo se necesita contrato de tipos (sin comportamiento compartido).
 - Si una interfaz no tiene consumidores activos o no aporta seam de test real, eliminarla.
+
+Estado actual (simplificado):
+
+- `IRetrievalRepository` (`Protocol`) para frontera de retrieval.
+- `IEmbeddingProvider` (`ABC`) para switch cloud/local real.
+- Resto de servicios internos usan clases concretas para reducir wiring.
 
 Checklist rapido para PRs:
 

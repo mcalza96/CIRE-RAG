@@ -100,7 +100,7 @@ class IngestionWorker:
         self.policy = IngestionPolicy()
         self.dispatcher = IngestionDispatcher()
         
-        # 3. Use Case Orchestration (DIP)
+        # 3. Use Case orchestration
         self.process_use_case = ProcessDocumentWorkerUseCase(
             repository=container.source_repository,
             content_repo=container.content_repository,

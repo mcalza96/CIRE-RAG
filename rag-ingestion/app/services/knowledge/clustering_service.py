@@ -9,7 +9,6 @@ from app.core.llm import get_llm
 from app.infrastructure.supabase.client import get_async_supabase_client
 from app.services.embedding_service import JinaEmbeddingService
 from app.domain.raptor_schemas import ClusterResult, ClusterAssignment
-from app.domain.interfaces.clustering import IClusteringService
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +19,7 @@ except ImportError:  # pragma: no cover - dependency guard
     ig = None
     leidenalg = None
 
-class GMMClusteringService(IClusteringService):
+class GMMClusteringService:
     """
     Gaussian Mixture Model clustering for semantic grouping of chunks.
     Supports soft clustering where a chunk can belong to multiple clusters.

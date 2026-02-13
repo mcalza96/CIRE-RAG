@@ -1,24 +1,10 @@
-import abc
 import structlog
 from typing import List, Dict, Any, Optional
 from app.domain.interfaces.retrieval_interface import IRetrievalRepository
-from app.services.embedding_service import JinaEmbeddingService
 
 logger = structlog.get_logger(__name__)
 
-class IRetrievalStrategy(abc.ABC):
-    @abc.abstractmethod
-    async def execute(
-        self, 
-        query_vector: List[float], 
-        query_text: str,
-        filter_conditions: Dict[str, Any], 
-        k: int,
-        **kwargs
-    ) -> List[Dict[str, Any]]:
-        pass
-
-class DirectRetrievalStrategy(IRetrievalStrategy):
+class DirectRetrievalStrategy:
     def __init__(self, repository: IRetrievalRepository):
         self.repository = repository
 
@@ -37,7 +23,7 @@ class DirectRetrievalStrategy(IRetrievalStrategy):
             query_text=query_text
         )
 
-class IterativeRetrievalStrategy(IRetrievalStrategy):
+class IterativeRetrievalStrategy:
     def __init__(self, repository: IRetrievalRepository):
         self.repository = repository
 

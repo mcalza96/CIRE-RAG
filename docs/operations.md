@@ -18,7 +18,7 @@
 ## Operational Checklist
 
 - API healthy at `/health`.
-- Worker process running and consuming events.
+- Worker process running and consuming `ingest_document` jobs from `job_queue`.
 - Required environment variables loaded.
 - Ingestion and retrieval smoke tests passing.
 

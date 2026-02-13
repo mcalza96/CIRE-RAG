@@ -23,8 +23,9 @@ Pasos:
 
 1. Ejecutar worker en foreground: `venv/bin/python run_worker.py`.
 2. Confirmar credenciales Supabase en entorno.
-3. Revisar suscripcion a `source_documents` (INSERT/UPDATE).
-4. Verificar que el documento este en estado `queued` para retry.
+3. Verificar que existan jobs `ingest_document` en `job_queue`.
+4. Revisar logs del worker para `fetch_next_job` y estado final del job (`completed`/`failed`).
+5. Verificar que el documento este en estado `queued` para retry.
 
 ## 3) Endpoint institucional devuelve 401
 

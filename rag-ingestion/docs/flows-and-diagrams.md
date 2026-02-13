@@ -13,18 +13,18 @@ flowchart LR
     A --> R4[/api/v1/curriculum (legacy path)]
 
     R1 --> U1[Use Cases de ingesta]
-    R2 --> U2[UnifiedRetrievalEngine + RetrievalRouter]
+    R2 --> U2[AtomicRetrievalEngine + QueryDecomposer]
     R3 --> U3[Workflow structured synthesis]
     R4 --> U3
 
     U1 --> S1[Servicios de parsing/chunking/embedding]
-    U2 --> S2[Vector retrieval + GraphRAG + RAPTOR]
+    U2 --> S2[Vector/FTS RRF + Multi-hop Graph]
 
     S1 --> DB[(Supabase Postgres + pgvector)]
     S2 --> DB
 
-    DB --> RT[Supabase Realtime]
-    RT --> W[Worker run_worker.py]
+    DB --> JQ[(job_queue)]
+    JQ --> W[Worker run_worker.py (pull)]
     W --> P[ProcessDocumentWorkerUseCase]
     P --> DB
 ```
@@ -38,16 +38,17 @@ sequenceDiagram
     participant API as FastAPI Router
     participant UC as ManualIngestionUseCase
     participant DB as Supabase
-    participant BG as Background Task
-    participant WR as Worker/Pipeline
+    participant JQ as job_queue (DB)
+    participant WR as Worker/Pipeline (pull)
 
     U->>API: POST /ingestion/ingest (archivo + metadata)
     API->>UC: validar request y crear documento fuente
-    UC->>DB: insert source_documents (estado inicial)
+    UC->>DB: insert source_documents (estado queued)
     DB-->>UC: doc_id
-    UC-->>API: documento registrado
-    API->>BG: programar procesamiento async
-    BG->>WR: ejecutar pipeline de documento
+    UC-->>API: accepted + queue_depth/eta
+    DB->>JQ: encolar ingest_document (trigger/RPC DB)
+    WR->>JQ: fetch_next_job(ingest_document)
+    JQ-->>WR: source_document_id
     WR->>DB: upsert chunks/visual_nodes/grafo/estado final
 ```
 
@@ -61,59 +62,53 @@ sequenceDiagram
     participant SEC as Validador de Secret
     participant UC as InstitutionalIngestionUseCase
     participant DB as Supabase
-    participant WR as Worker
+    participant JQ as job_queue (DB)
+    participant WR as Worker (pull)
 
     S->>API: POST /ingestion/institutional + X-Service-Secret
     API->>SEC: validar header contra RAG_SERVICE_SECRET
     SEC-->>API: ok/unauthorized
     API->>UC: ejecutar caso de uso institucional
-    UC->>DB: crear/actualizar source_documents y contexto institucional
-    DB-->>UC: ids y estado
-    UC-->>API: accepted/created
+    UC->>DB: upsert source_documents + strategy_override
+    DB->>JQ: encolar ingest_document
+    DB-->>UC: ids + estado queued
+    UC-->>API: accepted + queue_depth/eta
     API-->>S: respuesta de aceptacion
+    WR->>JQ: fetch_next_job(ingest_document)
     WR->>DB: procesa documento y publica estado final
 ```
 
-## 4) Flujo Exacto: Worker Realtime + Retry
+## 4) Flujo Exacto: Worker Pull Model + Retry
 
 ```mermaid
 flowchart TD
-    A[run_worker.py] --> B[Suscripcion Realtime: source_documents]
-    B --> C{Evento}
-    C -->|INSERT| D[Procesar documento nuevo]
-    C -->|UPDATE queued| E[Reintento de documento]
-
-    D --> F[Lock por doc_id en memoria]
-    E --> F
-    F --> G[ProcessDocumentWorkerUseCase]
-    G --> H[PDF parsing]
-    H --> I[Chunking late/contextual]
-    I --> J[Embeddings Jina]
-    J --> K[Persistencia chunks + visual + grafo]
-    K --> L[Actualizar estado en source_documents]
+    A[run_worker.py] --> B[Pollers async]
+    B --> C[RPC fetch_next_job(ingest_document)]
+    C --> D{Hay job?}
+    D -->|No| E[Sleep poll interval]
+    D -->|Si| F[Cargar source_document]
+    F --> G[Lock por doc_id en memoria]
+    G --> H[Semaphore global y por tenant]
+    H --> I[ProcessDocumentWorkerUseCase]
+    I --> J[Pipeline: parse/chunk/embed/persist]
+    J --> K[Opcional: Visual Anchors + RAPTOR + Graph]
+    K --> L[Actualizar status y job_queue]
+    L --> C
 ```
 
 ## 5) Flujo Exacto: Parsing y Chunking de PDF
 
 ```mermaid
 flowchart TD
-    P0[PDF input] --> P1{pymupdf4llm disponible?}
-    P1 -->|Si| P2[extract_markdown_with_structure]
-    P1 -->|No| P3[extract_text_with_page_map fallback]
+    P0[PDF input] --> P1{DocumentStructureRouter}
+    P1 -->|Text| P2[PdfParser: Markdown extraction]
+    P1 -->|Visual| P3[VisualDocumentParser: VLM Task]
 
-    P2 --> P4[Detectar imagenes y crear visual_tasks]
-    P3 --> P5[Texto plano + page_map]
+    P2 --> C1[ChunkingService: Late Chunking Jina v3]
+    P3 --> C2[Visual Anchor: Structured JSON]
 
-    P4 --> C1[ChunkingService]
-    P5 --> C1
-
-    C1 --> C2{Late chunking Jina OK?}
-    C2 -->|Si| C3[chunk_and_encode full document]
-    C2 -->|No| C4[split por headings + fallback contextual]
-
-    C3 --> C5[Attach heading_path + metadata]
-    C4 --> C5
-    C5 --> C6[Persistir content_chunks]
+    C1 --> C3[Persistir content_chunks + heading_path]
+    C2 --> C4[Persistir visual_nodes + crops]
 ```
 
 ## 6) Flujo Exacto: Parsing Visual (Tablas/Figuras)
@@ -176,36 +171,33 @@ sequenceDiagram
     RP-->>W: RaptorTreeResult
 ```
 
-## 8) Flujo Exacto: Retrieval (`POST /api/v1/knowledge/retrieve`)
+## 8) Flujo Exacto: Retrieval (Atomic Engine)
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant U as Usuario
     participant API as Router knowledge
-    participant ORQ as RetrievalRouter
-    participant V as Vector Retrieval
-    participant LG as Local Graph Search
-    participant GG as Global Graph Search
-    participant RP as RAPTOR summaries
-    participant RR as GravityReranker
+    participant QP as QueryDecomposer
+    participant ORQ as AtomicRetrievalEngine
+    participant V as Vector/FTS (RRF)
+    participant G as Multi-hop Graph
     participant DB as Supabase
 
-    U->>API: query + tenant/scope
-    API->>ORQ: orchestrate(intent)
-    ORQ->>ORQ: classify mode (SPECIFIC/GENERAL/HYBRID)
+    U->>API: query + scope
+    API->>QP: decompose(query)
+    QP-->>API: QueryPlan (is_multihop=true/false)
 
-    par fuentes segun modo
-      ORQ->>V: retrieve_context(query_vector)
-      V->>DB: rpc unified_search_context_v2
-      DB-->>V: rows
-      ORQ->>LG: local graph anchors + 1-hop
-      ORQ->>GG: community summary search
-      ORQ->>RP: search hierarchical summaries
+    API->>ORQ: retrieve_context_from_plan(plan)
+    
+    par Fuentes Atómicas
+      ORQ->>V: search_vectors + search_fts
+      V->>DB: rpc search_vectors_only/search_fts_only
+      ORQ->>G: search_multi_hop_context
+      G->>DB: graph hop navigation
     end
 
-    ORQ->>RR: rerank by authority/task/role
-    RR-->>ORQ: ranked results
+    ORQ->>ORQ: Fusion RRF + Dedupe + Rerank
     ORQ-->>API: contexto final grounded
     API-->>U: respuesta
 ```
@@ -217,13 +209,18 @@ sequenceDiagram
     autonumber
     participant C as Cliente/CLI
     participant QAO as HandleQuestionUseCase
+    participant POL as Domain Policies
     participant RET as RetrieverPort Adapter
     participant GEN as AnswerGeneratorPort Adapter
     participant VAL as ValidationPort
     participant RAG as RetrievalTools/Knowledge stack
 
     C->>QAO: HandleQuestionCommand(query, tenant_id, collection_id)
-    QAO->>QAO: classify_intent + build_retrieval_plan
+    QAO->>POL: classify_intent + build_retrieval_plan + detect_scope/conflicts
+    POL-->>QAO: intent + plan + scope_signals
+    alt requiere aclaracion de alcance
+      QAO-->>C: ClarificationRequest (sin retrieval)
+    else continua analisis
     QAO->>RET: retrieve_chunks + retrieve_summaries
     RET->>RAG: retrieve(...) con filtros de scope
     RAG-->>RET: evidencia C#/R#
@@ -232,10 +229,31 @@ sequenceDiagram
     GEN-->>QAO: AnswerDraft
     QAO->>VAL: validate(answer, plan, query)
     VAL-->>QAO: ValidationResult
-    QAO-->>C: respuesta final + trazabilidad
+    alt scope mismatch recuperable
+      QAO-->>C: ClarificationRequest (analisis integrado vs restringido)
+    else bloqueado por mismatch
+      QAO-->>C: respuesta bloqueada con instruccion de reformulacion
+    else aceptado
+      QAO-->>C: respuesta final + trazabilidad
+    end
+    end
 ```
 
-## 10) Entidades Principales (Simplificado)
+## 10) Flujo Operativo 5 Etapas (Ingestion->Proceso->Pregunta->Analisis->Respuesta)
+
+```mermaid
+flowchart LR
+    A[Ingestion API] --> B[source_documents queued]
+    B --> C[Proceso Worker pull job_queue]
+    C --> D[Knowledge base actualizada]
+    D --> E[Pregunta cliente API/CLI]
+    E --> F[Analisis Q/A Orchestrator]
+    F --> G{Validacion scope/evidencia}
+    G -->|OK| H[Respuesta grounded C#/R#]
+    G -->|No OK| I[Aclaracion o bloqueo]
+```
+
+## 11) Entidades Principales (Simplificado)
 
 ```mermaid
 erDiagram
@@ -251,7 +269,7 @@ erDiagram
     TENANTS ||--o{ CURRICULUM_JOBS : runs
 ```
 
-## 9) Referencias de Codigo
+## 12) Referencias de Codigo
 
 - API bootstrap: `rag-ingestion/app/main.py`
 - Routers v1: `rag-ingestion/app/api/v1/api_router.py`
@@ -261,5 +279,6 @@ erDiagram
 - PDF parser: `rag-ingestion/app/services/ingestion/pdf_parser.py`
 - Chunking: `rag-ingestion/app/services/ingestion/chunking_service.py`
 - Visual parser: `rag-ingestion/app/services/ingestion/visual_parser.py`
-- Unified retrieval: `rag-ingestion/app/services/retrieval/engine.py`
+- Atomic retrieval: `rag-ingestion/app/services/retrieval/atomic_engine.py`
+- Query decomposition: `rag-ingestion/app/application/services/query_decomposer.py`
 - Retrieval router: `rag-ingestion/app/application/services/retrieval_router.py`

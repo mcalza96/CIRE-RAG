@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Python 3.11+
+- Python 3.13+
 - Access to a Supabase project
 - Local shell with `bash`
 
@@ -58,10 +58,11 @@ Extended testing guidance: `../rag-ingestion/docs/testing.md`.
 ## 4) Explore APIs and Flows
 
 - API and endpoint summary: `../rag-ingestion/README.md`
+- HITL quickstart (clarification flow): `../rag-ingestion/docs/getting-started.md`
 - Architecture overview: `architecture.md`
 - Operational incidents and runbooks: `operations.md`
 
-## 5) MAS Simple CLI
+## 5) Q/A Orchestrator CLI
 
 From repository root:
 
@@ -72,5 +73,5 @@ From repository root:
 
 Notes:
 
-- `chat.sh` launches MAS Simple and lets you choose collection scope and multi-hop mode.
+- `chat.sh` launches Q/A Orchestrator and lets you choose collection scope and multi-hop mode.
 - Existing collections are overwrite-friendly in the ingestion CLI (cleanup + reingestion workflow).

@@ -3,11 +3,10 @@ import re
 from typing import List, Tuple
 from app.core.llm import get_llm
 from app.core.prompt_registry import PromptRegistry
-from app.domain.interfaces.summarization import ISummarizationService
 
 logger = logging.getLogger(__name__)
 
-class SummarizationAgent(ISummarizationService):
+class SummarizationAgent:
     """
     LLM-based summarization for clusters of regulatory text.
     Uses the centralized get_llm() factory and PromptRegistry.

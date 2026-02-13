@@ -22,11 +22,21 @@ This is the canonical documentation entrypoint for CISRE (Cognitive Ingestion & 
 - Root `README.md` stays concise and links here.
 - Every feature PR should update docs when behavior changes.
 
+## Source of Truth by Topic
+
+- Onboarding and local setup: `getting-started.md`
+- Runtime architecture and flow semantics: `../rag-ingestion/docs/architecture.md`
+- Sequence/operational diagrams: `../rag-ingestion/docs/flows-and-diagrams.md`
+- HITL behavior and API examples: `../rag-ingestion/docs/getting-started.md`
+- Incident response: `../rag-ingestion/docs/runbooks/common-incidents.md`
+- Config and env vars: `../rag-ingestion/docs/configuration.md`
+
 ## Documentation Inventory
 
 - Project overview: `../README.md`
 - Contribution guide: `../CONTRIBUTING.md`
 - Service README: `../rag-ingestion/README.md`
+- Service HITL getting started: `../rag-ingestion/docs/getting-started.md`
 - Service architecture deep dive: `../rag-ingestion/docs/architecture.md`
 - Flow diagrams: `../rag-ingestion/docs/flows-and-diagrams.md`
 - ADR index: `../rag-ingestion/docs/adr/README.md`
