@@ -1,6 +1,7 @@
 import structlog
 from typing import Dict, Any
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
+from app.api.v1.errors import ApiError
 from app.domain.knowledge_schemas import RetrievalIntent
 from app.services.knowledge.knowledge_service import KnowledgeService
 
@@ -18,7 +19,7 @@ async def retrieve_knowledge(
     """
     try:
         if not intent.tenant_id:
-            raise HTTPException(status_code=400, detail="tenant_id is required")
+            raise ApiError(status_code=400, code="TENANT_ID_REQUIRED", message="tenant_id is required")
         tenant_id = str(intent.tenant_id)
         context = await service.get_grounded_context(
             query=intent.query,
@@ -34,8 +35,8 @@ async def retrieve_knowledge(
                 "scope_message": context.get("scope_message"),
             }
         return context
-    except HTTPException:
+    except ApiError:
         raise
     except Exception as e:
         logger.error("retrieval_failed", error=str(e))
-        raise HTTPException(status_code=500, detail=f"Retrieval failed: {str(e)}")
+        raise ApiError(status_code=500, code="KNOWLEDGE_RETRIEVAL_FAILED", message="Retrieval failed", details=str(e))

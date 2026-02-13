@@ -20,9 +20,9 @@ Disenado para operar como backend API-first en escenarios donde el naive RAG fal
 
 1. **Ingestion**: endpoints de ingesta registran documento en `queued` y devuelven snapshot de cola.
 2. **Proceso**: `run_worker.py` consume `job_queue` en modo pull (`fetch_next_job`) y ejecuta pipeline de parseo/chunking/embeddings/persistencia, con Visual Anchors + RAPTOR + Graph opcionales.
-3. **Pregunta**: clientes consultan retrieval por `/knowledge/retrieve` y `/retrieval/*`.
+3. **Pregunta**: clientes consumen endpoint de producto en `/chat/completions`.
 4. **Analisis**: el engine aplica descomposicion de consulta, fusion hibrida y filtros de scope.
-5. **Respuesta**: retorna contexto grounded y trazabilidad para consumo de aplicaciones cliente.
+5. **Respuesta**: retorna `answer` + `citations` + `mode` para consumo de aplicaciones cliente.
 
 ## Quickstart
 
@@ -70,22 +70,45 @@ Flujo por defecto:
 2. `POST /api/v1/ingestion/batches/{batch_id}/files` (uno por archivo)
 3. poll de estado en `GET /api/v1/ingestion/batches/{batch_id}/status`
 
-## Endpoints principales
+## Endpoints principales (producto)
 
 Base URL local: `http://localhost:8000/api/v1`
 
-- `POST /ingestion/embed`: embeddings de texto.
-- `POST /ingestion/ingest`: ingesta manual de archivo (`multipart/form-data`).
-- `POST /ingestion/institutional`: ingesta institucional protegida por `X-Service-Secret`.
-- `GET /ingestion/documents`: lista documentos fuente.
-- `POST /ingestion/retry/{doc_id}`: reintenta documento con estado fallido.
-- `POST /ingestion/batches`: crea batch 2-step para N archivos.
-- `POST /ingestion/batches/{batch_id}/files`: agrega archivo al batch.
-- `POST /ingestion/batches/{batch_id}/seal`: sella batch cuando se requiere cierre explicito.
-- `GET /ingestion/batches/{batch_id}/status`: progreso del batch.
-- `POST /knowledge/retrieve`: retrieval de contexto grounded.
-- `POST /retrieval/chunks`: contrato v1 para retrieval de chunks.
-- `POST /retrieval/summaries`: contrato v1 para retrieval de summaries.
+- `POST /documents`: ingesta manual de archivo (`multipart/form-data`).
+- `GET /documents`: lista documentos fuente.
+- `GET /documents/{document_id}/status`: estado de documento.
+- `DELETE /documents/{document_id}`: elimina documento.
+- `POST /chat/completions`: respuesta final grounded.
+- `POST /chat/feedback`: feedback de respuesta.
+- `GET /management/collections`: lista colecciones por tenant.
+- `GET /management/queue/status`: estado de cola por tenant.
+- `GET /management/health`: health de API v1.
+
+Auth en entornos desplegados:
+
+- Enviar `Authorization: Bearer <RAG_SERVICE_SECRET>` o `X-Service-Secret: <RAG_SERVICE_SECRET>`.
+- En entorno local (`APP_ENV=local`) los endpoints permiten desarrollo sin token.
+
+Idempotencia en ingesta:
+
+- `POST /documents` acepta header `Idempotency-Key`.
+- Reintentos con la misma llave devuelven la misma respuesta (`X-Idempotency-Replayed: true`).
+- El backend usa Redis cuando esta disponible; fallback en memoria cuando Redis no responde.
+
+## Mapa de migracion (legacy -> v1)
+
+- `POST /ingestion/ingest` -> `POST /documents`
+- `GET /ingestion/documents` -> `GET /documents`
+- `POST /knowledge/retrieve` -> `POST /chat/completions`
+- `POST /retrieval/chunks` -> `POST /debug/retrieval/chunks`
+- `POST /retrieval/summaries` -> `POST /debug/retrieval/summaries`
+
+Las rutas legacy siguen disponibles durante la migracion para evitar ruptura de clientes.
+
+Politica de deprecacion legacy:
+
+- Headers en respuesta: `Deprecation: true` y `Sunset: Wed, 30 Sep 2026 00:00:00 GMT`.
+- Endpoints legacy de retrieval crudo recomendados para debug: `/debug/retrieval/chunks` y `/debug/retrieval/summaries`.
 
 ## Comportamiento de scope en retrieval
 

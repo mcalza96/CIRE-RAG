@@ -15,8 +15,10 @@ Referencia: `app/core/settings.py`.
 
 - `SUPABASE_URL` o `NEXT_PUBLIC_SUPABASE_URL` (obligatoria).
 - `SUPABASE_SERVICE_ROLE_KEY` (obligatoria).
-- `RAG_SERVICE_SECRET` (requerida para endpoint institucional).
+- `RAG_SERVICE_SECRET` (requerida para autenticar API v1 en entornos desplegados).
 - `RAG_STORAGE_BUCKET` (bucket de Supabase Storage para archivos de ingesta; default `private_assets`).
+- `APP_ENV` (`local` | `staging` | `production`; controla politicas de seguridad/guardrails).
+- `REDIS_URL` (recomendado para idempotencia cross-instance de `POST /documents`).
 
 Sin estas variables, API y worker no operan de forma correcta.
 
@@ -56,12 +58,25 @@ Flags de pipeline cloud/local:
 
 Variables recomendadas en Railway/Render:
 
+- `APP_ENV=production`
 - `JINA_MODE=CLOUD`
 - `JINA_API_KEY`
 - `SUPABASE_URL` (o `NEXT_PUBLIC_SUPABASE_URL`)
 - `SUPABASE_SERVICE_ROLE_KEY`
+- `RAG_SERVICE_SECRET` (token de auth para API v1)
+- `REDIS_URL` (idempotencia distribuida)
 - `PORT` (API, default `8000`)
 - `UVICORN_WORKERS=1` (default recomendado para contenedores pequenos)
+
+Comportamiento de auth por entorno:
+
+- `APP_ENV=local`: auth deshabilitada para DX local.
+- `APP_ENV=staging|production`: auth obligatoria en endpoints de producto/debug (`Authorization: Bearer ...` o `X-Service-Secret`).
+
+Comportamiento de idempotencia (`POST /documents`):
+
+- Con `REDIS_URL` valido: persistencia distribuida de `Idempotency-Key`.
+- Sin Redis: fallback en memoria por proceso (util para local, no ideal para multi-replica).
 
 Compose local recomendado:
 

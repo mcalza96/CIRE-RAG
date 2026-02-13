@@ -1,8 +1,9 @@
 import structlog
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, File, UploadFile, HTTPException, Form, Depends, Header, Response
+from fastapi import APIRouter, File, UploadFile, Form, Depends, Header, Response
 from pydantic import BaseModel
 
+from app.api.v1.errors import ApiError
 from app.core.settings import settings
 from app.application.use_cases.manual_ingestion_use_case import ManualIngestionUseCase
 from app.application.use_cases.institutional_ingestion_use_case import InstitutionalIngestionUseCase
@@ -66,7 +67,7 @@ async def embed_texts(request: EmbedRequest):
         return {"embeddings": vectors}
     except Exception as e:
         logger.error("embedding_failed", error=str(e), text_count=len(request.texts))
-        raise HTTPException(status_code=500, detail="Embedding failed")
+        raise ApiError(status_code=500, code="EMBEDDING_FAILED", message="Embedding failed")
 
 @router.post("/ingest")
 async def ingest_document(
@@ -119,13 +120,13 @@ async def ingest_document(
     except ValueError as e:
         detail = str(e)
         if "INGESTION_BACKPRESSURE" in detail:
-            raise HTTPException(status_code=429, detail=detail)
+            raise ApiError(status_code=429, code="INGESTION_BACKPRESSURE", message="Ingestion queue is saturated", details=detail)
         if "COLLECTION_SEALED" in str(e):
-            raise HTTPException(status_code=409, detail=str(e))
-        raise HTTPException(status_code=400, detail=str(e))
+            raise ApiError(status_code=409, code="COLLECTION_SEALED", message="Collection is sealed", details=str(e))
+        raise ApiError(status_code=400, code="INVALID_INGESTION_REQUEST", message="Invalid ingestion request", details=str(e))
     except Exception as e:
         logger.error("ingestion_failed", error=str(e))
-        raise HTTPException(status_code=500, detail="Ingestion failed")
+        raise ApiError(status_code=500, code="INGESTION_FAILED", message="Ingestion failed")
 
 @router.post("/institutional")
 async def ingest_institutional_document(
@@ -139,7 +140,7 @@ async def ingest_institutional_document(
     """
     if settings.RAG_SERVICE_SECRET and x_service_secret != settings.RAG_SERVICE_SECRET:
         logger.warning("unauthorized_access_attempt", service="institutional_ingestion")
-        raise HTTPException(status_code=401, detail="Unauthorized: Invalid Service Secret")
+        raise ApiError(status_code=401, code="UNAUTHORIZED", message="Unauthorized: Invalid Service Secret")
     
     try:
         result = await use_case.execute(
@@ -160,13 +161,13 @@ async def ingest_institutional_document(
     except ValueError as e:
         detail = str(e)
         if "INGESTION_BACKPRESSURE" in detail:
-            raise HTTPException(status_code=429, detail=detail)
+            raise ApiError(status_code=429, code="INGESTION_BACKPRESSURE", message="Ingestion queue is saturated", details=detail)
         if "COLLECTION_SEALED" in str(e):
-            raise HTTPException(status_code=409, detail=str(e))
-        raise HTTPException(status_code=400, detail=str(e))
+            raise ApiError(status_code=409, code="COLLECTION_SEALED", message="Collection is sealed", details=str(e))
+        raise ApiError(status_code=400, code="INVALID_INSTITUTIONAL_REQUEST", message="Invalid institutional ingestion request", details=str(e))
     except Exception as e:
         logger.error("institutional_ingestion_failed", error=str(e), tenant_id=request.tenant_id)
-        raise HTTPException(status_code=500, detail="Institutional Ingestion failed")
+        raise ApiError(status_code=500, code="INSTITUTIONAL_INGESTION_FAILED", message="Institutional ingestion failed")
 @router.get("/documents")
 async def list_documents(
     limit: int = 20,
@@ -180,7 +181,7 @@ async def list_documents(
         return docs
     except Exception as e:
         logger.error("list_documents_failed", error=str(e))
-        raise HTTPException(status_code=500, detail="Failed to list documents")
+        raise ApiError(status_code=500, code="DOCUMENT_LIST_FAILED", message="Failed to list documents")
 
 
 @router.get("/collections")
@@ -192,7 +193,7 @@ async def list_collections(
         return await use_case.list_collections(tenant_id=tenant_id)
     except Exception as e:
         logger.error("list_collections_failed", error=str(e), tenant_id=tenant_id)
-        raise HTTPException(status_code=500, detail="Failed to list collections")
+        raise ApiError(status_code=500, code="COLLECTION_LIST_FAILED", message="Failed to list collections")
 
 
 @router.get("/queue/status")
@@ -210,11 +211,11 @@ async def get_ingestion_queue_status(
     except ValueError as e:
         detail = str(e)
         if detail == "INVALID_TENANT_ID":
-            raise HTTPException(status_code=400, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+            raise ApiError(status_code=400, code="INVALID_TENANT_ID", message="Invalid tenant id", details=detail)
+        raise ApiError(status_code=400, code="INVALID_QUEUE_REQUEST", message="Invalid queue status request", details=detail)
     except Exception as e:
         logger.error("get_queue_status_failed", error=str(e), tenant_id=tenant_id)
-        raise HTTPException(status_code=500, detail="Failed to get queue status")
+        raise ApiError(status_code=500, code="QUEUE_STATUS_FAILED", message="Failed to get queue status")
 
 
 @router.post("/collections/cleanup")
@@ -230,10 +231,10 @@ async def cleanup_collection(
     except ValueError as e:
         detail = str(e)
         if detail == "COLLECTION_NOT_FOUND":
-            raise HTTPException(status_code=404, detail=detail)
+            raise ApiError(status_code=404, code="COLLECTION_NOT_FOUND", message="Collection not found", details=detail)
         if detail == "COLLECTION_SEALED":
-            raise HTTPException(status_code=409, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+            raise ApiError(status_code=409, code="COLLECTION_SEALED", message="Collection is sealed", details=detail)
+        raise ApiError(status_code=400, code="INVALID_COLLECTION_CLEANUP", message="Invalid cleanup request", details=detail)
     except Exception as e:
         logger.error(
             "cleanup_collection_failed",
@@ -241,7 +242,7 @@ async def cleanup_collection(
             collection_key=request.collection_key,
             error=str(e),
         )
-        raise HTTPException(status_code=500, detail="Cleanup collection failed")
+        raise ApiError(status_code=500, code="CLEANUP_COLLECTION_FAILED", message="Cleanup collection failed")
 
 @router.post("/retry/{doc_id}")
 async def retry_ingestion_endpoint(
@@ -258,12 +259,12 @@ async def retry_ingestion_endpoint(
         
         return {"status": "accepted", "message": f"Retry for {doc_id} queued"}
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise ApiError(status_code=404, code="DOCUMENT_NOT_FOUND", message="Document not found", details=str(e))
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise ApiError(status_code=400, code="INVALID_RETRY_REQUEST", message="Invalid retry request", details=str(e))
     except Exception as e:
         logger.error("retry_ingestion_failed", doc_id=doc_id, error=str(e))
-        raise HTTPException(status_code=500, detail="Retry failed")
+        raise ApiError(status_code=500, code="RETRY_FAILED", message="Retry failed")
 
 
 @router.post("/batches")
@@ -284,11 +285,11 @@ async def create_ingestion_batch(
     except ValueError as e:
         detail = str(e)
         if "COLLECTION_SEALED" in detail:
-            raise HTTPException(status_code=409, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+            raise ApiError(status_code=409, code="COLLECTION_SEALED", message="Collection is sealed", details=detail)
+        raise ApiError(status_code=400, code="INVALID_BATCH_REQUEST", message="Invalid batch request", details=detail)
     except Exception as e:
         logger.error("create_batch_failed", error=str(e), tenant_id=request.tenant_id)
-        raise HTTPException(status_code=500, detail="Create batch failed")
+        raise ApiError(status_code=500, code="CREATE_BATCH_FAILED", message="Create batch failed")
 
 
 @router.post("/batches/{batch_id}/files")
@@ -312,18 +313,18 @@ async def add_file_to_batch(
     except ValueError as e:
         detail = str(e)
         if detail in {"BATCH_NOT_FOUND", "COLLECTION_NOT_FOUND"}:
-            raise HTTPException(status_code=404, detail=detail)
+            raise ApiError(status_code=404, code=detail, message="Batch or collection not found", details=detail)
         if "INGESTION_BACKPRESSURE" in detail:
-            raise HTTPException(status_code=429, detail=detail)
+            raise ApiError(status_code=429, code="INGESTION_BACKPRESSURE", message="Ingestion queue is saturated", details=detail)
         if detail == "COLLECTION_SEALED" or detail == "BATCH_FILE_LIMIT_EXCEEDED":
-            raise HTTPException(status_code=409, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+            raise ApiError(status_code=409, code=detail, message="Batch cannot accept file", details=detail)
+        raise ApiError(status_code=400, code="INVALID_BATCH_FILE_REQUEST", message="Invalid batch file request", details=detail)
     except Exception as e:
         logger.error("add_file_to_batch_failed", batch_id=batch_id, error=str(e))
         detail = str(e)
         if "Bucket not found" in detail or "bucket" in detail.lower():
-            raise HTTPException(status_code=500, detail=f"Storage bucket error: {detail}")
-        raise HTTPException(status_code=500, detail="Add file to batch failed")
+            raise ApiError(status_code=500, code="STORAGE_BUCKET_ERROR", message="Storage bucket error", details=detail)
+        raise ApiError(status_code=500, code="ADD_FILE_TO_BATCH_FAILED", message="Add file to batch failed")
 
 
 @router.post("/batches/{batch_id}/seal")
@@ -337,11 +338,11 @@ async def seal_ingestion_batch(
     except ValueError as e:
         detail = str(e)
         if detail == "BATCH_NOT_FOUND":
-            raise HTTPException(status_code=404, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+            raise ApiError(status_code=404, code="BATCH_NOT_FOUND", message="Batch not found", details=detail)
+        raise ApiError(status_code=400, code="INVALID_SEAL_BATCH_REQUEST", message="Invalid seal batch request", details=detail)
     except Exception as e:
         logger.error("seal_batch_failed", batch_id=batch_id, error=str(e))
-        raise HTTPException(status_code=500, detail="Seal batch failed")
+        raise ApiError(status_code=500, code="SEAL_BATCH_FAILED", message="Seal batch failed")
 
 
 @router.get("/batches/{batch_id}/status")
@@ -354,8 +355,8 @@ async def get_ingestion_batch_status(
     except ValueError as e:
         detail = str(e)
         if detail == "BATCH_NOT_FOUND":
-            raise HTTPException(status_code=404, detail=detail)
-        raise HTTPException(status_code=400, detail=detail)
+            raise ApiError(status_code=404, code="BATCH_NOT_FOUND", message="Batch not found", details=detail)
+        raise ApiError(status_code=400, code="INVALID_BATCH_STATUS_REQUEST", message="Invalid batch status request", details=detail)
     except Exception as e:
         logger.error("get_batch_status_failed", batch_id=batch_id, error=str(e))
-        raise HTTPException(status_code=500, detail="Get batch status failed")
+        raise ApiError(status_code=500, code="GET_BATCH_STATUS_FAILED", message="Get batch status failed")

@@ -70,6 +70,28 @@ Recomendacion de costo cloud:
 - Endpoints y flujo operativo: `docs/rag-engine/README.md`
 - Configuracion: `docs/rag-engine/configuration.md`
 - Runbooks: `docs/rag-engine/runbooks/common-incidents.md`
+- SDK base TypeScript: `sdk/ts/README.md`
+- SDK base Python: `sdk/python/README.md`
+
+## API v1 (contrato recomendado)
+
+Base URL local: `http://localhost:8000/api/v1`
+
+- `POST /documents`: sube documento y devuelve `document_id` con estado `accepted`.
+- `GET /documents/{document_id}/status`: estado de procesamiento (`queued|processing|completed|failed`).
+- `DELETE /documents/{document_id}`: elimina documento (opcionalmente chunks).
+- `POST /chat/completions`: respuesta final grounded (answer + citations).
+- `POST /chat/feedback`: feedback de la respuesta.
+- `GET /management/collections`: colecciones por tenant.
+- `GET /management/queue/status`: profundidad y ETA de cola.
+- `GET /management/health`: health de API v1.
+
+Auth (entornos desplegados, por ejemplo `APP_ENV=production`): enviar `Authorization: Bearer <RAG_SERVICE_SECRET>` o `X-Service-Secret: <RAG_SERVICE_SECRET>`.
+
+Idempotencia en ingesta: `POST /documents` acepta header `Idempotency-Key`; reintentos con la misma llave retornan la misma respuesta (persistida en Redis cuando esta disponible, fallback en memoria).
+
+Rutas legacy siguen activas temporalmente en `/ingestion`, `/knowledge` y `/retrieval`.
+Estas rutas incluyen headers de deprecacion (`Deprecation: true`, `Sunset: Wed, 30 Sep 2026 00:00:00 GMT`).
 
 ## Estructura
 

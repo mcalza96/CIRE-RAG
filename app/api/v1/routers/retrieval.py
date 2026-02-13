@@ -1,9 +1,10 @@
 from typing import Any, Dict, Optional
 
 import structlog
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
 
+from app.api.v1.errors import ApiError
 from app.infrastructure.container import CognitiveContainer
 
 logger = structlog.get_logger(__name__)
@@ -29,7 +30,7 @@ class SummaryRequest(BaseModel):
 async def retrieve_chunks(request: RetrievalRequest):
     try:
         if not request.tenant_id:
-            raise HTTPException(status_code=400, detail="tenant_id is required")
+            raise ApiError(status_code=400, code="TENANT_ID_REQUIRED", message="tenant_id is required")
 
         scope_context: Dict[str, Any] = {"type": "institutional", "tenant_id": request.tenant_id}
         if request.collection_id:
@@ -55,18 +56,18 @@ async def retrieve_chunks(request: RetrievalRequest):
             if row.get("content")
         ]
         return {"items": items}
-    except HTTPException:
+    except ApiError:
         raise
     except Exception as exc:
         logger.error("retrieval_chunks_failed", error=str(exc))
-        raise HTTPException(status_code=500, detail="Retrieval chunks failed")
+        raise ApiError(status_code=500, code="RETRIEVAL_CHUNKS_FAILED", message="Retrieval chunks failed")
 
 
 @router.post("/summaries", response_model=Dict[str, Any])
 async def retrieve_summaries(request: SummaryRequest):
     try:
         if not request.tenant_id:
-            raise HTTPException(status_code=400, detail="tenant_id is required")
+            raise ApiError(status_code=400, code="TENANT_ID_REQUIRED", message="tenant_id is required")
 
         container = CognitiveContainer.get_instance()
         rows = await container.retrieval_tools.retrieve_summaries(
@@ -87,8 +88,8 @@ async def retrieve_summaries(request: SummaryRequest):
             if row.get("content")
         ]
         return {"items": items}
-    except HTTPException:
+    except ApiError:
         raise
     except Exception as exc:
         logger.error("retrieval_summaries_failed", error=str(exc))
-        raise HTTPException(status_code=500, detail="Retrieval summaries failed")
+        raise ApiError(status_code=500, code="RETRIEVAL_SUMMARIES_FAILED", message="Retrieval summaries failed")
