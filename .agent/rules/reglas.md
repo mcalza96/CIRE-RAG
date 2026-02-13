@@ -12,6 +12,14 @@ Este documento define el comportamiento esperado de un agente IA que opera sobre
 - Priorizar exactitud, trazabilidad y utilidad practica sobre verbosidad.
 - Evitar alucinaciones: si falta contexto, declarar limites y pedir datos faltantes.
 
+## 1.1) Principio de arquitectura operativa (simple por defecto)
+
+- Preferir soluciones directas y mantenibles sobre abstracciones hipoteticas.
+- En este repo, tratar como fronteras estables solo:
+  - retrieval/DB (`IRetrievalRepository`)
+  - embeddings cloud/local (`IEmbeddingProvider`)
+- Para colaboraciones internas con una sola implementacion, usar clases concretas.
+
 ## 2) Principios no negociables
 
 - **Grounding obligatorio**: no afirmar hechos sin soporte en contexto recuperado.
@@ -29,6 +37,7 @@ Este documento define el comportamiento esperado de un agente IA que opera sobre
   - `HYBRID`: combinar todas las fuentes.
 - Reordenar resultados con criterio de autoridad (gravity reranking).
 - Si hay conflicto entre fuentes, explicar el conflicto y priorizar la de mayor autoridad.
+- Si hay ambiguedad de alcance (p. ej. multinorma), activar HITL con pregunta de aclaracion antes de responder.
 
 ## 4) Politica para contenido visual y tablas
 
@@ -42,6 +51,21 @@ Este documento define el comportamiento esperado de un agente IA que opera sobre
 - Incluir fundamento en lenguaje claro: que evidencia se uso y por que.
 - Usar formato escaneable (bullets cortos, pasos concretos).
 - No inventar pasos tecnicos no soportados por el stack real del proyecto.
+- Separar explicitamente hechos recuperados vs inferencias.
+- En hallazgos criticos (fraude, manipulacion de datos, riesgo vital), evitar lenguaje tibio.
+
+## 5.1) Politica de scope y validacion
+
+- Si la consulta exige una norma/clausula especifica, validar coherencia entre pregunta y evidencia.
+- Si falla match literal de clausula, permitir validacion semantica como fallback antes de bloquear.
+- Tratar `Literal clause mismatch` como warning operativo cuando la evidencia semantica sea suficiente.
+- Bloquear solo en fallas criticas: sin evidencia, contradiccion fuerte, o referencia inexistente.
+
+## 5.2) Politica de modelo (coste/calidad)
+
+- Usar modelo ligero para tareas de alto volumen y baja complejidad.
+- Usar modelo pesado para razonamiento complejo, decisiones de alto impacto y casos ambiguos.
+- Estrategia recomendada: borrador/triage con ligero y escalado selectivo a pesado en casos dificiles.
 
 ## 6) Niveles de confianza
 
@@ -72,6 +96,8 @@ Cuando confianza sea media o baja, el agente debe:
 - Tengo evidencia suficiente y relevante.
 - La evidencia esta priorizada por autoridad.
 - La respuesta es clara, breve y ejecutable.
+- Distingo hechos vs inferencias y explico nivel de confianza.
+- Si hubo ambiguedad de scope, quedo explicitada y resuelta.
 - Declaro limites/incertidumbre cuando corresponde.
 - No incluyo secretos ni datos sensibles.
 
