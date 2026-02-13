@@ -11,6 +11,32 @@ class InstructorClientFactory:
     """
 
     @staticmethod
+    def _create_gemini_instructor_client(instructor_module: Any) -> Tuple[Any, str]:
+        """Build Gemini instructor client using non-deprecated google.genai SDK."""
+        if not AIModelConfig.GEMINI_API_KEY:
+            raise ValueError("Missing GEMINI_API_KEY")
+
+        try:
+            from google import genai
+        except ImportError as exc:
+            raise ImportError("google-genai package not installed") from exc
+
+        client = genai.Client(api_key=AIModelConfig.GEMINI_API_KEY)
+
+        factory_fn = getattr(instructor_module, "from_genai", None)
+        if factory_fn is None:
+            factory_fn = getattr(instructor_module, "from_gemini", None)
+        if factory_fn is None:
+            raise AttributeError("Instructor build does not support Gemini adapters (from_genai/from_gemini missing)")
+
+        mode = getattr(instructor_module.Mode, "GEMINI_JSON", instructor_module.Mode.JSON)
+        wrapped = factory_fn(
+            client=client,
+            mode=mode,
+        )
+        return wrapped, AIModelConfig.GEMINI_MODEL_NAME
+
+    @staticmethod
     def create_async_client() -> Tuple[Any, str]:
         """
         Create and return a configured ASYNC instructor client and model name.
@@ -38,17 +64,9 @@ class InstructorClientFactory:
         # 2. Try Gemini (Async)
         if AIModelConfig.GEMINI_API_KEY:
             try:
-                import google.generativeai as genai
-                genai.configure(api_key=AIModelConfig.GEMINI_API_KEY)
-                # Gemini doesn't use httpx directly in from_gemini, but we want async support
-                client = instructor.from_gemini(
-                    client=genai.GenerativeModel(AIModelConfig.GEMINI_MODEL_NAME),
-                    mode=instructor.Mode.GEMINI_JSON,
-                )
-                # Note: instructor.from_gemini actually supports async out of the box
-                return client, AIModelConfig.GEMINI_MODEL_NAME
-            except ImportError:
-                pass
+                return InstructorClientFactory._create_gemini_instructor_client(instructor)
+            except Exception as exc:
+                logger.warning(f"Gemini async client init failed: {exc}")
         
         # Fallback to OpenAI Async if needed
         openai_key = AIModelConfig.OPENAI_API_KEY
@@ -96,19 +114,12 @@ class InstructorClientFactory:
         # 2. Try Gemini
         if AIModelConfig.GEMINI_API_KEY:
             try:
-                import google.generativeai as genai
-                
-                genai.configure(api_key=AIModelConfig.GEMINI_API_KEY)
-                client = instructor.from_gemini(
-                    client=genai.GenerativeModel(AIModelConfig.GEMINI_MODEL_NAME),
-                    mode=instructor.Mode.GEMINI_JSON,
-                )
-                model = AIModelConfig.GEMINI_MODEL_NAME
+                client, model = InstructorClientFactory._create_gemini_instructor_client(instructor)
                 logger.debug(f"InstructorClientFactory using Gemini: {model}")
                 return client, model
-                
-            except ImportError:
-                logger.warning("google-generativeai package not installed")
+
+            except Exception as exc:
+                logger.warning(f"google-genai / instructor Gemini init failed: {exc}")
 
         # 3. Try OpenAI
         openai_key = AIModelConfig.OPENAI_API_KEY

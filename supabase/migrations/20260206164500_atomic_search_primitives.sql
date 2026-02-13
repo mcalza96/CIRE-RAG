@@ -33,7 +33,7 @@ BEGIN
             -- Preserve legacy fields just in case, or add more here if needed
             'source_file', 'unknown' -- Will be populated by join in future or if column exists
         ) AS metadata,
-        (1 - (cc.embedding <=> query_embedding)) AS similarity
+        (1 - (cc.embedding <=> query_embedding))::double precision AS similarity
     FROM public.content_chunks cc
     WHERE cc.source_id = ANY(source_ids)
     AND (1 - (cc.embedding <=> query_embedding)) > match_threshold
@@ -69,7 +69,7 @@ BEGIN
             'file_page_number', cc.file_page_number,
             'source_id', cc.source_id
         ) AS metadata,
-        ts_rank_cd(cc.fts, websearch_to_tsquery('spanish', query_text)) AS rank
+        ts_rank_cd(cc.fts, websearch_to_tsquery('spanish', query_text))::double precision AS rank
     FROM public.content_chunks cc
     WHERE cc.source_id = ANY(source_ids)
     AND cc.fts @@ websearch_to_tsquery('spanish', query_text)

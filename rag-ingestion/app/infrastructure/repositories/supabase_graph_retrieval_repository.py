@@ -136,8 +136,50 @@ class SupabaseGraphRetrievalRepository:
         limit_count: int = 12,
         max_hops: int = 2,
         decay_factor: float = 0.82,
+        filter_node_types: list[str] | None = None,
+        filter_relation_types: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         client = await self._get_client()
+        try:
+            response = await client.rpc(
+                "search_graph_nav",
+                {
+                    "query_embedding": query_vector,
+                    "p_tenant_id": str(tenant_id),
+                    "match_threshold": match_threshold,
+                    "limit_count": limit_count,
+                    "max_hops": max_hops,
+                    "decay_factor": decay_factor,
+                    "filter_node_types": filter_node_types,
+                    "filter_relation_types": filter_relation_types,
+                },
+            ).execute()
+            nav_rows = self._rows(response.data)
+            if nav_rows:
+                normalized: list[dict[str, Any]] = []
+                for row in nav_rows:
+                    path_info = row.get("path_info")
+                    path_ids: list[str] = []
+                    if isinstance(path_info, list):
+                        for step in path_info:
+                            if isinstance(step, dict) and step.get("id"):
+                                path_ids.append(str(step.get("id")))
+
+                    normalized.append(
+                        {
+                            "entity_id": row.get("id"),
+                            "entity_name": row.get("title"),
+                            "entity_type": row.get("node_type"),
+                            "entity_description": row.get("description"),
+                            "similarity": row.get("similarity"),
+                            "hop_depth": row.get("hop_depth"),
+                            "path_ids": path_ids,
+                        }
+                    )
+                return normalized
+        except Exception as exc:
+            logger.info("search_graph_nav_unavailable_fallback", error=str(exc))
+
         response = await client.rpc(
             "hybrid_multi_hop_search",
             {

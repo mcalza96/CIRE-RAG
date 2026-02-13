@@ -177,6 +177,13 @@ class AtomicRetrievalEngine:
             return []
 
         try:
+            node_types = scope_context.get("graph_filter_node_types")
+            relation_types = scope_context.get("graph_filter_relation_types")
+            if not isinstance(node_types, list):
+                node_types = None
+            if not isinstance(relation_types, list):
+                relation_types = None
+
             rows = await self._graph_repo.search_multi_hop_context(
                 tenant_id=tenant_uuid,
                 query_vector=query_vector,
@@ -184,6 +191,8 @@ class AtomicRetrievalEngine:
                 limit_count=max(min(fetch_k, 12), 6),
                 max_hops=2,
                 decay_factor=0.82,
+                filter_node_types=node_types,
+                filter_relation_types=relation_types,
             )
         except Exception as exc:
             logger.warning("atomic_graph_hop_failed", error=str(exc))

@@ -1,7 +1,7 @@
 deepeval
 openai
 tabulate
-google-generativeai
+google-genai
 pymupdf4llm
 python-multipart
 fastapi

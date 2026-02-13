@@ -21,12 +21,14 @@ class GeminiAdapter(BaseVLM):
             raise ValueError("GeminiAdapter requires a non-empty API key.")
 
         try:
-            import google.generativeai as genai
+            from google import genai
+            from google.genai import types as genai_types
         except ImportError as exc:
-            raise ImportError("google-generativeai is required for GeminiAdapter.") from exc
+            raise ImportError("google-genai is required for GeminiAdapter.") from exc
 
-        genai.configure(api_key=api_key)
-        self._model = genai.GenerativeModel(model_name=model_name)
+        self._client = genai.Client(api_key=api_key)
+        self._types = genai_types
+        self._model_name = model_name
         self._temperature = temperature
 
     def generate_structured_output(
@@ -42,12 +44,21 @@ class GeminiAdapter(BaseVLM):
         model_prompt = self._build_schema_prompt(prompt=prompt, schema=schema)
 
         try:
-            response = self._model.generate_content(
-                [model_prompt, image_part],
-                generation_config={
-                    "temperature": self._temperature,
-                    "response_mime_type": "application/json",
-                },
+            response = self._client.models.generate_content(
+                model=self._model_name,
+                contents=[
+                    {
+                        "role": "user",
+                        "parts": [
+                            {"text": model_prompt},
+                            {"inline_data": image_part},
+                        ],
+                    }
+                ],
+                config=self._types.GenerateContentConfig(
+                    temperature=self._temperature,
+                    response_mime_type="application/json",
+                ),
             )
             response_text = self._extract_response_text(response)
             if not response_text:
@@ -66,14 +77,16 @@ class GeminiAdapter(BaseVLM):
         """Build a Gemini-compatible inline image payload."""
 
         if isinstance(image_content, bytes):
-            encoded = base64.b64encode(image_content).decode("ascii")
-            return {"mime_type": mime_type, "data": encoded}
+            return {"mime_type": mime_type, "data": image_content}
 
         if image_content.startswith("data:"):
             _, encoded = image_content.split(",", 1)
-            return {"mime_type": mime_type, "data": encoded}
+            return {"mime_type": mime_type, "data": base64.b64decode(encoded)}
 
-        return {"mime_type": mime_type, "data": image_content}
+        try:
+            return {"mime_type": mime_type, "data": base64.b64decode(image_content)}
+        except Exception:
+            return {"mime_type": mime_type, "data": image_content.encode("utf-8")}
 
     @staticmethod
     def _build_schema_prompt(prompt: str, schema: type[BaseModel] | dict[str, Any]) -> str:
@@ -130,6 +143,22 @@ class GeminiAdapter(BaseVLM):
 
         if text:
             return text
+
+        try:
+            candidates = getattr(response, "candidates", None) or []
+            if candidates:
+                first = candidates[0]
+                content = getattr(first, "content", None)
+                parts = getattr(content, "parts", None) or []
+                text_parts: list[str] = []
+                for part in parts:
+                    value = getattr(part, "text", None)
+                    if isinstance(value, str) and value.strip():
+                        text_parts.append(value)
+                if text_parts:
+                    return "\n".join(text_parts)
+        except Exception:
+            pass
 
         finish_reason = cls._extract_finish_reason(response)
         if finish_reason and (finish_reason == "4" or "RECITATION" in finish_reason.upper()):
