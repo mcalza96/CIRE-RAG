@@ -30,7 +30,7 @@ const answer = await client.createChatCompletion({
   max_context_chunks: 8,
 });
 
-console.log(answer.answer, answer.citations);
+console.log(answer.context_chunks, answer.citations);
 ```
 
 ## Error handling

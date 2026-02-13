@@ -69,9 +69,12 @@ export interface CreateChatCompletionRequest {
 
 export interface CreateChatCompletionResponse {
   interaction_id: string;
-  answer: string;
+  query: string;
+  context_chunks: string[];
+  context_map: Record<string, unknown>;
   citations: string[];
   mode: string;
+  requires_scope_clarification: boolean;
   scope_warnings: string | null;
 }
 

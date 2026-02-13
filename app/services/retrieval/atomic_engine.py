@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import structlog
 
 from app.application.services.query_decomposer import QueryPlan
+from app.core.observability.retrieval_metrics import retrieval_metrics_store
 from app.core.settings import settings
 from app.infrastructure.repositories.supabase_graph_retrieval_repository import SupabaseGraphRetrievalRepository
 from app.infrastructure.supabase.client import get_async_supabase_client
@@ -44,17 +45,38 @@ class AtomicRetrievalEngine:
             return []
 
         vector_start = time.perf_counter()
-        vector_rows = await self._search_vectors(query_vector=query_vector, source_ids=source_ids, fetch_k=fetch_k)
-        vector_ms = round((time.perf_counter() - vector_start) * 1000, 2)
-
+        vector_rows: list[dict[str, Any]] = []
         fts_rows: list[dict[str, Any]] = []
+        fused: list[dict[str, Any]] = []
+        vector_ms = 0.0
         fts_ms = 0.0
-        if settings.ATOMIC_ENABLE_FTS:
-            fts_start = time.perf_counter()
-            fts_rows = await self._search_fts(query_text=query, source_ids=source_ids, fetch_k=fetch_k)
-            fts_ms = round((time.perf_counter() - fts_start) * 1000, 2)
+        if settings.ATOMIC_USE_HYBRID_RPC:
+            try:
+                fused = await self._search_hybrid_rpc(
+                    query_text=query,
+                    query_vector=query_vector,
+                    source_ids=source_ids,
+                    fetch_k=fetch_k,
+                )
+                vector_ms = round((time.perf_counter() - vector_start) * 1000, 2)
+                retrieval_metrics_store.record_hybrid_rpc_hit()
+                logger.info("atomic_hybrid_rpc_used", rows=len(fused), source_count=len(source_ids))
+            except Exception as hybrid_exc:
+                retrieval_metrics_store.record_hybrid_rpc_fallback()
+                logger.warning("atomic_hybrid_rpc_failed_fallback", error=str(hybrid_exc))
+        else:
+            retrieval_metrics_store.record_hybrid_rpc_disabled()
 
-        fused = self._fuse_rrf(vector_rows=vector_rows, fts_rows=fts_rows, k=max(fetch_k, k))
+        if not fused:
+            vector_rows = await self._search_vectors(query_vector=query_vector, source_ids=source_ids, fetch_k=fetch_k)
+            vector_ms = round((time.perf_counter() - vector_start) * 1000, 2)
+
+            if settings.ATOMIC_ENABLE_FTS:
+                fts_start = time.perf_counter()
+                fts_rows = await self._search_fts(query_text=query, source_ids=source_ids, fetch_k=fetch_k)
+                fts_ms = round((time.perf_counter() - fts_start) * 1000, 2)
+
+            fused = self._fuse_rrf(vector_rows=vector_rows, fts_rows=fts_rows, k=max(fetch_k, k))
         graph_rows = await self._graph_hop(
             query_vector=query_vector,
             scope_context=scope_context or {},
@@ -76,9 +98,53 @@ class AtomicRetrievalEngine:
             fts_rows=len(fts_rows),
             graph_rows=len(graph_rows),
             merged_rows=len(merged),
+            hybrid_rpc_enabled=bool(settings.ATOMIC_USE_HYBRID_RPC),
+            hybrid_rpc_used=bool(settings.ATOMIC_USE_HYBRID_RPC and not vector_rows and not fts_rows),
             query_preview=query[:50],
         )
         return merged[:k]
+
+    async def _search_hybrid_rpc(
+        self,
+        query_text: str,
+        query_vector: list[float],
+        source_ids: list[str],
+        fetch_k: int,
+    ) -> list[dict[str, Any]]:
+        client = await self._get_client()
+        response = await client.rpc(
+            "retrieve_hybrid_optimized",
+            {
+                "query_embedding": query_vector,
+                "query_text": query_text,
+                "source_ids": source_ids,
+                "match_threshold": settings.ATOMIC_MATCH_THRESHOLD,
+                "match_count": max(fetch_k, 1),
+                "rrf_k": settings.ATOMIC_RRF_K,
+                "vector_weight": settings.ATOMIC_RRF_VECTOR_WEIGHT,
+                "fts_weight": settings.ATOMIC_RRF_FTS_WEIGHT,
+            },
+        ).execute()
+        rows = response.data if isinstance(response.data, list) else []
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            raw_metadata = row.get("metadata")
+            metadata: dict[str, Any] = cast(dict[str, Any], raw_metadata) if isinstance(raw_metadata, dict) else {}
+            normalized.append(
+                {
+                    "id": str(row.get("id") or ""),
+                    "content": str(row.get("content") or ""),
+                    "metadata": metadata,
+                    "similarity": float(row.get("similarity") or 0.0),
+                    "score": float(row.get("score") or 0.0),
+                    "source_layer": str(row.get("source_layer") or "hybrid"),
+                    "source_type": str(row.get("source_type") or "content_chunk"),
+                    "source_id": (metadata or {}).get("source_id"),
+                }
+            )
+        return normalized
 
     async def retrieve_context_from_plan(
         self,
@@ -142,7 +208,7 @@ class AtomicRetrievalEngine:
                 logger.warning("atomic_plan_subquery_failed", error=str(payload))
                 continue
             if isinstance(payload, list):
-                merged.extend(payload)
+                merged.extend(item for item in payload if isinstance(item, dict))
         return self._dedupe_by_id(merged)[:k]
 
     async def _search_vectors(self, query_vector: list[float], source_ids: list[str], fetch_k: int) -> list[dict[str, Any]]:
@@ -161,7 +227,8 @@ class AtomicRetrievalEngine:
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            raw_metadata = row.get("metadata")
+            metadata: dict[str, Any] = cast(dict[str, Any], raw_metadata) if isinstance(raw_metadata, dict) else {}
             normalized.append(
                 {
                     "id": str(row.get("id") or ""),
@@ -171,7 +238,7 @@ class AtomicRetrievalEngine:
                     "score": float(row.get("similarity") or 0.0),
                     "source_layer": "vector",
                     "source_type": "content_chunk",
-                    "source_id": metadata.get("source_id"),
+                    "source_id": (metadata or {}).get("source_id"),
                 }
             )
         return normalized
@@ -191,7 +258,8 @@ class AtomicRetrievalEngine:
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            raw_metadata = row.get("metadata")
+            metadata: dict[str, Any] = cast(dict[str, Any], raw_metadata) if isinstance(raw_metadata, dict) else {}
             normalized.append(
                 {
                     "id": str(row.get("id") or ""),
@@ -201,7 +269,7 @@ class AtomicRetrievalEngine:
                     "score": float(row.get("rank") or 0.0),
                     "source_layer": "fts",
                     "source_type": "content_chunk",
-                    "source_id": metadata.get("source_id"),
+                    "source_id": (metadata or {}).get("source_id"),
                 }
             )
         return normalized
@@ -259,6 +327,8 @@ class AtomicRetrievalEngine:
 
         out: list[dict[str, Any]] = []
         for row in rows:
+            if not isinstance(row, dict):
+                continue
             entity_id = str(row.get("entity_id") or "")
             if not entity_id:
                 continue
@@ -319,18 +389,19 @@ class AtomicRetrievalEngine:
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            raw_metadata = row.get("metadata")
+            metadata: dict[str, Any] = cast(dict[str, Any], raw_metadata) if isinstance(raw_metadata, dict) else {}
             if collection_name:
-                row_name = str(metadata.get("collection_name") or "").strip().lower()
+                row_name = str((metadata or {}).get("collection_name") or "").strip().lower()
                 if row_name and row_name != collection_name:
                     continue
 
             if source_standards:
                 candidate_values = [
-                    metadata.get("source_standard"),
-                    metadata.get("standard"),
-                    metadata.get("scope"),
-                    metadata.get("norma"),
+                    (metadata or {}).get("source_standard"),
+                    (metadata or {}).get("standard"),
+                    (metadata or {}).get("scope"),
+                    (metadata or {}).get("norma"),
                 ]
                 row_scope = ""
                 for value in candidate_values:

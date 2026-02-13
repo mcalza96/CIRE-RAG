@@ -7,7 +7,6 @@ from pydantic import BaseModel, Field
 
 from app.api.v1.auth import require_service_auth
 from app.api.v1.errors import ERROR_RESPONSES, ApiError
-from app.services.knowledge.grounded_answer_service import GroundedAnswerService
 from app.services.knowledge.knowledge_service import KnowledgeService
 
 logger = structlog.get_logger(__name__)
@@ -45,18 +44,24 @@ class ChatCompletionRequest(BaseModel):
 
 class ChatCompletionResponse(BaseModel):
     interaction_id: str
-    answer: str
+    query: str
+    context_chunks: List[str]
+    context_map: Dict[str, Any]
     citations: List[str]
     mode: str
+    requires_scope_clarification: bool = False
     scope_warnings: Optional[str] = None
 
     model_config = {
         "json_schema_extra": {
             "example": {
                 "interaction_id": "be6236d6-5eca-4ec6-8296-5d42c4b16595",
-                "answer": "La clausula 8.5 exige controlar la produccion y prestacion del servicio...",
+                "query": "Que exige la clausula 8.5 de ISO 9001?",
+                "context_chunks": ["La organizacion debe implementar controles de produccion..."],
+                "context_map": {"chunk-001": {"id": "chunk-001", "similarity": 0.87}},
                 "citations": ["chunk-001", "chunk-017"],
                 "mode": "VECTOR_ONLY",
+                "requires_scope_clarification": False,
                 "scope_warnings": None,
             }
         }
@@ -79,15 +84,31 @@ class ChatFeedbackRequest(BaseModel):
     }
 
 
-def get_grounded_answer_service() -> GroundedAnswerService:
-    return GroundedAnswerService()
+def _build_retrieval_query(message: str, history: List[ChatMessage], max_turns: int = 6) -> str:
+    question = (message or "").strip()
+    if not history:
+        return question
+
+    history_tail = [m for m in history if (m.content or "").strip()][-max_turns:]
+    if not history_tail:
+        return question
+
+    rendered_history = "\n".join(
+        f"{(m.role or 'user').upper()}: {m.content.strip()}" for m in history_tail
+    )
+    return (
+        "HISTORIAL RELEVANTE:\n"
+        f"{rendered_history}\n\n"
+        "PREGUNTA ACTUAL:\n"
+        f"{question}"
+    )
 
 
 @router.post(
     "/completions",
     operation_id="createChatCompletion",
     summary="Create grounded chat completion",
-    description="Generates a grounded answer using retrieved context and returns citations.",
+    description="Retrieval-only endpoint. Returns grounded evidence payload for external orchestrators.",
     response_model=ChatCompletionResponse,
     responses={
         200: {
@@ -96,9 +117,12 @@ def get_grounded_answer_service() -> GroundedAnswerService:
                 "application/json": {
                     "example": {
                         "interaction_id": "be6236d6-5eca-4ec6-8296-5d42c4b16595",
-                        "answer": "La clausula 8.5 exige controlar la produccion y prestacion del servicio...",
+                        "query": "Que exige la clausula 8.5 de ISO 9001?",
+                        "context_chunks": ["La organizacion debe implementar controles de produccion..."],
+                        "context_map": {"chunk-001": {"id": "chunk-001", "similarity": 0.87}},
                         "citations": ["chunk-001", "chunk-017"],
                         "mode": "VECTOR_ONLY",
+                        "requires_scope_clarification": False,
                         "scope_warnings": None,
                     }
                 }
@@ -113,11 +137,11 @@ def get_grounded_answer_service() -> GroundedAnswerService:
 async def create_chat_completion(
     request: ChatCompletionRequest,
     knowledge_service: KnowledgeService = Depends(KnowledgeService),
-    grounded_answer_service: GroundedAnswerService = Depends(get_grounded_answer_service),
 ) -> ChatCompletionResponse:
     try:
+        retrieval_query = _build_retrieval_query(request.message, request.history)
         context = await knowledge_service.get_grounded_context(
-            query=request.message,
+            query=retrieval_query,
             institution_id=request.tenant_id,
         )
 
@@ -125,23 +149,27 @@ async def create_chat_completion(
         if requires_scope:
             return ChatCompletionResponse(
                 interaction_id=str(uuid4()),
-                answer=str(context.get("scope_message") or "Necesito aclarar el alcance para responder."),
+                query=request.message,
+                context_chunks=[],
+                context_map={},
                 citations=[],
                 mode=str(context.get("mode") or "AMBIGUOUS_SCOPE"),
+                requires_scope_clarification=True,
                 scope_warnings=str(context.get("scope_message") or ""),
             )
 
-        answer = await grounded_answer_service.generate_answer(
-            query=request.message,
-            context_chunks=list(context.get("context_chunks") or []),
-            max_chunks=max(1, int(request.max_context_chunks)),
-        )
+        context_chunks = list(context.get("context_chunks") or [])
+        if len(context_chunks) > max(1, int(request.max_context_chunks)):
+            context_chunks = context_chunks[: max(1, int(request.max_context_chunks))]
 
         return ChatCompletionResponse(
             interaction_id=str(uuid4()),
-            answer=answer,
+            query=request.message,
+            context_chunks=context_chunks,
+            context_map=dict(context.get("context_map") or {}),
             citations=[str(c) for c in (context.get("citations") or [])],
             mode=str(context.get("mode") or "VECTOR_ONLY"),
+            requires_scope_clarification=False,
             scope_warnings=context.get("scope_message"),
         )
     except ApiError:

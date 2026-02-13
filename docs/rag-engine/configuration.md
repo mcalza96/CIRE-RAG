@@ -44,6 +44,7 @@ Flags de pipeline cloud/local:
 - `JINA_READER_URL_TEMPLATE` (opcional, usado cuando `INGEST_PARSER_MODE=cloud`)
 - `RERANK_MODE` (`local` | `jina` | `hybrid`)
 - `AUTHORITY_CLASSIFIER_MODE` (`rules` | `embedding_first`)
+- `ATOMIC_USE_HYBRID_RPC` (`true` | `false`; usa RPC SQL unificada para vector + FTS + RRF)
 
 ## Puertos y ejecucion
 

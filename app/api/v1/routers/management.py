@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from app.api.v1.auth import require_service_auth
 from app.api.v1.errors import ERROR_RESPONSES, ApiError
 from app.api.v1.routers.ingestion import get_ingestion_use_case
+from app.core.observability.retrieval_metrics import retrieval_metrics_store
 from app.application.use_cases.manual_ingestion_use_case import ManualIngestionUseCase
 
 logger = structlog.get_logger(__name__)
@@ -33,6 +34,13 @@ class HealthResponse(BaseModel):
     status: str = Field(examples=["ok"])
     service: str = Field(examples=["rag-engine"])
     api_v1: str = Field(examples=["available"])
+
+
+class RetrievalMetricsResponse(BaseModel):
+    hybrid_rpc_hits: int = 0
+    hybrid_rpc_fallbacks: int = 0
+    hybrid_rpc_disabled: int = 0
+    hybrid_rpc_hit_ratio: float = 0.0
 
 
 @router.get(
@@ -143,3 +151,15 @@ async def get_queue_status(
 )
 async def management_health() -> HealthResponse:
     return HealthResponse(status="ok", service="rag-engine", api_v1="available")
+
+
+@router.get(
+    "/retrieval/metrics",
+    operation_id="getRetrievalMetrics",
+    summary="Get retrieval backend metrics",
+    description="Returns runtime counters for hybrid SQL RPC usage and fallback behavior.",
+    response_model=RetrievalMetricsResponse,
+    responses={200: {"description": "Retrieval backend metrics"}, 401: ERROR_RESPONSES[401], 500: ERROR_RESPONSES[500]},
+)
+async def get_retrieval_metrics() -> RetrievalMetricsResponse:
+    return RetrievalMetricsResponse.model_validate(retrieval_metrics_store.snapshot())

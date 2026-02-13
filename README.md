@@ -80,11 +80,12 @@ Base URL local: `http://localhost:8000/api/v1`
 - `POST /documents`: sube documento y devuelve `document_id` con estado `accepted`.
 - `GET /documents/{document_id}/status`: estado de procesamiento (`queued|processing|completed|failed`).
 - `DELETE /documents/{document_id}`: elimina documento (opcionalmente chunks).
-- `POST /chat/completions`: respuesta final grounded (answer + citations).
+- `POST /chat/completions`: retrieval-only (`context_chunks`, `context_map`, `citations`) para orquestadores.
 - `POST /chat/feedback`: feedback de la respuesta.
 - `GET /management/collections`: colecciones por tenant.
 - `GET /management/queue/status`: profundidad y ETA de cola.
 - `GET /management/health`: health de API v1.
+- `GET /management/retrieval/metrics`: metricas runtime del backend de retrieval.
 
 Auth (entornos desplegados, por ejemplo `APP_ENV=production`): enviar `Authorization: Bearer <RAG_SERVICE_SECRET>` o `X-Service-Secret: <RAG_SERVICE_SECRET>`.
 

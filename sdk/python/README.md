@@ -22,7 +22,7 @@ try:
         tenant_id="tenant-demo",
         max_context_chunks=8,
     )
-    print(response["answer"])
+    print(response["context_chunks"])
     print(response["citations"])
 except CireRagApiError as err:
     print(err.status, err.code, err.request_id)
@@ -41,7 +41,7 @@ async def main() -> None:
             message="Resume ISO 14001 clause 6.1",
             tenant_id="tenant-demo",
         )
-        print(result["answer"])
+        print(result["context_chunks"])
 
 
 asyncio.run(main())

@@ -96,6 +96,7 @@ class Settings(BaseSettings):
     SCOPE_STRICT_FILTERING: bool = False
     ATOMIC_ENABLE_FTS: bool = True
     ATOMIC_ENABLE_GRAPH_HOP: bool = True
+    ATOMIC_USE_HYBRID_RPC: bool = True
     ATOMIC_MATCH_THRESHOLD: float = 0.25
     ATOMIC_RRF_VECTOR_WEIGHT: float = 0.7
     ATOMIC_RRF_FTS_WEIGHT: float = 0.3
