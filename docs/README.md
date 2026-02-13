@@ -1,6 +1,7 @@
 # Documentation
 
 This is the canonical documentation entrypoint for CIRE-RAG.
+Use this file as single source of truth for navigation.
 
 ## Start Here
 

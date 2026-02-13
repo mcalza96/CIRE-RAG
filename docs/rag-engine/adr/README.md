@@ -12,17 +12,17 @@ This folder tracks architecture decisions that evolve from the `s.txt` research 
 ## Mapping to implementation and PRs
 
 - `ADR-0001` -> ingestion and visual parsing pipeline
-  - Files: `app/services/ingestion/pdf_parser.py`, `app/services/ingestion/visual_parser.py`, `app/services/retrieval/engine.py`
+  - Files: `app/services/ingestion/pdf_parser.py`, `app/services/ingestion/visual_parser.py`, `app/services/retrieval/atomic_engine.py`
   - PR scope: enforce text-first retrieval over visual summaries + visual hydration guardrails
 
 - `ADR-0002` -> model/provider governance
-  - Files: `app/core/config/model_config.py`, `app/core/models/factory.py`, `docs/configuration.md`
+  - Files: `app/core/config/model_config.py`, `app/core/models/factory.py`, `../configuration.md`
   - PR scope: provider defaults, deprecation policy, compatibility checks
 
 - `ADR-0003` -> retrieval query strategy
-  - Files: `app/services/retrieval/engine.py`, `app/application/services/retrieval_router.py`, SQL RPCs in migrations
+  - Files: `app/services/retrieval/atomic_engine.py`, `app/application/services/retrieval_router.py`, SQL RPCs in migrations
   - PR scope: hybrid ranking consistency and threshold tuning
 
 - `ADR-0004` -> context budget controls for tables
-  - Files: `app/services/knowledge/gravity_reranker.py`, `app/services/retrieval/engine.py`, future pruner module
+  - Files: `app/services/knowledge/gravity_reranker.py`, `app/services/retrieval/atomic_engine.py`, future pruner module
   - PR scope: implement deterministic table-pruning stage before final generation

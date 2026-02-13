@@ -124,15 +124,15 @@ Ejemplo (aclaracion de scope en `/knowledge/retrieve`):
 
 ## Documentacion adicional
 
-- Canonica para todo el repo: `../docs/README.md`
-- Arquitectura del servicio: `docs/architecture.md`
-- Flujos y diagramas: `docs/flows-and-diagrams.md`
-- Executive One-Page: `docs/one-page-architecture.md`
-- ADRs: `docs/adr/README.md`
-- Configuracion: `docs/configuration.md`
-- Testing: `docs/testing.md`
-- Runbooks: `docs/runbooks/common-incidents.md`
-- Baseline Visual Anchors: `docs/runbooks/visual-anchor-baseline.md`
+- Canonica para todo el repo: `../README.md`
+- Arquitectura del servicio: `architecture.md`
+- Flujos y diagramas: `flows-and-diagrams.md`
+- Executive One-Page: `one-page-architecture.md`
+- ADRs: `adr/README.md`
+- Configuracion: `configuration.md`
+- Testing: `testing.md`
+- Runbooks: `runbooks/common-incidents.md`
+- Baseline Visual Anchors: `runbooks/visual-anchor-baseline.md`
 
 ## Dependency management
 
