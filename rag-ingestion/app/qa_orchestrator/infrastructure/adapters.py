@@ -330,10 +330,19 @@ RESPUESTA:
         )
         text = str(completion.choices[0].message.content or "").strip()
         if not text:
-            text = (
-                "No encontrado explicitamente en el contexto recuperado. "
-                "No puedo emitir una conclusion confiable sin evidencia trazable adicional (C#/R#)."
-            )
+            if chunks:
+                bullets = []
+                for item in chunks[:3]:
+                    snippet = (item.content or "").replace("\n", " ").strip()
+                    if len(snippet) > 220:
+                        snippet = snippet[:220].rstrip() + "..."
+                    bullets.append(f"- {snippet} Fuente({item.source})")
+                text = "No hubo salida textual del modelo. Resumen mínimo desde evidencia recuperada:\n" + "\n".join(bullets)
+            else:
+                text = (
+                    "No encontrado explicitamente en el contexto recuperado. "
+                    "No puedo emitir una conclusion confiable sin evidencia trazable adicional (C#/R#)."
+                )
         return AnswerDraft(text=text, mode=plan.mode, evidence=[*chunks, *summaries])
 
 

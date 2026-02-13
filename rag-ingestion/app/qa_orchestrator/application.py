@@ -44,12 +44,31 @@ class HandleQuestionUseCase:
         self._validator = validator
 
     async def execute(self, cmd: HandleQuestionCommand) -> HandleQuestionResult:
+        normalized_query = (cmd.query or "").lower()
+        has_user_clarification = (
+            "aclaración de alcance:" in normalized_query
+            or "aclaracion de alcance:" in normalized_query
+            or "modo preferido en sesión:" in normalized_query
+            or "modo preferido en sesion:" in normalized_query
+            or "__clarified_scope__=true" in normalized_query
+        )
+
         intent = classify_intent(cmd.query)
         plan = build_retrieval_plan(intent, query=cmd.query)
         detected_scopes = detect_scope_candidates(cmd.query)
         conflict_mode = detect_conflict_objectives(cmd.query)
 
-        if conflict_mode and len(detected_scopes) >= 2:
+        if conflict_mode and has_user_clarification:
+            plan = RetrievalPlan(
+                mode="explicativa",
+                chunk_k=max(plan.chunk_k, 35),
+                chunk_fetch_k=max(plan.chunk_fetch_k, 140),
+                summary_k=max(plan.summary_k, 4),
+                require_literal_evidence=False,
+                requested_standards=plan.requested_standards,
+            )
+
+        if not has_user_clarification and conflict_mode and len(detected_scopes) >= 2:
             clarification = ClarificationRequest(
                 question=(
                     "Detecté conflicto entre integridad de evidencia y confidencialidad del denunciante "
@@ -73,7 +92,12 @@ class HandleQuestionUseCase:
                 clarification=clarification,
             )
 
-        if intent.mode == "explicativa" and len(detected_scopes) >= 2 and len(plan.requested_standards) < 2:
+        if (
+            not has_user_clarification
+            and intent.mode == "explicativa"
+            and len(detected_scopes) >= 2
+            and len(plan.requested_standards) < 2
+        ):
             clarification = ClarificationRequest(
                 question=(
                     "Detecté señales de múltiples normas ("

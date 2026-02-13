@@ -1,11 +1,10 @@
-"""Unit tests for structured visual search via UnifiedRetrievalEngine."""
+"""Unit tests for atomic retrieval RPC wiring."""
 
 from __future__ import annotations
 
 import sys
 import types
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from typing import Any, cast
 
 import pytest
 
@@ -22,10 +21,10 @@ class _JinaStub:
         return [[0.001] * 1024]
 
 
-_fake_embedding.JinaEmbeddingService = _JinaStub
+setattr(_fake_embedding, "JinaEmbeddingService", _JinaStub)
 sys.modules.setdefault("app.services.embedding_service", _fake_embedding)
 
-from app.services.retrieval.engine import UnifiedRetrievalEngine
+from app.services.retrieval.atomic_engine import AtomicRetrievalEngine
 
 
 class _FakeRPCChain:
@@ -50,32 +49,35 @@ class _FakeClient:
 
 
 @pytest.mark.asyncio
-async def test_engine_passes_query_text_to_rpc() -> None:
-    """UnifiedRetrievalEngine should pass p_query_text in RPC params."""
+async def test_atomic_engine_passes_query_text_to_fts_rpc() -> None:
+    """AtomicRetrievalEngine should pass query_text in FTS RPC params."""
 
     client = _FakeClient()
-    engine = UnifiedRetrievalEngine(
-        embedding_service=_JinaStub(),
+    engine = AtomicRetrievalEngine(
+        embedding_service=cast(Any, _JinaStub()),
         supabase_client=client,
     )
 
-    await engine.retrieve_context(query="tolerancia 0.05")
+    await engine._search_fts(query_text="tolerancia 0.05", source_ids=["s1"], fetch_k=10)
 
+    assert client.last_rpc_name == "search_fts_only"
     assert client.last_rpc_params is not None
-    assert "p_query_text" in client.last_rpc_params
-    assert client.last_rpc_params["p_query_text"] == "tolerancia 0.05"
+    assert client.last_rpc_params["query_text"] == "tolerancia 0.05"
+    assert client.last_rpc_params["source_ids"] == ["s1"]
 
 
 @pytest.mark.asyncio
-async def test_engine_defaults_to_v2_rpc() -> None:
-    """Engine should default to unified_search_context_v2."""
+async def test_atomic_engine_uses_vector_rpc() -> None:
+    """AtomicRetrievalEngine should call search_vectors_only RPC."""
 
     client = _FakeClient()
-    engine = UnifiedRetrievalEngine(
-        embedding_service=_JinaStub(),
+    engine = AtomicRetrievalEngine(
+        embedding_service=cast(Any, _JinaStub()),
         supabase_client=client,
     )
 
-    await engine.retrieve_context(query="ISO 9001")
+    await engine._search_vectors(query_vector=[0.1] * 1024, source_ids=["s1"], fetch_k=8)
 
-    assert client.last_rpc_name == "unified_search_context_v2"
+    assert client.last_rpc_name == "search_vectors_only"
+    assert client.last_rpc_params is not None
+    assert client.last_rpc_params["source_ids"] == ["s1"]

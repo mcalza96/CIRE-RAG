@@ -204,7 +204,13 @@ async def run_tenant_chat(
     collection_name: Optional[str],
     no_multi_hop: bool = False,
 ) -> None:
-    async def _interpret_clarification_answer(answer: str, options: tuple[str, ...] | tuple[str] | tuple) -> Dict[str, Any]:
+    async def _interpret_clarification_answer(
+        answer: str,
+        options: tuple[str, ...] | tuple[str] | tuple,
+        original_query: str,
+        clarification_question: str,
+        session_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
         text = (answer or "").strip()
         lowered = text.lower()
 
@@ -230,8 +236,14 @@ async def run_tenant_chat(
                 "analysis_mode debe ser uno de: Protección al denunciante, Forense de trazabilidad, Balanceado trinorma. "
                 "resolved_scopes debe ser lista con ISO 9001/ISO 14001/ISO 45001 si aplica."
             )
+            session_scope = session_state.get("resolved_scopes") or []
+            session_mode = session_state.get("analysis_mode") or ""
             user_prompt = (
+                f"Pregunta original: {original_query}\n"
+                f"Pregunta de aclaración: {clarification_question}\n"
                 f"Opciones ofrecidas: {', '.join(options_list)}\n"
+                f"Memoria sesión scope: {session_scope}\n"
+                f"Memoria sesión modo: {session_mode}\n"
                 f"Respuesta usuario: {text}"
             )
             try:
@@ -266,7 +278,7 @@ async def run_tenant_chat(
         scopes = interpretation.get("resolved_scopes")
         resolved_scopes = [str(item) for item in scopes] if isinstance(scopes, list) else []
 
-        suffix_lines = [f"Aclaración de alcance: {mode}."]
+        suffix_lines = ["__clarified_scope__=true", f"Aclaración de alcance: {mode}."]
         if resolved_scopes:
             suffix_lines.append("Normas confirmadas: " + ", ".join(resolved_scopes) + ".")
         return f"{original_query}\n\n" + " ".join(suffix_lines)
@@ -319,24 +331,31 @@ async def run_tenant_chat(
                 session_state=session_state,
             )
 
-            if result.clarification:
+            clarification_rounds = 0
+            while result.clarification and clarification_rounds < 3:
                 clarification_answer = input("📝 Aclaración > ").strip()
-                if clarification_answer:
-                    interpretation = await _interpret_clarification_answer(
-                        clarification_answer,
-                        result.clarification.options,
-                    )
-                    session_state.update(interpretation)
-                    clarified_query = _rewrite_with_clarification(query, interpretation)
-                    await query_engine(
-                        tools=tools,
-                        tenant_id=tenant_id,
-                        query=clarified_query,
-                        collection_id=collection_id,
-                        collection_name=collection_name,
-                        source_ids=filtered_source_ids,
-                        session_state=session_state,
-                    )
+                if not clarification_answer:
+                    break
+
+                interpretation = await _interpret_clarification_answer(
+                    clarification_answer,
+                    result.clarification.options,
+                    query,
+                    result.clarification.question,
+                    session_state,
+                )
+                session_state.update(interpretation)
+                clarified_query = _rewrite_with_clarification(query, interpretation)
+                result = await query_engine(
+                    tools=tools,
+                    tenant_id=tenant_id,
+                    query=clarified_query,
+                    collection_id=collection_id,
+                    collection_name=collection_name,
+                    source_ids=filtered_source_ids,
+                    session_state=session_state,
+                )
+                clarification_rounds += 1
 
         except KeyboardInterrupt:
             break
