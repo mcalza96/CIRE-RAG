@@ -13,7 +13,7 @@ Disenado para operar como backend API-first en escenarios donde el naive RAG fal
 ## Filosofia operativa
 
 - **Ingesta Cognitiva (Visual Anchors)**: el pipeline visual parsea tablas/figuras a JSON estructurado. Aplica **Dual-Model Extraction** (Lite + Flash fallback).
-- **Orquestación Tricameral**: enrutamiento dinámico nativo entre Vector Search, GraphRAG SQL-native y RAPTOR.
+- **Retrieval Atómico (Atomic Engine)**: orquestación dinámica mediante `QueryDecomposer` que combina Vector Search, Full-Text Search (FTS) y navegación de grafos multi-hop en una única fase de búsqueda atómica.
 - **RAPTOR (cuando aplica)**: construye un arbol jerarquico de resumenes mediante clustering semantico recursivo (no depende de estructura fija pagina/capitulo).
 - **Stack unificado**: FastAPI + Supabase (Postgres 17 + pgvector), sin fragmentar en motores separados.
 
