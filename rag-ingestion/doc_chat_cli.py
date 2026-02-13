@@ -146,6 +146,10 @@ async def query_engine(
     )
 
     print(f"🧭 Modo de consulta: {result.intent.mode}")
+    if result.plan.requested_standards:
+        print("🧷 Scope detectado: " + ", ".join(result.plan.requested_standards))
+    elif result.intent.mode == "ambigua_scope":
+        print("🧷 Scope detectado: ambiguo (falta norma explícita)")
     chunk_count = sum(1 for ev in result.answer.evidence if ev.source.startswith("C"))
     summary_count = sum(1 for ev in result.answer.evidence if ev.source.startswith("R"))
     print(f"✅ Recuperación: {chunk_count} fragmentos de detalle, {summary_count} nodos RAPTOR.")

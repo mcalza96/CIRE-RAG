@@ -1,10 +1,9 @@
 from typing import Dict, Any, Optional
 from app.schemas.ingestion import IngestionMetadata
-from app.domain.interfaces.metadata_adapter import IMetadataAdapter
 from app.domain.types.authority import AuthorityLevel
 from app.domain.services.authority_classifier import AuthorityClassifier
 
-class SupabaseMetadataAdapter(IMetadataAdapter):
+class SupabaseMetadataAdapter:
     """
     Adapter to convert Supabase/Postgres record formats into valid Domain Objects (IngestionMetadata).
     Handles sanitization of database-specific quirks (like nil UUIDs).
@@ -62,4 +61,3 @@ class SupabaseMetadataAdapter(IMetadataAdapter):
         # Clean and construct
         cleaned_data = {k: sanitize(v) for k, v in mapping_data.items() if sanitize(v) is not None}
         return IngestionMetadata(**cleaned_data)
-

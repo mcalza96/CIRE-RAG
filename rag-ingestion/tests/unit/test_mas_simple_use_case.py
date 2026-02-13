@@ -23,8 +23,14 @@ class _FakeAnswerGenerator:
 
 @dataclass
 class _FakeValidator:
-    def validate(self, draft: AnswerDraft, plan: RetrievalPlan):
+    def validate(self, draft: AnswerDraft, plan: RetrievalPlan, query: str):
         return ValidationResult(accepted=True, issues=[])
+
+
+@dataclass
+class _FakeMismatchValidator:
+    def validate(self, draft: AnswerDraft, plan: RetrievalPlan, query: str):
+        return ValidationResult(accepted=False, issues=["Scope mismatch detected: evidence includes sources outside requested standard scope."])
 
 
 def test_use_case_executes_and_returns_validated_answer():
@@ -37,7 +43,7 @@ def test_use_case_executes_and_returns_validated_answer():
     result = asyncio.run(
         use_case.execute(
             HandleQuestionCommand(
-                query="Que documento obligatorio exige la clausula 6.1.3?",
+                query="Que documento obligatorio exige ISO 9001 en la clausula 6.1.3?",
                 tenant_id="tenant-1",
                 collection_id="collection-uuid",
                 scope_label="tenant=tenant-1 / coleccion=iso",
@@ -49,3 +55,47 @@ def test_use_case_executes_and_returns_validated_answer():
     assert result.plan.require_literal_evidence is True
     assert result.validation.accepted is True
     assert "Fuente(C1)" in result.answer.text
+
+
+def test_use_case_blocks_answer_on_scope_mismatch():
+    use_case = HandleQuestionUseCase(
+        retriever=_FakeRetriever(),
+        answer_generator=_FakeAnswerGenerator(),
+        validator=_FakeMismatchValidator(),
+    )
+
+    result = asyncio.run(
+        use_case.execute(
+            HandleQuestionCommand(
+                query="Que documento obligatorio exige ISO 9001 en la clausula 6.1.3?",
+                tenant_id="tenant-1",
+                collection_id="collection-uuid",
+                scope_label="tenant=tenant-1 / coleccion=iso",
+            )
+        )
+    )
+
+    assert result.validation.accepted is False
+    assert "respuesta bloqueada" in result.answer.text.lower()
+
+
+def test_use_case_requests_scope_disambiguation_for_ambiguous_clause():
+    use_case = HandleQuestionUseCase(
+        retriever=_FakeRetriever(),
+        answer_generator=_FakeAnswerGenerator(),
+        validator=_FakeValidator(),
+    )
+
+    result = asyncio.run(
+        use_case.execute(
+            HandleQuestionCommand(
+                query="Que exige la clausula 9.1.2?",
+                tenant_id="tenant-1",
+                collection_id="collection-uuid",
+                scope_label="tenant=tenant-1 / coleccion=iso",
+            )
+        )
+    )
+
+    assert result.intent.mode == "ambigua_scope"
+    assert "indica la norma objetivo" in result.answer.text.lower()

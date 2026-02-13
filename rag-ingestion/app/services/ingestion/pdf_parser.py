@@ -1,5 +1,3 @@
-
-import fitz  # PyMuPDF
 from typing import List, Dict, Optional, Any
 import structlog
 import re
@@ -64,8 +62,9 @@ class PdfParserService:
             img_regex = re.compile(r"!\[\]\((.*?)\)")
 
             for item in page_results:
-                page_num = item.get("metadata", {}).get("page", 0) + 1  # 1-indexed
-                page_text = item.get("text", "").strip()
+                page_data = item if isinstance(item, dict) else {}
+                page_num = int(page_data.get("metadata", {}).get("page", 0)) + 1  # 1-indexed
+                page_text = str(page_data.get("text", "")).strip()
 
                 if not page_text:
                     continue
@@ -134,6 +133,12 @@ class PdfParserService:
         :return: Dict with 'full_text' and 'page_map' or None if extraction fails.
         """
         try:
+            import fitz  # PyMuPDF
+        except ImportError as e:
+            logger.error("pymupdf_not_installed", error=str(e))
+            return None
+
+        try:
             doc = fitz.open(file_path)
         except Exception as e:
             logger.error("pdf_open_failed", file_path=file_path, error=str(e))
@@ -144,7 +149,8 @@ class PdfParserService:
         page_map = []
         
         try:
-            for page_num, page in enumerate(doc):
+            for page_num in range(doc.page_count):
+                page = doc.load_page(page_num)
                 # Clean NULL characters and extract text
                 page_text = page.get_text().replace("\x00", "")
                 if not page_text.strip():

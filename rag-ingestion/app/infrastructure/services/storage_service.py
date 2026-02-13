@@ -5,7 +5,6 @@ import httpx
 import httpcore
 from typing import Optional
 from app.infrastructure.supabase.client import get_async_supabase_client, reset_async_supabase_client
-from app.domain.interfaces.storage_service_interface import IStorageService
 from app.infrastructure.adapters.filesystem_ingestion_source import FileSystemIngestionSource
 import logging
 from app.core.settings import settings
@@ -25,7 +24,7 @@ TRANSIENT_ERRORS = (
     ConnectionResetError,
 )
 
-class StorageService(IStorageService):
+class StorageService:
     MAX_RETRIES = 3
     BASE_DELAY_SECONDS = 1.0
     

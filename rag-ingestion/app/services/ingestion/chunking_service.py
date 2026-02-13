@@ -4,7 +4,7 @@ from app.services.ingestion.pdf_parser import PdfParserService
 from app.services.ingestion.structure_mapper import StructureMapper
 from app.schemas.ingestion import IngestionMetadata
 from app.core.ai_models import AIModelConfig
-from app.services.ingestion.metadata_enricher import MetadataEnricher
+from app.services.ingestion.metadata_enricher import enrich_metadata
 from app.services.embedding_service import JinaEmbeddingService
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -40,7 +40,6 @@ class LateChunkResult(BaseModel):
 class ChunkingService:
     def __init__(self, parser: PdfParserService):
         self.parser = parser
-        self.enricher = MetadataEnricher()
 
     def split_text(self, text: str, max_chars: int) -> List[str]:
         """
@@ -356,7 +355,7 @@ class ChunkingService:
 
         # 2. Semantic Enrichment (Regex)
         # We enrich based on the RAW content to catch patterns, then update metadata/text
-        final_content, enriched_metadata = self.enricher.enrich(final_content, {})
+        final_content, enriched_metadata = enrich_metadata(final_content, {})
         
         # Merge basic metadata
         base_metadata = {

@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 
-QueryMode = Literal["literal_lista", "literal_normativa", "explicativa", "comparativa"]
+QueryMode = Literal["literal_lista", "literal_normativa", "explicativa", "comparativa", "ambigua_scope"]
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,7 @@ class RetrievalPlan:
     chunk_fetch_k: int
     summary_k: int
     require_literal_evidence: bool = False
+    requested_standards: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

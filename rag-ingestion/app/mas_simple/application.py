@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.mas_simple.domain.models import AnswerDraft, QueryIntent, RetrievalPlan, ValidationResult
-from app.mas_simple.domain.policies import build_retrieval_plan, classify_intent
+from app.mas_simple.domain.policies import build_retrieval_plan, classify_intent, suggest_scope_candidates
 from app.mas_simple.ports import AnswerGeneratorPort, RetrieverPort, ValidationPort
 
 
@@ -38,7 +38,23 @@ class HandleQuestionUseCase:
 
     async def execute(self, cmd: HandleQuestionCommand) -> HandleQuestionResult:
         intent = classify_intent(cmd.query)
-        plan = build_retrieval_plan(intent)
+        plan = build_retrieval_plan(intent, query=cmd.query)
+
+        if intent.mode == "ambigua_scope":
+            options = suggest_scope_candidates(cmd.query)
+            suggestion = ", ".join(options[:3])
+            clarification = (
+                "Necesito desambiguar el alcance antes de responder con trazabilidad. "
+                f"Indica la norma objetivo (sugeridas: {suggestion})."
+            )
+            answer = AnswerDraft(text=clarification, mode=plan.mode, evidence=[])
+            validation = self._validator.validate(answer, plan, cmd.query)
+            return HandleQuestionResult(
+                intent=intent,
+                plan=plan,
+                answer=answer,
+                validation=validation,
+            )
 
         chunks = await self._retriever.retrieve_chunks(
             query=cmd.query,
@@ -60,7 +76,16 @@ class HandleQuestionUseCase:
             chunks=chunks,
             summaries=summaries,
         )
-        validation = self._validator.validate(answer, plan)
+        validation = self._validator.validate(answer, plan, cmd.query)
+        if not validation.accepted and any("Scope mismatch" in issue for issue in validation.issues):
+            answer = AnswerDraft(
+                text=(
+                    "⚠️ Respuesta bloqueada por inconsistencia de ámbito entre la pregunta y las fuentes recuperadas. "
+                    "Reformula indicando explícitamente la norma objetivo (por ejemplo: ISO 9001)."
+                ),
+                mode=plan.mode,
+                evidence=answer.evidence,
+            )
 
         return HandleQuestionResult(
             intent=intent,

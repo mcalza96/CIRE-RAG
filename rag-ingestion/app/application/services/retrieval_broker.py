@@ -6,7 +6,7 @@ from app.core.settings import settings
 from app.services.embedding_service import JinaEmbeddingService
 from app.services.knowledge.gravity_reranker import GravityReranker
 from app.services.knowledge.jina_reranker import JinaReranker
-from app.services.ingestion.metadata_enricher import MetadataEnricher
+from app.services.ingestion.metadata_enricher import enrich_metadata
 from app.core.observability.forensic import ForensicRecorder
 from app.domain.knowledge_schemas import RAGSearchResult, RetrievalIntent, AgentRole, TaskType
 from app.domain.interfaces.retrieval_interface import IRetrievalRepository
@@ -24,7 +24,6 @@ class RetrievalBroker:
     
     def __init__(self, repository: IRetrievalRepository):
         self.repository = repository
-        self.enricher = MetadataEnricher()
         self.reranker = GravityReranker()
         self.jina_reranker = JinaReranker()
         self.direct_strategy = DirectRetrievalStrategy(repository)
@@ -191,7 +190,7 @@ class RetrievalBroker:
             filters["is_global"] = True
         
         # Query Enrichment
-        _, query_filters = self.enricher.enrich(query, {})
+        _, query_filters = enrich_metadata(query, {})
         if query_filters:
             filters["filters"] = query_filters
 

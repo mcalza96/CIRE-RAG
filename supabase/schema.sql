@@ -1,5 +1,5 @@
 -- ========================================================
--- TEACHEROS - SCHEMA MAESTRO CONSOLIDADO (v4.0)
+-- CISRE - SCHEMA MAESTRO CONSOLIDADO (v4.0)
 -- ========================================================
 -- DESCRIPCIÓN:
 --   Este archivo representa el ESTADO FINAL CONSOLIDADO de la

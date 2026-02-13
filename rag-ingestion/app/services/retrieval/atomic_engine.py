@@ -243,6 +243,18 @@ class AtomicRetrievalEngine:
         response = await query.execute()
         rows = response.data if isinstance(response.data, list) else []
         collection_name = str(scope_context.get("collection_name") or "").strip().lower()
+        source_standard = str(scope_context.get("source_standard") or "").strip().lower()
+        source_standards_raw = scope_context.get("source_standards")
+        source_standards: set[str] = set()
+        if isinstance(source_standards_raw, list):
+            source_standards = {
+                str(item).strip().lower()
+                for item in source_standards_raw
+                if isinstance(item, str) and item.strip()
+            }
+        if source_standard:
+            source_standards.add(source_standard)
+
         source_ids: list[str] = []
 
         for row in rows:
@@ -253,6 +265,22 @@ class AtomicRetrievalEngine:
                 row_name = str(metadata.get("collection_name") or "").strip().lower()
                 if row_name and row_name != collection_name:
                     continue
+
+            if source_standards:
+                candidate_values = [
+                    metadata.get("source_standard"),
+                    metadata.get("standard"),
+                    metadata.get("scope"),
+                    metadata.get("norma"),
+                ]
+                row_scope = ""
+                for value in candidate_values:
+                    if isinstance(value, str) and value.strip():
+                        row_scope = value.strip().lower()
+                        break
+                if row_scope and not any(target in row_scope for target in source_standards):
+                    continue
+
             row_id = row.get("id")
             if row_id:
                 source_ids.append(str(row_id))

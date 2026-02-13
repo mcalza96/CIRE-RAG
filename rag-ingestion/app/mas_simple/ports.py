@@ -43,5 +43,5 @@ class AnswerGeneratorPort(Protocol):
 
 
 class ValidationPort(Protocol):
-    def validate(self, draft: AnswerDraft, plan: RetrievalPlan) -> ValidationResult:
+    def validate(self, draft: AnswerDraft, plan: RetrievalPlan, query: str) -> ValidationResult:
         ...

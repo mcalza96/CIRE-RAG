@@ -1,9 +1,9 @@
 import os
 import structlog
 from typing import Optional
-from app.domain.interfaces.storage_service_interface import IStorageService
 from app.domain.models.ingestion_source import IngestionSource
 from app.domain.repositories.source_repository import ISourceRepository
+from app.infrastructure.services.storage_service import StorageService
 from app.core.settings import settings
 
 logger = structlog.get_logger(__name__)
@@ -14,7 +14,7 @@ class DocumentDownloadService:
     Abstracts local filesystem vs cloud storage (Supabase).
     """
     
-    def __init__(self, storage_service: IStorageService, repository: ISourceRepository):
+    def __init__(self, storage_service: StorageService, repository: ISourceRepository):
         self.storage = storage_service
         self.repo = repository
 

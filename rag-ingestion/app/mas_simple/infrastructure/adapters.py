@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 from app.core.tools.retrieval import RetrievalTools
 from app.mas_simple.domain.models import AnswerDraft, EvidenceItem, RetrievalPlan, ValidationResult
+from app.mas_simple.domain.policies import extract_requested_standards
 
 
 def _extract_keywords(query: str) -> set[str]:
@@ -21,6 +22,36 @@ def _extract_keywords(query: str) -> set[str]:
 
 def _extract_clause_refs(query: str) -> set[str]:
     return set(re.findall(r"\b\d+(?:\.\d+)+\b", (query or "")))
+
+
+def _extract_row_standard(row: dict[str, Any]) -> str:
+    meta_raw = row.get("metadata")
+    metadata: dict[str, Any] = meta_raw if isinstance(meta_raw, dict) else {}
+    candidates = [
+        metadata.get("source_standard"),
+        metadata.get("standard"),
+        metadata.get("scope"),
+        metadata.get("norma"),
+        row.get("source_standard"),
+    ]
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            return value.strip().upper()
+    return ""
+
+
+def _row_matches_standards(row: dict[str, Any], standards: list[str]) -> bool:
+    if not standards:
+        return True
+    canonical = {s.upper() for s in standards}
+    row_standard = _extract_row_standard(row)
+    if row_standard:
+        if any(s in row_standard for s in canonical):
+            return True
+        return False
+
+    content = str(row.get("content") or "").upper()
+    return any(s in content for s in canonical)
 
 
 def _rerank_for_literal(query: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -52,11 +83,23 @@ class RetrievalToolsAdapter:
         collection_id: str | None,
         plan: RetrievalPlan,
     ) -> list[EvidenceItem]:
+        requested_standards = list(extract_requested_standards(query))
+        strict_scope = plan.require_literal_evidence and bool(requested_standards)
+
         scope_context: dict[str, Any] = {"type": "institutional", "tenant_id": tenant_id}
+        scoped_filters: dict[str, Any] = {}
         if collection_id:
-            scope_context["filters"] = {"collection_id": collection_id}
+            scoped_filters["collection_id"] = collection_id
         elif self.collection_name:
-            scope_context["filters"] = {"collection_name": self.collection_name}
+            scoped_filters["collection_name"] = self.collection_name
+
+        if requested_standards:
+            scoped_filters["source_standards"] = requested_standards
+            if len(requested_standards) == 1:
+                scoped_filters["source_standard"] = requested_standards[0]
+
+        if scoped_filters:
+            scope_context["filters"] = scoped_filters
 
         rows = await self.tools.retrieve(
             query=query,
@@ -71,6 +114,12 @@ class RetrievalToolsAdapter:
                 r for r in rows
                 if str(r.get("source_id") or r.get("id") or "") in self.allowed_source_ids
             ]
+
+        filtered_by_scope = [r for r in rows if _row_matches_standards(r, requested_standards)]
+        if strict_scope and filtered_by_scope:
+            rows = filtered_by_scope
+        elif not strict_scope:
+            rows = filtered_by_scope or rows
 
         if plan.require_literal_evidence:
             rows = _rerank_for_literal(query, rows)
@@ -93,6 +142,9 @@ class RetrievalToolsAdapter:
         collection_id: str | None,
         plan: RetrievalPlan,
     ) -> list[EvidenceItem]:
+        requested_standards = list(extract_requested_standards(query))
+        strict_scope = plan.require_literal_evidence and bool(requested_standards)
+
         try:
             rows = await self.tools.retrieve_summaries(
                 query=query,
@@ -119,6 +171,12 @@ class RetrievalToolsAdapter:
                 if self.collection_name and row_collection_name.lower() == str(self.collection_name).lower():
                     filtered.append(row)
             rows = filtered
+
+        filtered_by_scope = [r for r in rows if _row_matches_standards(r, requested_standards)]
+        if strict_scope and filtered_by_scope:
+            rows = filtered_by_scope
+        elif not strict_scope:
+            rows = filtered_by_scope or rows
 
         if plan.require_literal_evidence:
             rows = _rerank_for_literal(query, rows)
@@ -210,7 +268,7 @@ RESPUESTA:
 
 
 class LiteralEvidenceValidator:
-    def validate(self, draft: AnswerDraft, plan: RetrievalPlan) -> ValidationResult:
+    def validate(self, draft: AnswerDraft, plan: RetrievalPlan, query: str) -> ValidationResult:
         issues: list[str] = []
         if plan.require_literal_evidence and not draft.evidence:
             issues.append("No retrieval evidence available for literal answer mode.")
@@ -219,5 +277,31 @@ class LiteralEvidenceValidator:
             has_citation_marker = "C" in draft.text or "R" in draft.text
             if not has_citation_marker:
                 issues.append("Answer does not include explicit source markers (C#/R#).")
+
+        requested = plan.requested_standards or extract_requested_standards(query)
+        mentioned_in_answer = {item.upper() for item in extract_requested_standards(draft.text)}
+        requested_upper = {item.upper() for item in requested}
+
+        if requested_upper and mentioned_in_answer and not mentioned_in_answer.issubset(requested_upper):
+            issues.append("Scope mismatch detected: answer mentions a different standard than the query scope.")
+
+        if requested and draft.evidence:
+            mismatched = 0
+            total_with_scope = 0
+            for ev in draft.evidence:
+                row = ev.metadata.get("row") if isinstance(ev.metadata, dict) else {}
+                if not isinstance(row, dict):
+                    continue
+                row_scope = _extract_row_standard(row)
+                if not row_scope:
+                    continue
+                total_with_scope += 1
+                if not any(target in row_scope for target in requested_upper):
+                    mismatched += 1
+
+            if total_with_scope > 0 and mismatched > 0:
+                issues.append(
+                    "Scope mismatch detected: evidence includes sources outside requested standard scope."
+                )
 
         return ValidationResult(accepted=not issues, issues=issues)

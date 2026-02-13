@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.mas_simple.domain.models import QueryIntent, RetrievalPlan
 
 
@@ -26,19 +28,60 @@ LITERAL_NORMATIVE_HINTS = (
 
 COMPARATIVE_HINTS = ("compar", "difer", "vs", "ambas", "respecto")
 
+SCOPE_HINTS: dict[str, tuple[str, ...]] = {
+    "ISO 9001": ("calidad", "cliente", "producto", "servicio"),
+    "ISO 14001": ("ambient", "legal", "cumplimiento", "aspecto ambiental"),
+    "ISO 45001": ("seguridad", "salud", "sst", "riesgo laboral", "trabajador"),
+}
+
+
+def extract_requested_standards(query: str) -> tuple[str, ...]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for match in re.findall(r"\biso\s*[-:]?\s*(\d{4,5})\b", (query or ""), flags=re.IGNORECASE):
+        value = f"ISO {match}"
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return tuple(ordered)
+
+
+def has_clause_reference(query: str) -> bool:
+    return bool(re.search(r"\b\d+(?:\.\d+)+\b", (query or "")))
+
+
+def suggest_scope_candidates(query: str) -> tuple[str, ...]:
+    text = (query or "").strip().lower()
+    ranked: list[str] = []
+    for standard, hints in SCOPE_HINTS.items():
+        if any(h in text for h in hints):
+            ranked.append(standard)
+
+    if ranked:
+        seen: set[str] = set()
+        ordered = [s for s in ranked if not (s in seen or seen.add(s))]
+        return tuple(ordered)
+
+    return ("ISO 9001", "ISO 14001", "ISO 45001")
+
 
 def classify_intent(query: str) -> QueryIntent:
     text = (query or "").strip().lower()
+    requested_standards = extract_requested_standards(query)
     if any(h in text for h in LITERAL_LIST_HINTS):
         return QueryIntent(mode="literal_lista", rationale="list-like normative query")
     if any(h in text for h in LITERAL_NORMATIVE_HINTS):
+        if has_clause_reference(query) and not requested_standards:
+            return QueryIntent(mode="ambigua_scope", rationale="clause reference without explicit standard scope")
         return QueryIntent(mode="literal_normativa", rationale="normative exactness query")
     if any(h in text for h in COMPARATIVE_HINTS):
         return QueryIntent(mode="comparativa", rationale="cross-standard comparison")
     return QueryIntent(mode="explicativa", rationale="general explanatory query")
 
 
-def build_retrieval_plan(intent: QueryIntent) -> RetrievalPlan:
+def build_retrieval_plan(intent: QueryIntent, query: str = "") -> RetrievalPlan:
+    requested_standards = extract_requested_standards(query)
     if intent.mode in {"literal_lista", "literal_normativa"}:
         return RetrievalPlan(
             mode=intent.mode,
@@ -46,6 +89,7 @@ def build_retrieval_plan(intent: QueryIntent) -> RetrievalPlan:
             chunk_fetch_k=220,
             summary_k=3,
             require_literal_evidence=True,
+            requested_standards=requested_standards,
         )
     if intent.mode == "comparativa":
         return RetrievalPlan(
@@ -54,6 +98,16 @@ def build_retrieval_plan(intent: QueryIntent) -> RetrievalPlan:
             chunk_fetch_k=140,
             summary_k=5,
             require_literal_evidence=True,
+            requested_standards=requested_standards,
+        )
+    if intent.mode == "ambigua_scope":
+        return RetrievalPlan(
+            mode=intent.mode,
+            chunk_k=0,
+            chunk_fetch_k=0,
+            summary_k=0,
+            require_literal_evidence=True,
+            requested_standards=requested_standards,
         )
     return RetrievalPlan(
         mode=intent.mode,
@@ -61,4 +115,5 @@ def build_retrieval_plan(intent: QueryIntent) -> RetrievalPlan:
         chunk_fetch_k=120,
         summary_k=5,
         require_literal_evidence=False,
+        requested_standards=requested_standards,
     )

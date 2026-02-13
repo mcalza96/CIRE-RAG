@@ -1,5 +1,5 @@
 -- ========================================================
--- TEACHEROS - OPTIMIZACIÓN DE ÍNDICES (v1.0)
+-- CISRE - OPTIMIZACIÓN DE ÍNDICES (v1.0)
 -- ========================================================
 -- DESCRIPCIÓN: 
 --   Añade índices críticos para el rendimiento de RLS,
