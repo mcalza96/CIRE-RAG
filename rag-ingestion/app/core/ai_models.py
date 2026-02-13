@@ -15,6 +15,7 @@ class AIModelConfig:
     GROQ_MODEL_DESIGN = "llama-3.3-70b-versatile"
     GROQ_MODEL_CHAT = "llama-3.1-8b-instant"
     GROQ_MODEL_FORENSIC = "llama-3.3-70b-versatile"
+    GROQ_MODEL_ORCHESTRATION = "llama-3.1-8b-instant"
     
     # Validation Configuration
     JUDGE_MODEL = "gpt-4o"
@@ -26,6 +27,8 @@ class AIModelConfig:
     JINA_BASE_URL = settings.JINA_BASE_URL
     JINA_EMBEDDING_DIMENSIONS = settings.JINA_EMBEDDING_DIMENSIONS
     JINA_API_KEY = settings.JINA_API_KEY
+    JINA_RERANK_URL = settings.JINA_RERANK_URL
+    JINA_RERANK_MODEL = settings.JINA_RERANK_MODEL
     
     # Text Processing Limits
     MAX_CHARACTERS_PER_CHUNKING_BLOCK = 30000 
@@ -35,6 +38,8 @@ class AIModelConfig:
     DEFAULT_TEMPERATURE_CHAT = 0.0
     DEFAULT_TEMPERATURE_DESIGN = 0.2
     DEFAULT_TEMPERATURE_FORENSIC = 0.0
+    DEFAULT_TEMPERATURE_ORCHESTRATION = 0.0
+    DEFAULT_TEMPERATURE_GENERATION = 0.2
 
     @classmethod
     def is_gemini_available(cls) -> bool:

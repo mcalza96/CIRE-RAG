@@ -4,7 +4,7 @@ from typing import Optional
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ROOT_ENV = PROJECT_ROOT / ".env"
 ROOT_ENV_LOCAL = PROJECT_ROOT / ".env.local"
 SERVICE_ENV = PROJECT_ROOT / "rag-ingestion" / ".env"
@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     JINA_BASE_URL: str = "https://api.jina.ai/v1/embeddings"
     JINA_MODEL_NAME: str = "jinaai/jina-embeddings-v3"
     JINA_EMBEDDING_DIMENSIONS: int = 1024
+    JINA_RERANK_URL: str = "https://api.jina.ai/v1/rerank"
+    JINA_RERANK_MODEL: str = "jina-reranker-v2-base-multilingual"
     
     # API Config
     API_PORT: int = 8000
@@ -59,7 +61,13 @@ class Settings(BaseSettings):
 
     # Worker / Throughput controls
     WORKER_CONCURRENCY: int = 3
+    WORKER_PER_TENANT_CONCURRENCY: int = 1
     EMBEDDING_CONCURRENCY: int = 5
+    WORKER_TENANT_QUEUE_SAMPLE_LIMIT: int = 1000
+    WORKER_TENANT_QUEUE_DEPTH_ALERT: int = 200
+    WORKER_TENANT_QUEUE_WAIT_ALERT_SECONDS: int = 300
+    INGESTION_MAX_PENDING_PER_TENANT: int = 500
+    INGESTION_DOCS_PER_MINUTE_PER_WORKER: int = 2
     COMMUNITY_REBUILD_ENABLED: bool = False
     COMMUNITY_REBUILD_INTERVAL_SECONDS: int = 3600
     COMMUNITY_REBUILD_TENANTS: str = ""
@@ -72,6 +80,8 @@ class Settings(BaseSettings):
     USE_TRICAMERAL: bool = False
     ENABLE_HEART_VERIFICATION: bool = False
     DAILY_VLM_LIMIT: Optional[int] = None
+    QUERY_DECOMPOSER_ENABLED: bool = True
+    QUERY_DECOMPOSER_TIMEOUT_MS: int = 800
 
     # Visual router
     VISUAL_ROUTER_MAX_VISUAL_RATIO: float = 0.35

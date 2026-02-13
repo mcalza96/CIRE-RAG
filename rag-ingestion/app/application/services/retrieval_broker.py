@@ -1,7 +1,9 @@
 import structlog
+import time
 from typing import List, Dict, Any, Optional
 from app.services.embedding_service import JinaEmbeddingService
 from app.services.knowledge.gravity_reranker import GravityReranker
+from app.services.knowledge.jina_reranker import JinaReranker
 from app.services.ingestion.metadata_enricher import MetadataEnricher
 from app.core.observability.forensic import ForensicRecorder
 from app.domain.knowledge_schemas import RAGSearchResult, RetrievalIntent, AgentRole, TaskType
@@ -21,6 +23,7 @@ class RetrievalBroker:
         self.repository = repository
         self.enricher = MetadataEnricher()
         self.reranker = GravityReranker()
+        self.jina_reranker = JinaReranker()
         self.direct_strategy = DirectRetrievalStrategy(repository)
         self.iterative_strategy = IterativeRetrievalStrategy(repository)
         self.unified_engine = UnifiedRetrievalEngine()
@@ -158,17 +161,47 @@ class RetrievalBroker:
 
     async def _apply_reranking(self, query: str, results: List[Dict], scope_context: Dict, k: int) -> List[Dict]:
         try:
+            semantic_ranked = results
+            jina_started = time.perf_counter()
+            if self.jina_reranker.is_enabled() and results:
+                docs = [str(item.get("content") or "") for item in results]
+                rows = await self.jina_reranker.rerank_documents(
+                    query=query,
+                    documents=docs,
+                    top_n=max(k, min(len(results), 40)),
+                )
+                if rows:
+                    reordered: list[Dict[str, Any]] = []
+                    for row in rows:
+                        idx = row.get("index")
+                        if not isinstance(idx, int) or idx < 0 or idx >= len(results):
+                            continue
+                        source = dict(results[idx])
+                        source["jina_relevance_score"] = float(row.get("relevance_score") or 0.0)
+                        reordered.append(source)
+                    if reordered:
+                        semantic_ranked = reordered
+
+            logger.info(
+                "retrieval_pipeline_timing",
+                stage="jina_rerank",
+                duration_ms=round((time.perf_counter() - jina_started) * 1000, 2),
+                enabled=self.jina_reranker.is_enabled(),
+                candidates=len(results),
+                ranked=len(semantic_ranked),
+            )
+
             raw_by_id = {str(item.get("id", "")): item for item in results}
             candidates = [
                 RAGSearchResult(
                     id=str(item.get("id", "")),
                     content=item.get("content", ""),
                     metadata=item.get("metadata", {}),
-                    similarity=item.get("similarity", 0.0),
-                    score=item.get("similarity", 0.0),
+                    similarity=float(item.get("jina_relevance_score", item.get("similarity", 0.0)) or 0.0),
+                    score=float(item.get("jina_relevance_score", item.get("similarity", 0.0)) or 0.0),
                     source_layer="knowledge",
                     source_id=item.get("source_id")
-                ) for item in results
+                ) for item in semantic_ranked
             ]
             
             intent = RetrievalIntent(

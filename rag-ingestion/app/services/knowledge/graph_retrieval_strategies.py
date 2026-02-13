@@ -9,7 +9,7 @@ import structlog
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.core.llm import get_llm
-from app.infrastructure.supabase.client import get_async_supabase_client
+from app.infrastructure.repositories.supabase_graph_retrieval_repository import SupabaseGraphRetrievalRepository
 from app.services.embedding_service import JinaEmbeddingService
 
 logger = structlog.get_logger(__name__)
@@ -53,19 +53,17 @@ class LocalGraphSearch:
     def __init__(
         self,
         supabase_client=None,
+        graph_repository: Optional[SupabaseGraphRetrievalRepository] = None,
         llm_provider: Optional[BaseChatModel] = None,
         embedding_service: Optional[JinaEmbeddingService] = None,
         anchor_similarity_threshold: float = 0.72,
     ):
-        self._supabase = supabase_client
+        self._graph_repository = graph_repository or SupabaseGraphRetrievalRepository(
+            supabase_client=supabase_client
+        )
         self._llm = llm_provider or get_llm(temperature=0.0, capability="FORENSIC")
         self._embedding = embedding_service or JinaEmbeddingService.get_instance()
         self._anchor_similarity_threshold = anchor_similarity_threshold
-
-    async def _get_client(self):
-        if self._supabase is None:
-            self._supabase = await get_async_supabase_client()
-        return self._supabase
 
     async def extract_entities_from_query(self, query: str) -> list[str]:
         if not query.strip():
@@ -99,12 +97,12 @@ class LocalGraphSearch:
         return [query.strip()[:80]]
 
     async def _match_exact_anchors(self, tenant_id: UUID, entity_name: str) -> list[dict]:
-        client = await self._get_client()
         try:
-            response = await client.table("knowledge_entities").select(
-                "id,name,type,description,embedding"
-            ).eq("tenant_id", str(tenant_id)).ilike("name", entity_name).limit(6).execute()
-            return response.data or []
+            return await self._graph_repository.match_exact_entities(
+                tenant_id=tenant_id,
+                entity_name=entity_name,
+                limit=6,
+            )
         except Exception as exc:
             logger.warning("local_exact_anchor_match_failed", entity=entity_name, error=str(exc))
             return []
@@ -113,7 +111,6 @@ class LocalGraphSearch:
         if not entities:
             return []
 
-        client = await self._get_client()
         try:
             vectors = await self._embedding.embed_texts(entities, task="retrieval.query")
             if not vectors:
@@ -121,16 +118,13 @@ class LocalGraphSearch:
 
             merged: dict[str, dict] = {}
             for vector in vectors:
-                rpc_res = await client.rpc(
-                    "match_knowledge_entities",
-                    {
-                        "query_embedding": vector,
-                        "p_tenant_id": str(tenant_id),
-                        "match_count": 8,
-                        "match_threshold": self._anchor_similarity_threshold,
-                    },
-                ).execute()
-                for row in rpc_res.data or []:
+                rows = await self._graph_repository.match_entities_by_vector_rpc(
+                    tenant_id=tenant_id,
+                    vector=vector,
+                    threshold=self._anchor_similarity_threshold,
+                    limit=8,
+                )
+                for row in rows:
                     if row.get("id"):
                         merged[str(row.get("id"))] = row
 
@@ -140,10 +134,7 @@ class LocalGraphSearch:
             logger.debug("local_rpc_anchor_match_fallback", error=str(exc))
 
         try:
-            entity_rows_resp = await client.table("knowledge_entities").select(
-                "id,name,type,description,embedding"
-            ).eq("tenant_id", str(tenant_id)).execute()
-            entity_rows = entity_rows_resp.data or []
+            entity_rows = await self._graph_repository.list_entities_with_embeddings(tenant_id)
             if not entity_rows:
                 return []
 
@@ -191,14 +182,10 @@ class LocalGraphSearch:
         if not anchor_ids:
             return [], []
 
-        client = await self._get_client()
-        anchors_csv = ",".join(anchor_ids)
-        relation_filter = f"source_entity_id.in.({anchors_csv}),target_entity_id.in.({anchors_csv})"
-
-        rel_resp = await client.table("knowledge_relations").select(
-            "id,source_entity_id,target_entity_id,relation_type,description,weight"
-        ).eq("tenant_id", str(tenant_id)).or_(relation_filter).execute()
-        relations = rel_resp.data or []
+        relations = await self._graph_repository.fetch_one_hop_relations(
+            tenant_id=tenant_id,
+            anchor_ids=anchor_ids,
+        )
 
         neighbor_ids = set(anchor_ids)
         for relation in relations:
@@ -213,13 +200,30 @@ class LocalGraphSearch:
         if not neighbor_list:
             return relations, []
 
-        ent_resp = await client.table("knowledge_entities").select(
-            "id,name,type,description"
-        ).eq("tenant_id", str(tenant_id)).in_("id", neighbor_list).execute()
-        neighbors = ent_resp.data or []
+        neighbors = await self._graph_repository.fetch_entities_by_ids(
+            tenant_id=tenant_id,
+            ids=neighbor_list,
+        )
         return relations, neighbors
 
     async def search(self, query: str, tenant_id: UUID) -> dict[str, Any]:
+        if query.strip():
+            try:
+                query_vectors = await self._embedding.embed_texts([query], task="retrieval.query")
+                if query_vectors and query_vectors[0]:
+                    rpc_rows = await self._graph_repository.search_multi_hop_context(
+                        tenant_id=tenant_id,
+                        query_vector=query_vectors[0],
+                        match_threshold=min(self._anchor_similarity_threshold, 0.35),
+                        limit_count=12,
+                        max_hops=2,
+                        decay_factor=0.82,
+                    )
+                    if rpc_rows:
+                        return self._build_multi_hop_payload(rpc_rows)
+            except Exception as exc:
+                logger.debug("local_multihop_rpc_fallback", error=str(exc))
+
         anchors = await self.find_anchor_nodes(tenant_id, query)
         if not anchors:
             return {"context": "", "citations": [], "anchors": [], "found": False}
@@ -258,6 +262,38 @@ class LocalGraphSearch:
             "found": True,
         }
 
+    @staticmethod
+    def _build_multi_hop_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        lines: list[str] = ["Local Graph Context (SQL Multi-hop)"]
+        citations: list[str] = []
+        anchors: list[str] = []
+
+        sorted_rows = sorted(
+            rows,
+            key=lambda item: (int(item.get("hop_depth") or 0), -float(item.get("similarity") or 0.0)),
+        )
+        for item in sorted_rows[:40]:
+            entity_id = str(item.get("entity_id") or "")
+            name = str(item.get("entity_name") or "Unknown")
+            description = str(item.get("entity_description") or "").strip()
+            hop_depth = int(item.get("hop_depth") or 0)
+            score = round(float(item.get("similarity") or 0.0), 4)
+
+            prefix = "anchor" if hop_depth == 0 else f"hop-{hop_depth}"
+            lines.append(f"- [{prefix}] {name} (score={score}): {description}")
+
+            if entity_id:
+                citations.append(entity_id)
+                if hop_depth == 0:
+                    anchors.append(entity_id)
+
+        return {
+            "context": "\n".join(lines),
+            "citations": list(dict.fromkeys(citations)),
+            "anchors": list(dict.fromkeys(anchors)),
+            "found": True,
+        }
+
 
 class GlobalGraphSearch:
     """Global graph retrieval using community summary semantic search."""
@@ -265,15 +301,13 @@ class GlobalGraphSearch:
     def __init__(
         self,
         supabase_client=None,
+        graph_repository: Optional[SupabaseGraphRetrievalRepository] = None,
         embedding_service: Optional[JinaEmbeddingService] = None,
     ):
-        self._supabase = supabase_client
+        self._graph_repository = graph_repository or SupabaseGraphRetrievalRepository(
+            supabase_client=supabase_client
+        )
         self._embedding = embedding_service or JinaEmbeddingService.get_instance()
-
-    async def _get_client(self):
-        if self._supabase is None:
-            self._supabase = await get_async_supabase_client()
-        return self._supabase
 
     async def search(self, query: str, tenant_id: UUID, top_k: int = 5) -> dict[str, Any]:
         if not query.strip():
@@ -284,28 +318,20 @@ class GlobalGraphSearch:
             return {"context": "", "community_ids": [], "citations": []}
         query_vector = query_vectors[0]
 
-        client = await self._get_client()
         try:
-            rpc_response = await client.rpc(
-                "match_knowledge_communities",
-                {
-                    "query_embedding": query_vector,
-                    "p_tenant_id": str(tenant_id),
-                    "p_level": 0,
-                    "match_count": top_k,
-                    "match_threshold": 0.25,
-                },
-            ).execute()
-            rpc_rows = rpc_response.data or []
+            rpc_rows = await self._graph_repository.match_communities_by_vector_rpc(
+                tenant_id=tenant_id,
+                query_vector=query_vector,
+                top_k=top_k,
+                level=0,
+                threshold=0.25,
+            )
             if rpc_rows:
                 return self._build_global_payload(rpc_rows)
         except Exception as exc:
             logger.debug("global_rpc_search_fallback", error=str(exc))
 
-        response = await client.table("knowledge_communities").select(
-            "id,community_id,summary,members,embedding"
-        ).eq("tenant_id", str(tenant_id)).eq("level", 0).execute()
-        rows = response.data or []
+        rows = await self._graph_repository.list_level_communities(tenant_id=tenant_id, level=0)
         if not rows:
             return {"context": "", "community_ids": [], "citations": []}
 

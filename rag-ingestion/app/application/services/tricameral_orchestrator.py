@@ -1,11 +1,15 @@
 import asyncio
+import time
 from enum import Enum
 from typing import Any, Optional
+from uuid import UUID
 
 import structlog
 from langchain_core.language_models.chat_models import BaseChatModel
 
+from app.application.services.query_decomposer import QueryDecomposer, QueryPlan
 from app.core.llm import get_llm
+from app.core.settings import settings
 from app.domain.knowledge_schemas import (
     AgentRole,
     RAGSearchResult,
@@ -45,6 +49,7 @@ class TricameralOrchestrator:
         supabase_client=None,
         llm_provider: Optional[BaseChatModel] = None,
         embedding_service: Optional[JinaEmbeddingService] = None,
+        query_decomposer: Optional[QueryDecomposer] = None,
     ):
         self.vector_tools = vector_tools
         self.graph_service = graph_service
@@ -53,6 +58,7 @@ class TricameralOrchestrator:
         self._supabase = supabase_client
         self._llm = llm_provider or get_llm(temperature=0.0, capability="FORENSIC")
         self._embedding = embedding_service or JinaEmbeddingService.get_instance()
+        self._query_decomposer = query_decomposer or QueryDecomposer(llm_provider=self._llm)
 
         self.local_graph = LocalGraphSearch(
             supabase_client=supabase_client,
@@ -76,15 +82,25 @@ class TricameralOrchestrator:
         return {"type": "global"}
 
     async def _probe_specificity(self, intent: RetrievalIntent) -> int:
-        if not intent.tenant_id:
+        tenant_uuid = self._tenant_uuid(intent.tenant_id)
+        if not tenant_uuid:
             return 0
 
         try:
-            anchors = await self.local_graph.find_anchor_nodes(intent.tenant_id, intent.query)
+            anchors = await self.local_graph.find_anchor_nodes(tenant_uuid, intent.query)
             return len(anchors)
         except Exception as exc:
             logger.warning("specificity_probe_failed", error=str(exc))
             return 0
+
+    @staticmethod
+    def _tenant_uuid(tenant_id: Optional[str]) -> Optional[UUID]:
+        if not tenant_id:
+            return None
+        try:
+            return UUID(str(tenant_id))
+        except Exception:
+            return None
 
     async def _classify_query_mode(self, intent: RetrievalIntent) -> QueryMode:
         query = intent.query.strip()
@@ -172,6 +188,44 @@ class TricameralOrchestrator:
                 logger.warning("raptor_tools_fallback_failed", error=str(exc))
         return []
 
+    async def _retrieve_from_query_plan(
+        self,
+        plan: QueryPlan,
+        scope_context: dict[str, Any],
+        k: int,
+    ) -> list[dict[str, Any]]:
+        if not plan.sub_queries:
+            return []
+
+        if plan.execution_mode == "sequential":
+            merged: list[dict[str, Any]] = []
+            for sq in plan.sub_queries:
+                rows = await self.vector_tools.retrieve(
+                    query=sq.query,
+                    scope_context=scope_context,
+                    k=max(6, min(k, 12)),
+                )
+                merged.extend(rows or [])
+            return self._dedupe_results(merged)
+
+        tasks = [
+            self.vector_tools.retrieve(
+                query=sq.query,
+                scope_context=scope_context,
+                k=max(6, min(k, 12)),
+            )
+            for sq in plan.sub_queries
+        ]
+        responses = await asyncio.gather(*tasks, return_exceptions=True)
+        merged: list[dict[str, Any]] = []
+        for payload in responses:
+            if isinstance(payload, Exception):
+                logger.warning("planned_subquery_failed", error=str(payload))
+                continue
+            if isinstance(payload, list):
+                merged.extend(payload)
+        return self._dedupe_results(merged)
+
     @staticmethod
     def _dedupe_results(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen: set[str] = set()
@@ -209,10 +263,38 @@ class TricameralOrchestrator:
         }
 
     async def orchestrate(self, intent: RetrievalIntent, k: int = 20) -> dict[str, Any]:
-        scope_context = self._scope_from_intent(intent)
-        mode = await self._classify_query_mode(intent)
+        total_start = time.perf_counter()
+        retrieval_request_id = str((intent.metadata or {}).get("retrieval_request_id") or "")
 
-        logger.info("tricameral_route_selected", mode=mode.value, tenant_id=intent.tenant_id)
+        scope_context = self._scope_from_intent(intent)
+        planner_start = time.perf_counter()
+        planner_used = bool(settings.QUERY_DECOMPOSER_ENABLED)
+        if planner_used:
+            plan = await self._query_decomposer.decompose(intent.query)
+        else:
+            plan = QueryPlan(is_multihop=False, execution_mode="parallel", sub_queries=[])
+        planner_ms = round((time.perf_counter() - planner_start) * 1000, 2)
+
+        if plan.is_multihop:
+            mode = QueryMode.HYBRID
+            classify_ms = 0.0
+        else:
+            classify_start = time.perf_counter()
+            mode = await self._classify_query_mode(intent)
+            classify_ms = round((time.perf_counter() - classify_start) * 1000, 2)
+
+        logger.info(
+            "tricameral_route_selected",
+            mode=mode.value,
+            tenant_id=intent.tenant_id,
+            retrieval_request_id=retrieval_request_id,
+            classify_duration_ms=classify_ms,
+            planner_duration_ms=planner_ms,
+            planner_used=planner_used,
+            planner_multihop=plan.is_multihop,
+            planner_execution_mode=plan.execution_mode,
+            planner_fallback_reason=plan.fallback_reason,
+        )
 
         tasks: list = []
         labels: list[str] = []
@@ -221,24 +303,30 @@ class TricameralOrchestrator:
         should_local = mode in {QueryMode.SPECIFIC, QueryMode.HYBRID}
         should_global = mode in {QueryMode.GENERAL, QueryMode.HYBRID}
         should_raptor = mode in {QueryMode.GENERAL, QueryMode.HYBRID}
+        tenant_uuid = self._tenant_uuid(intent.tenant_id)
 
-        if should_vector:
+        if should_vector and plan.is_multihop:
+            tasks.append(self._retrieve_from_query_plan(plan=plan, scope_context=scope_context, k=max(k, 15)))
+            labels.append("vector")
+        elif should_vector:
             tasks.append(self.vector_tools.retrieve(query=intent.query, scope_context=scope_context, k=max(k, 15)))
             labels.append("vector")
 
-        if should_local and intent.tenant_id:
-            tasks.append(self.local_graph.search(query=intent.query, tenant_id=intent.tenant_id))
+        if should_local and tenant_uuid:
+            tasks.append(self.local_graph.search(query=intent.query, tenant_id=tenant_uuid))
             labels.append("local")
 
-        if should_global and intent.tenant_id:
-            tasks.append(self.global_graph.search(query=intent.query, tenant_id=intent.tenant_id, top_k=5))
+        if should_global and tenant_uuid:
+            tasks.append(self.global_graph.search(query=intent.query, tenant_id=tenant_uuid, top_k=5))
             labels.append("global")
 
         if should_raptor:
             tasks.append(self._retrieve_raptor(intent, limit=8))
             labels.append("raptor")
 
+        gather_start = time.perf_counter()
         responses = await asyncio.gather(*tasks, return_exceptions=True) if tasks else []
+        gather_ms = round((time.perf_counter() - gather_start) * 1000, 2)
         bundle = {label: resp for label, resp in zip(labels, responses)}
 
         vector_results: list[dict[str, Any]] = []
@@ -285,7 +373,32 @@ class TricameralOrchestrator:
             vector_results = await self.vector_tools.retrieve(query=intent.query, scope_context=scope_context, k=max(k, 15))
 
         merged = self._dedupe_results(vector_results + graph_context_results + raptor_results)
+        logger.info(
+            "retrieval_pipeline_timing",
+            stage="tricameral_sources",
+            retrieval_request_id=retrieval_request_id,
+            tenant_id=intent.tenant_id,
+            duration_ms=gather_ms,
+            mode=mode.value,
+            source_counts={
+                "vector": len(vector_results),
+                "graph": len(graph_context_results),
+                "raptor": len(raptor_results),
+                "merged": len(merged),
+            },
+            fallback_triggered=fallback_triggered,
+        )
+
         if not merged:
+            logger.info(
+                "retrieval_pipeline_timing",
+                stage="tricameral_total",
+                retrieval_request_id=retrieval_request_id,
+                tenant_id=intent.tenant_id,
+                duration_ms=round((time.perf_counter() - total_start) * 1000, 2),
+                mode=mode.value,
+                result_count=0,
+            )
             return {
                 "mode": mode.value,
                 "results": [],
@@ -314,7 +427,9 @@ class TricameralOrchestrator:
             metadata=intent.metadata,
         )
 
+        rerank_start = time.perf_counter()
         ranked = self.reranker.rerank(rag_candidates, rerank_intent)
+        rerank_ms = round((time.perf_counter() - rerank_start) * 1000, 2)
         top_ranked = ranked[:k]
 
         context = "\n\n".join(item.content for item in top_ranked if item.content)
@@ -323,6 +438,18 @@ class TricameralOrchestrator:
             citations.extend(item.metadata.get("citations", []))
             if item.id:
                 citations.append(item.id)
+
+        total_ms = round((time.perf_counter() - total_start) * 1000, 2)
+        logger.info(
+            "retrieval_pipeline_timing",
+            stage="tricameral_total",
+            retrieval_request_id=retrieval_request_id,
+            tenant_id=intent.tenant_id,
+            duration_ms=total_ms,
+            mode=mode.value,
+            rerank_duration_ms=rerank_ms,
+            result_count=len(top_ranked),
+        )
 
         return {
             "mode": mode.value,

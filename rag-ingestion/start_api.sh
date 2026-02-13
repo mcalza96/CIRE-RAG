@@ -23,6 +23,7 @@ if [ ! -f "venv/bin/activate" ]; then
 fi
 
 source venv/bin/activate
+UVICORN_CMD="venv/bin/python -m uvicorn"
 
 # Start Protocol API (FastAPI) on port 8000
 echo "🌍 Serving API on http://0.0.0.0:8000"
@@ -30,14 +31,14 @@ RELOAD_FLAG="${UVICORN_RELOAD:-false}"
 ACCESS_LOG_FLAG="${UVICORN_ACCESS_LOG:-false}"
 if [ "$RELOAD_FLAG" = "true" ]; then
     if [ "$ACCESS_LOG_FLAG" = "true" ]; then
-        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --access-log
+        $UVICORN_CMD app.main:app --host 0.0.0.0 --port 8000 --reload --access-log
     else
-        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --no-access-log
+        $UVICORN_CMD app.main:app --host 0.0.0.0 --port 8000 --reload --no-access-log
     fi
 else
     if [ "$ACCESS_LOG_FLAG" = "true" ]; then
-        uvicorn app.main:app --host 0.0.0.0 --port 8000 --access-log
+        $UVICORN_CMD app.main:app --host 0.0.0.0 --port 8000 --access-log
     else
-        uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-access-log
+        $UVICORN_CMD app.main:app --host 0.0.0.0 --port 8000 --no-access-log
     fi
 fi

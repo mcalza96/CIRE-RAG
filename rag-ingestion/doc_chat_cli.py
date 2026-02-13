@@ -32,7 +32,7 @@ from app.mas_simple.infrastructure.adapters import (
 # Configuración
 here = Path(__file__).resolve()
 rag_dir = here.parent
-repo_root = here.parents[2]
+repo_root = here.parents[1]
 for env_file in (rag_dir / ".env", rag_dir / ".env.local", repo_root / ".env", repo_root / ".env.local"):
     if env_file.exists():
         load_dotenv(dotenv_path=env_file, override=False)

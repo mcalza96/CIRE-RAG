@@ -1,4 +1,6 @@
+import time
 from typing import List, Dict, Any
+from uuid import uuid4
 import structlog
 from app.core.retrieval_config import retrieval_settings
 from app.core.settings import settings
@@ -22,20 +24,49 @@ class KnowledgeService:
         """
         Retrieves context via vector search.
         """
+        retrieval_request_id = str(uuid4())
+        start = time.perf_counter()
+        selected_mode = "tricameral" if self._use_tricameral() else "vector_only"
+
         logger.info(
             "Retrieving grounded context",
             query_preview=query[:50],
             institution_id=institution_id,
-            mode="tricameral" if self._use_tricameral() else "vector_only"
+            mode=selected_mode,
+            retrieval_request_id=retrieval_request_id,
         )
         
         from app.infrastructure.container import CognitiveContainer
         container = CognitiveContainer.get_instance()
 
         if self._use_tricameral():
-            return await self._get_context_tricameral(query, institution_id, k, container)
+            result = await self._get_context_tricameral(
+                query,
+                institution_id,
+                k,
+                container,
+                retrieval_request_id,
+            )
+        else:
+            result = await self._get_context_vector_only(
+                query,
+                institution_id,
+                k,
+                container,
+                retrieval_request_id,
+            )
 
-        return await self._get_context_vector_only(query, institution_id, k, container)
+        elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+        logger.info(
+            "retrieval_pipeline_timing",
+            stage="pipeline_total",
+            mode=selected_mode,
+            retrieval_request_id=retrieval_request_id,
+            tenant_id=institution_id,
+            duration_ms=elapsed_ms,
+            result_chunks=len(result.get("context_chunks", []) or []),
+        )
+        return result
 
     @staticmethod
     def _use_tricameral() -> bool:
@@ -47,6 +78,7 @@ class KnowledgeService:
         institution_id: str,
         k: int,
         container: Any,
+        retrieval_request_id: str,
     ) -> Dict[str, Any]:
         from app.core.middleware.security import LeakCanary
 
@@ -59,7 +91,7 @@ class KnowledgeService:
             tenant_id=institution_id,
             role=AgentRole.SOCRATIC_MENTOR,
             task=TaskType.EXPLANATION,
-            metadata={},
+            metadata={"retrieval_request_id": retrieval_request_id},
         )
 
         output = await orchestrator.orchestrate(intent=intent, k=k)
@@ -82,7 +114,12 @@ class KnowledgeService:
         }
 
     async def _get_context_vector_only(
-        self, query: str, institution_id: str, k: int, container: Any
+        self,
+        query: str,
+        institution_id: str,
+        k: int,
+        container: Any,
+        retrieval_request_id: str,
     ) -> Dict[str, Any]:
         """Vector-only retrieval path."""
         retrieval_tools = container.retrieval_tools
@@ -90,10 +127,20 @@ class KnowledgeService:
 
         # 1. Execute Retrieval
         scope = {"type": "institutional", "tenant_id": institution_id}
+        retrieve_start = time.perf_counter()
         results = await retrieval_tools.retrieve(
             query=query,
             scope_context=scope,
             k=k
+        )
+
+        logger.info(
+            "retrieval_pipeline_timing",
+            stage="vector_only_retrieve",
+            retrieval_request_id=retrieval_request_id,
+            tenant_id=institution_id,
+            duration_ms=round((time.perf_counter() - retrieve_start) * 1000, 2),
+            result_count=len(results or []),
         )
         
         # 2. Security Validation (LeakCanary)

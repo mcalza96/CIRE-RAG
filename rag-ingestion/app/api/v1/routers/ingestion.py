@@ -1,6 +1,6 @@
 import structlog
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, File, UploadFile, BackgroundTasks, HTTPException, Form, Depends, Header
+from fastapi import APIRouter, File, UploadFile, HTTPException, Form, Depends, Header, Response
 from pydantic import BaseModel
 
 from app.core.settings import settings
@@ -70,7 +70,7 @@ async def embed_texts(request: EmbedRequest):
 
 @router.post("/ingest")
 async def ingest_document(
-    background_tasks: BackgroundTasks,
+    response: Response,
     file: UploadFile = File(...),
     metadata: str = Form(...),
     use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case)
@@ -99,14 +99,27 @@ async def ingest_document(
             metadata = json.dumps(meta_dict)
 
         file_path, original_filename, parsed_metadata = await use_case.execute(file, metadata)
-        background_tasks.add_task(
-            use_case.process_background, 
-            file_path=file_path, 
+        enqueue_result = await use_case.process_background(
+            file_path=file_path,
             original_filename=original_filename,
-            metadata=parsed_metadata
+            metadata=parsed_metadata,
         )
-        return {"status": "accepted", "message": "Ingestion started"}
+        queue = enqueue_result["queue"]
+        response.headers["X-Queue-Depth"] = str(int(queue.get("queue_depth") or 0))
+        response.headers["X-Queue-ETA-Seconds"] = str(int(queue.get("estimated_wait_seconds") or 0))
+        max_pending = queue.get("max_pending")
+        if max_pending is not None:
+            response.headers["X-Queue-Max-Pending"] = str(int(max_pending))
+        return {
+            "status": "accepted",
+            "message": "Ingestion queued",
+            "document_id": enqueue_result["document_id"],
+            "queue": queue,
+        }
     except ValueError as e:
+        detail = str(e)
+        if "INGESTION_BACKPRESSURE" in detail:
+            raise HTTPException(status_code=429, detail=detail)
         if "COLLECTION_SEALED" in str(e):
             raise HTTPException(status_code=409, detail=str(e))
         raise HTTPException(status_code=400, detail=str(e))
@@ -117,7 +130,7 @@ async def ingest_document(
 @router.post("/institutional")
 async def ingest_institutional_document(
     request: InstitutionalIngestionRequest,
-    background_tasks: BackgroundTasks,
+    response: Response,
     x_service_secret: Optional[str] = Header(None, alias="X-Service-Secret"),
     use_case: InstitutionalIngestionUseCase = Depends(get_institutional_use_case)
 ):
@@ -135,18 +148,19 @@ async def ingest_institutional_document(
             document_id=request.document_id,
             metadata=request.metadata
         )
+        queue = result.get("queue")
+        if isinstance(queue, dict):
+            response.headers["X-Queue-Depth"] = str(int(queue.get("queue_depth") or 0))
+            response.headers["X-Queue-ETA-Seconds"] = str(int(queue.get("estimated_wait_seconds") or 0))
+            max_pending = queue.get("max_pending")
+            if max_pending is not None:
+                response.headers["X-Queue-Max-Pending"] = str(int(max_pending))
 
-        # Backward compatibility: if a use case returns a background task, schedule it.
-        background_task = result.pop("background_task", None)
-        if background_task:
-            func, *args = background_task
-            if args:
-                background_tasks.add_task(func, *args)
-            else:
-                background_tasks.add_task(func)
-        
         return result
     except ValueError as e:
+        detail = str(e)
+        if "INGESTION_BACKPRESSURE" in detail:
+            raise HTTPException(status_code=429, detail=detail)
         if "COLLECTION_SEALED" in str(e):
             raise HTTPException(status_code=409, detail=str(e))
         raise HTTPException(status_code=400, detail=str(e))
@@ -181,6 +195,28 @@ async def list_collections(
         raise HTTPException(status_code=500, detail="Failed to list collections")
 
 
+@router.get("/queue/status")
+async def get_ingestion_queue_status(
+    tenant_id: str,
+    use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
+):
+    try:
+        queue = await use_case.get_queue_status(tenant_id=tenant_id)
+        return {
+            "status": "ok",
+            "tenant_id": tenant_id,
+            "queue": queue,
+        }
+    except ValueError as e:
+        detail = str(e)
+        if detail == "INVALID_TENANT_ID":
+            raise HTTPException(status_code=400, detail=detail)
+        raise HTTPException(status_code=400, detail=detail)
+    except Exception as e:
+        logger.error("get_queue_status_failed", error=str(e), tenant_id=tenant_id)
+        raise HTTPException(status_code=500, detail="Failed to get queue status")
+
+
 @router.post("/collections/cleanup")
 async def cleanup_collection(
     request: CleanupCollectionRequest,
@@ -210,7 +246,6 @@ async def cleanup_collection(
 @router.post("/retry/{doc_id}")
 async def retry_ingestion_endpoint(
     doc_id: str,
-    background_tasks: BackgroundTasks,
     use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case)
 ):
     """
@@ -259,17 +294,27 @@ async def create_ingestion_batch(
 @router.post("/batches/{batch_id}/files")
 async def add_file_to_batch(
     batch_id: str,
+    response: Response,
     file: UploadFile = File(...),
     metadata: Optional[str] = Form(None),
     use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
 ):
     try:
         result = await use_case.add_file_to_batch(batch_id=batch_id, file=file, metadata=metadata)
+        queue = result.get("queue")
+        if isinstance(queue, dict):
+            response.headers["X-Queue-Depth"] = str(int(queue.get("queue_depth") or 0))
+            response.headers["X-Queue-ETA-Seconds"] = str(int(queue.get("estimated_wait_seconds") or 0))
+            max_pending = queue.get("max_pending")
+            if max_pending is not None:
+                response.headers["X-Queue-Max-Pending"] = str(int(max_pending))
         return {"status": "accepted", **result}
     except ValueError as e:
         detail = str(e)
         if detail in {"BATCH_NOT_FOUND", "COLLECTION_NOT_FOUND"}:
             raise HTTPException(status_code=404, detail=detail)
+        if "INGESTION_BACKPRESSURE" in detail:
+            raise HTTPException(status_code=429, detail=detail)
         if detail == "COLLECTION_SEALED" or detail == "BATCH_FILE_LIMIT_EXCEEDED":
             raise HTTPException(status_code=409, detail=detail)
         raise HTTPException(status_code=400, detail=detail)

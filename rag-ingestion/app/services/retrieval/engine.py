@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import structlog
@@ -40,10 +41,14 @@ class UnifiedRetrievalEngine:
     ) -> list[ContextItem]:
         """Run vector search over text+visual sources and return hydrated context items."""
 
+        total_start = time.perf_counter()
+
         if not query.strip():
             return []
 
+        embed_start = time.perf_counter()
         query_vector = await self._embed_query(query)
+        embed_ms = round((time.perf_counter() - embed_start) * 1000, 2)
         client = await self._get_client()
 
         rpc_params = {
@@ -55,9 +60,12 @@ class UnifiedRetrievalEngine:
             "p_filter_conditions": scope_context or {},
         }
 
+        rpc_start = time.perf_counter()
         response = await client.rpc(self._rpc_name, rpc_params).execute()
+        rpc_ms = round((time.perf_counter() - rpc_start) * 1000, 2)
         rows = response.data or []
 
+        hydration_start = time.perf_counter()
         hydrated: list[ContextItem] = []
         for row in rows:
             parsed = UnifiedSearchRow.model_validate(row)
@@ -65,6 +73,23 @@ class UnifiedRetrievalEngine:
                 parsed.structured_reconstruction = await self._load_visual_payload(parsed.id)
             item = self._hydrate_row(parsed)
             hydrated.append(item)
+
+        hydration_ms = round((time.perf_counter() - hydration_start) * 1000, 2)
+        total_ms = round((time.perf_counter() - total_start) * 1000, 2)
+        logger.info(
+            "retrieval_pipeline_timing",
+            stage="unified_engine_total",
+            duration_ms=total_ms,
+            embed_duration_ms=embed_ms,
+            rpc_duration_ms=rpc_ms,
+            hydration_duration_ms=hydration_ms,
+            rpc_name=self._rpc_name,
+            query_preview=query[:50],
+            requested_k=k,
+            fetch_k=max(fetch_k, k),
+            row_count=len(rows),
+            hydrated_count=len(hydrated),
+        )
 
         return hydrated[:k]
 

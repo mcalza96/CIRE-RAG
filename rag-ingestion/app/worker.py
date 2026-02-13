@@ -57,7 +57,27 @@ class IngestionWorker:
         self._active_doc_ids = set() # Memory Lock for concurrency control
         self._active_lock = asyncio.Lock()
         self.worker_concurrency = max(1, int(getattr(settings, "WORKER_CONCURRENCY", 3)))
+        self.worker_per_tenant_concurrency = max(
+            1,
+            int(getattr(settings, "WORKER_PER_TENANT_CONCURRENCY", 1)),
+        )
         self._semaphore = asyncio.Semaphore(self.worker_concurrency)
+        self._tenant_semaphores: dict[str, asyncio.Semaphore] = {}
+        self._tenant_semaphores_lock = asyncio.Lock()
+        self._tenant_active_jobs: dict[str, int] = {}
+        self._tenant_active_jobs_lock = asyncio.Lock()
+        self.worker_tenant_queue_sample_limit = max(
+            1,
+            int(getattr(settings, "WORKER_TENANT_QUEUE_SAMPLE_LIMIT", 1000)),
+        )
+        self.worker_tenant_queue_depth_alert = max(
+            1,
+            int(getattr(settings, "WORKER_TENANT_QUEUE_DEPTH_ALERT", 200)),
+        )
+        self.worker_tenant_queue_wait_alert_seconds = max(
+            1,
+            int(getattr(settings, "WORKER_TENANT_QUEUE_WAIT_ALERT_SECONDS", 300)),
+        )
         self._last_community_rebuild_at: datetime | None = None
         self._community_rebuild_lock = asyncio.Lock()
         
@@ -119,6 +139,7 @@ class IngestionWorker:
         doc_id = record.get('id')
         status = record.get('status')
         meta = record.get('metadata', {})
+        tenant_key = self._resolve_tenant_key(record)
         # Purified Listener: Just delegate to Use Case
         # The Use Case decides if it should process based on domain policy
         try:
@@ -130,18 +151,136 @@ class IngestionWorker:
 
             try:
                 async with self._semaphore:
-                    await self.process_use_case.execute(record)
-                    await self._update_batch_progress(record=record, success=True)
+                    tenant_semaphore = await self._get_tenant_semaphore(tenant_key)
+                    async with tenant_semaphore:
+                        await self._increment_active_jobs(tenant_key)
+                        await self._emit_tenant_runtime_metrics(tenant_key=tenant_key, trigger="start", doc_id=str(doc_id))
+                        await self.process_use_case.execute(record)
+                        await self._update_batch_progress(record=record, success=True)
             except Exception:
                 await self._update_batch_progress(record=record, success=False)
                 raise
             finally:
+                await self._decrement_active_jobs(tenant_key)
+                await self._emit_tenant_runtime_metrics(tenant_key=tenant_key, trigger="finish", doc_id=str(doc_id))
                 async with self._active_lock:
                     if doc_id in self._active_doc_ids:
                         self._active_doc_ids.remove(doc_id)
                         
         except Exception as e:
             logger.error(f"Error en Worker para documento {doc_id}: {e}", exc_info=True)
+
+    async def _get_tenant_semaphore(self, tenant_key: str) -> asyncio.Semaphore:
+        async with self._tenant_semaphores_lock:
+            semaphore = self._tenant_semaphores.get(tenant_key)
+            if semaphore is None:
+                semaphore = asyncio.Semaphore(self.worker_per_tenant_concurrency)
+                self._tenant_semaphores[tenant_key] = semaphore
+            return semaphore
+
+    async def _increment_active_jobs(self, tenant_key: str) -> None:
+        async with self._tenant_active_jobs_lock:
+            current = int(self._tenant_active_jobs.get(tenant_key, 0))
+            self._tenant_active_jobs[tenant_key] = current + 1
+
+    async def _decrement_active_jobs(self, tenant_key: str) -> None:
+        async with self._tenant_active_jobs_lock:
+            current = int(self._tenant_active_jobs.get(tenant_key, 0))
+            next_value = max(0, current - 1)
+            if next_value == 0:
+                self._tenant_active_jobs.pop(tenant_key, None)
+            else:
+                self._tenant_active_jobs[tenant_key] = next_value
+
+    async def _get_active_jobs(self, tenant_key: str) -> int:
+        async with self._tenant_active_jobs_lock:
+            return int(self._tenant_active_jobs.get(tenant_key, 0))
+
+    @staticmethod
+    def _parse_iso_datetime(value: Any) -> datetime | None:
+        if not value:
+            return None
+        try:
+            text = str(value).strip()
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            parsed = datetime.fromisoformat(text)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        except Exception:
+            return None
+
+    async def _emit_tenant_runtime_metrics(self, tenant_key: str, trigger: str, doc_id: str) -> None:
+        active_jobs = await self._get_active_jobs(tenant_key)
+        metrics: Dict[str, Any] = {
+            "tenant_id": tenant_key,
+            "active_jobs": active_jobs,
+            "trigger": trigger,
+            "doc_id": doc_id,
+        }
+
+        if tenant_key != "global":
+            try:
+                client = await self.get_client()
+                queue_res = (
+                    await client.table("source_documents")
+                    .select("id,created_at")
+                    .eq("institution_id", tenant_key)
+                    .in_("status", ["queued", "pending", "pending_ingestion", "processing", "processing_v2"])
+                    .order("created_at", desc=False)
+                    .limit(self.worker_tenant_queue_sample_limit)
+                    .execute()
+                )
+                rows = queue_res.data or []
+                queue_depth = len(rows)
+                oldest_created_at = rows[0].get("created_at") if rows and isinstance(rows[0], dict) else None
+                oldest_dt = self._parse_iso_datetime(oldest_created_at)
+                wait_seconds = 0
+                if oldest_dt is not None:
+                    wait_seconds = max(0, int((datetime.now(timezone.utc) - oldest_dt).total_seconds()))
+
+                metrics["queue_depth"] = queue_depth
+                metrics["queue_wait_seconds"] = wait_seconds
+                metrics["queue_depth_sample_limit"] = self.worker_tenant_queue_sample_limit
+                metrics["queue_depth_truncated"] = queue_depth >= self.worker_tenant_queue_sample_limit
+
+                logger.info("worker_tenant_runtime_metrics %s", metrics)
+
+                if (
+                    queue_depth >= self.worker_tenant_queue_depth_alert
+                    or wait_seconds >= self.worker_tenant_queue_wait_alert_seconds
+                    or active_jobs >= self.worker_per_tenant_concurrency
+                ):
+                    logger.warning(
+                        "worker_tenant_saturation_alert tenant=%s active_jobs=%s limit=%s queue_depth=%s depth_alert=%s queue_wait_seconds=%s wait_alert=%s",
+                        tenant_key,
+                        active_jobs,
+                        self.worker_per_tenant_concurrency,
+                        queue_depth,
+                        self.worker_tenant_queue_depth_alert,
+                        wait_seconds,
+                        self.worker_tenant_queue_wait_alert_seconds,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "worker_tenant_runtime_metrics_failed tenant=%s trigger=%s error=%s",
+                    tenant_key,
+                    trigger,
+                    str(exc),
+                )
+        else:
+            logger.info("worker_tenant_runtime_metrics %s", metrics)
+
+    @staticmethod
+    def _resolve_tenant_key(record: Dict[str, Any]) -> str:
+        tenant_id = record.get("institution_id")
+        if tenant_id:
+            return str(tenant_id)
+        metadata = record.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("institution_id"):
+            return str(metadata.get("institution_id"))
+        return "global"
 
     async def _update_batch_progress(self, record: Dict[str, Any], success: bool) -> None:
         batch_id = record.get("batch_id")
@@ -159,6 +298,13 @@ class IngestionWorker:
         client = await self.get_client()
         logger.info(f"Starting RAG Ingestion Worker... listening on {settings.SUPABASE_URL}")
         logger.info(f"Worker concurrency configured: {self.worker_concurrency}")
+        logger.info(f"Worker per-tenant concurrency: {self.worker_per_tenant_concurrency}")
+        logger.info(
+            "Worker tenant alert settings: depth>=%s wait>=%ss sample_limit=%s",
+            self.worker_tenant_queue_depth_alert,
+            self.worker_tenant_queue_wait_alert_seconds,
+            self.worker_tenant_queue_sample_limit,
+        )
         
         loop = asyncio.get_running_loop()
 

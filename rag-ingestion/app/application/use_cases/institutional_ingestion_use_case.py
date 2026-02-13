@@ -1,4 +1,5 @@
 import logging
+import math
 from typing import Dict, Any, Optional
 from uuid import UUID
 
@@ -25,6 +26,46 @@ class InstitutionalIngestionUseCase:
         self.repo = SupabaseSourceRepository()
         self.taxonomy_manager = TaxonomyManager()
 
+    async def _get_pending_snapshot(self, tenant_id: str) -> Dict[str, Optional[int]]:
+        max_pending = int(getattr(settings, "INGESTION_MAX_PENDING_PER_TENANT", 0) or 0)
+        limit = max_pending + 1 if max_pending > 0 else 1000
+        client = await get_async_supabase_client()
+        response = (
+            await client.table("source_documents")
+            .select("id")
+            .eq("institution_id", str(tenant_id))
+            .in_("status", ["queued", "pending", "pending_ingestion", "processing", "processing_v2"])
+            .limit(limit)
+            .execute()
+        )
+        pending_count = len(response.data or [])
+        docs_per_minute_per_worker = max(1, int(getattr(settings, "INGESTION_DOCS_PER_MINUTE_PER_WORKER", 2) or 2))
+        worker_concurrency = max(1, int(getattr(settings, "WORKER_CONCURRENCY", 1) or 1))
+        throughput_per_minute = docs_per_minute_per_worker * worker_concurrency
+        estimated_wait_seconds = int(math.ceil((pending_count / throughput_per_minute) * 60)) if pending_count > 0 else 0
+
+        return {
+            "queue_depth": pending_count,
+            "max_pending": max_pending if max_pending > 0 else None,
+            "estimated_wait_seconds": estimated_wait_seconds,
+        }
+
+    async def _enforce_pending_limit(self, tenant_id: str) -> Dict[str, Optional[int]]:
+        snapshot = await self._get_pending_snapshot(tenant_id=tenant_id)
+        max_pending = int(snapshot.get("max_pending") or 0)
+        if max_pending <= 0:
+            return snapshot
+
+        pending_count = int(snapshot.get("queue_depth") or 0)
+        if pending_count >= max_pending:
+            raise ValueError(
+                "INGESTION_BACKPRESSURE "
+                f"tenant={tenant_id} pending={pending_count} max={max_pending} "
+                f"eta_seconds={int(snapshot.get('estimated_wait_seconds') or 0)}"
+            )
+
+        return snapshot
+
     async def execute(self, tenant_id: str, file_path: str, document_id: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Prepares and queues institutional ingestion for the Worker pipeline.
@@ -34,6 +75,8 @@ class InstitutionalIngestionUseCase:
         logger.info(f"Triggering Unified Institutional Ingestion for Doc: {document_id}, Tenant: {tenant_id}")
         
         try:
+            await self._enforce_pending_limit(tenant_id=str(tenant_id))
+
             # 1. Determine strategy up-front so first QUEUED write already contains it.
             ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
             strategy_key = "PRE_PROCESSED" if ext in ("md", "txt") else "CONTENT"
@@ -138,6 +181,7 @@ class InstitutionalIngestionUseCase:
                 "document_id": document_id,
                 "queued": True,
                 "strategy": strategy_key,
+                "queue": await self._get_pending_snapshot(tenant_id=str(tenant_id)),
             }
             
         except Exception as e:

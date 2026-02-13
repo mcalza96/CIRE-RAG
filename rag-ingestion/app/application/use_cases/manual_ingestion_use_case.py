@@ -1,5 +1,6 @@
 import os
 import json
+import math
 import shutil
 import tempfile
 import structlog
@@ -34,6 +35,71 @@ class ManualIngestionUseCase:
         # We need a client for RaptorRepo. 
         # Ideally we inject, but for now we'll do safe init inside methods or use singleton.
         self.raptor_processor = None 
+
+    async def _get_pending_snapshot(self, tenant_id: Optional[str]) -> Dict[str, Optional[int]]:
+        max_pending = int(getattr(settings, "INGESTION_MAX_PENDING_PER_TENANT", 0) or 0)
+        if not tenant_id:
+            return {
+                "queue_depth": 0,
+                "max_pending": max_pending if max_pending > 0 else None,
+                "estimated_wait_seconds": 0,
+            }
+
+        limit = max_pending + 1 if max_pending > 0 else 1000
+        client = await get_async_supabase_client()
+        response = (
+            await client.table("source_documents")
+            .select("id")
+            .eq("institution_id", str(tenant_id))
+            .in_(
+                "status",
+                [
+                    IngestionStatus.QUEUED.value,
+                    IngestionStatus.PENDING.value,
+                    IngestionStatus.PENDING_INGESTION.value,
+                    IngestionStatus.PROCESSING.value,
+                    IngestionStatus.PROCESSING_V2.value,
+                ],
+            )
+            .limit(limit)
+            .execute()
+        )
+        pending_count = len(response.data or [])
+        docs_per_minute_per_worker = max(1, int(getattr(settings, "INGESTION_DOCS_PER_MINUTE_PER_WORKER", 2) or 2))
+        worker_concurrency = max(1, int(getattr(settings, "WORKER_CONCURRENCY", 1) or 1))
+        throughput_per_minute = docs_per_minute_per_worker * worker_concurrency
+        estimated_wait_seconds = int(math.ceil((pending_count / throughput_per_minute) * 60)) if pending_count > 0 else 0
+
+        return {
+            "queue_depth": pending_count,
+            "max_pending": max_pending if max_pending > 0 else None,
+            "estimated_wait_seconds": estimated_wait_seconds,
+        }
+
+    async def _enforce_pending_limit(self, tenant_id: Optional[str]) -> Dict[str, Optional[int]]:
+        if not tenant_id:
+            return await self._get_pending_snapshot(tenant_id=tenant_id)
+
+        snapshot = await self._get_pending_snapshot(tenant_id=tenant_id)
+        max_pending = int(snapshot.get("max_pending") or 0)
+        if max_pending <= 0:
+            return snapshot
+
+        pending_count = int(snapshot.get("queue_depth") or 0)
+        if pending_count >= max_pending:
+            raise ValueError(
+                "INGESTION_BACKPRESSURE "
+                f"tenant={tenant_id} pending={pending_count} max={max_pending} "
+                f"eta_seconds={int(snapshot.get('estimated_wait_seconds') or 0)}"
+            )
+
+        return snapshot
+
+    async def get_queue_status(self, tenant_id: str) -> Dict[str, Optional[int]]:
+        tenant = str(tenant_id or "").strip()
+        if not tenant:
+            raise ValueError("INVALID_TENANT_ID")
+        return await self._get_pending_snapshot(tenant_id=tenant)
 
     async def get_documents(self, limit: int = 20) -> List[Dict[str, Any]]:
         """
@@ -186,19 +252,19 @@ class ManualIngestionUseCase:
             logger.error(f"[ManualIngest] Error saving temp file: {e}")
             raise RuntimeError("Could not save uploaded file locally.")
 
-        # 3. Perform ingestion (Dispatch)
-        # In a real SOLID app, we might want to return immediately and run this in background.
-        # But the original code was using BackgroundTasks in the endpoint.
-        # So we can provide a method to run the task itself too.
-        
-        return file_path, file.filename, parsed_metadata
+        # 3. Return file + metadata for queue registration.
+        original_filename = file.filename or safe_filename
+        return file_path, original_filename, parsed_metadata
 
-    async def process_background(self, file_path: str, original_filename: str, metadata: IngestionMetadata):
+    async def process_background(self, file_path: str, original_filename: str, metadata: IngestionMetadata) -> Dict[str, Any]:
         """
         Registers document for async Worker processing.
         Does NOT execute ingestion locally.
         """
         try:
+            tenant_id = str(metadata.institution_id) if metadata.institution_id else None
+            await self._enforce_pending_limit(tenant_id=tenant_id)
+
             # 1. Enrich Metadata with storage path for the worker
             # Use top-level field now supported by schema
             metadata.storage_path = file_path
@@ -216,6 +282,9 @@ class ManualIngestionUseCase:
             # NOTE: We do NOT delete the temp file here. The worker needs it.
             # The Worker (ProcessDocumentWorkerUseCase) is responsible for deletion after processing.
             
+            queue = await self._get_pending_snapshot(tenant_id=tenant_id)
+            return {"document_id": str(doc_id), "queue": queue}
+
         except Exception as e:
             logger.error(f"[ManualIngest] Failed to register document {original_filename}: {e}")
             if os.path.exists(file_path):
@@ -317,16 +386,20 @@ class ManualIngestionUseCase:
         docs = docs_res.data or []
         for doc in docs:
             if str(doc.get("filename")) == str(file.filename):
+                queue = await self._get_pending_snapshot(tenant_id=str(batch["tenant_id"]))
                 return {
                     "doc_id": doc.get("id"),
                     "filename": doc.get("filename"),
                     "status": doc.get("status"),
                     "queued": False,
                     "idempotent": True,
+                    "queue": queue,
                 }
 
         if len(docs) >= int(batch.get("total_files") or 0):
             raise ValueError("BATCH_FILE_LIMIT_EXCEEDED")
+
+        await self._enforce_pending_limit(tenant_id=str(batch["tenant_id"]))
 
         parsed_metadata: Dict[str, Any] = {}
         if metadata:
@@ -383,12 +456,15 @@ class ManualIngestionUseCase:
 
         await client.table("ingestion_batches").update({"status": "processing"}).eq("id", batch_id).execute()
 
+        queue = await self._get_pending_snapshot(tenant_id=str(batch["tenant_id"]))
+
         return {
             "doc_id": doc_id,
             "filename": safe_filename,
             "status": IngestionStatus.QUEUED.value,
             "queued": True,
             "idempotent": False,
+            "queue": queue,
         }
 
     async def seal_batch(self, batch_id: str) -> Dict[str, Any]:
