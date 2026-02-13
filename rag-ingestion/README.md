@@ -14,15 +14,18 @@ Disenado para operar como backend API-first en escenarios donde el naive RAG fal
 
 - **Ingesta Cognitiva (Visual Anchors)**: el pipeline visual parsea tablas/figuras a JSON estructurado. Aplica **Dual-Model Extraction** (Lite + Flash fallback).
 - **Orquestación Tricameral**: enrutamiento dinámico nativo entre Vector Search, GraphRAG SQL-native y RAPTOR.
+- **RAPTOR (cuando aplica)**: construye un arbol jerarquico de resumenes mediante clustering semantico recursivo (no depende de estructura fija pagina/capitulo).
 - **Stack unificado**: FastAPI + Supabase (Postgres 17 + pgvector), sin fragmentar en motores separados.
 
-## Arquitectura simple por defecto
+## Arquitectura para Agentes de IA (AI-First Engineering)
 
-- Preferimos clases concretas y wiring directo para servicios internos.
-- Solo mantenemos contratos donde hay valor operativo real:
-  - `IRetrievalRepository` (`Protocol`): frontera de retrieval/DB.
-  - `IEmbeddingProvider` (`ABC`): switch real entre `JinaLocalProvider` y `JinaCloudProvider`.
-- Si una abstraccion no acelera entrega o no reduce costo de cambio en el corto plazo, se elimina.
+Este repositorio puede parecer "sobre-ingenierizado" bajo una mirada humana tradicional debido a su alta fragmentación y uso extensivo de interfaces. Sin embargo, esta estructura es **intencional** y constituye una **carretera de alta velocidad para la programación asistida por IA**.
+
+- **Interfaces como Guardrails**: Las clases abstractas e interfaces limitan la alucinación de la IA, definiendo contratos explícitos que los agentes deben respetar.
+- **Ingeniería de Prompts Estructural**: La atomización permite que la IA trabaje en contextos pequeños y especializados, aumentando la calidad del código generado.
+- **Seguridad por Diseño**: Separamos la orquestación dinámica (Python) del procesamiento de datos inmutable (SQL en Supabase), donde el "músculo" del sistema permanece eficiente y seguro.
+
+No escribimos código solo para humanos; escribimos **código para ser extendido por máquinas de forma segura**. Sacrificamos la "simplicidad visual" para ganar en **trazabilidad, extensibilidad y velocidad de iteración sintética**.
 
 ## Flujo operativo actual
 
