@@ -51,15 +51,14 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    U[Clients / Integrations] --> QAO[Q/A Orchestrator]
-    QAO --> AE[Atomic Retrieval Engine]
+    U[Clients / Integrations] --> AE[Atomic Retrieval Engine]
     AE --> DB[(Supabase Postgres + pgvector)]
     DB --> JQ[(job_queue)]
     JQ --> W[Async Worker (pull)]
     W --> DB
 
-    QAO --> K[Knowledge API]
-    QAO --> I[Ingestion API]
+    AE --> K[Knowledge API]
+    AE --> I[Ingestion API]
 
     AE --> QP[Query Decomposer]
     AE --> RR[Gravity Reranker]
@@ -67,10 +66,7 @@ flowchart TD
 
 ## 4) Boundary Note
 
-- `Q/A Orchestrator` (`orchestrator/runtime/qa_orchestrator`) decide intencion, plan y validacion.
 - RAG backend (`AtomicRetrievalEngine`) ejecuta retrieval atómico sobre múltiples capas (Vector, FTS, Graph).
-- Integracion Q/A actual: adapters concretos (sin capa de puertos interna).
-- Notas vigentes: `docs/qa-rag-integration-notes.md`.
 
 ## Value in one line
 

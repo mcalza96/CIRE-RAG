@@ -15,9 +15,9 @@
 
 1. **Ingestion**: `POST /api/v1/ingestion/ingest` o `POST /api/v1/ingestion/institutional` registran `source_documents` en estado `queued`, con metadatos de tenant/coleccion/estrategia y snapshot de cola.
 2. **Proceso**: el worker (`app/worker.py`) opera en modo pull sobre `job_queue` (`fetch_next_job`) y ejecuta `ProcessDocumentWorkerUseCase` con control de concurrencia global y por tenant.
-3. **Pregunta**: el cliente consulta retrieval en rag-engine (`/knowledge/retrieve`, `/retrieval/*`) y respuesta en orquestador (`http://localhost:8001/api/v1/knowledge/answer`) o por `orchestrator/chat_cli.py`.
-4. **Analisis**: el orquestador clasifica intencion, arma `RetrievalPlan`, puede pedir aclaracion de alcance (p. ej. multinorma/conflicto), recupera evidencia C#/R#, genera borrador y valida scope/evidencia literal.
-5. **Respuesta**: se retorna respuesta grounded con trazabilidad o se bloquea/solicita aclaracion cuando hay inconsistencia de ambito.
+3. **Pregunta**: el cliente consulta retrieval en rag-engine (`/knowledge/retrieve`, `/retrieval/*`).
+4. **Analisis**: el engine clasifica/filtra el contexto recuperado y aplica politicas de scope.
+5. **Respuesta**: se retorna contexto grounded con trazabilidad para consumo de clientes.
 
 ## Flujo 1: ingesta manual
 
@@ -62,19 +62,6 @@
 - Repositorios Supabase en `app/infrastructure/repositories`.
 - Esquema Consolidado: Se mantiene un núcleo de **34 tablas core** optimizadas, habiendo purgado todo el legado de "TeacherOS".
 - Migraciones SQL en `app/infrastructure/migrations`.
-
-## Coexistencia Q/A Orchestrator y RAG
-
-`orchestrator/runtime/qa_orchestrator` coexiste como capa de orquestacion de Q/A (bibliotecario),
-mientras RAG mantiene el conocimiento y retrieval (biblioteca).
-
-En la implementacion actual, `HandleQuestionUseCase` se cablea con clases concretas
-de `orchestrator/runtime/qa_orchestrator/adapters.py` para reducir complejidad de wiring.
-
-Nota de migracion de naming: el modulo historico `app/mas_simple` fue renombrado a
-`qa_orchestrator` para evitar confusion con "MAS" (Multi-Agent Systems).
-
-Notas de integracion: `docs/qa-rag-integration-notes.md`.
 
 ## Observabilidad
 

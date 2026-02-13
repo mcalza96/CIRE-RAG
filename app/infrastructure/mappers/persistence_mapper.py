@@ -1,5 +1,5 @@
 """
-Persistence Mapper - CISRE Infrastructure Layer
+Persistence Mapper - CIRE-RAG Infrastructure Layer
 
 Centralized mediator for Domain <-> SQL transformations.
 Strictly follows naming standards: camelCase for Domain, snake_case for DB.

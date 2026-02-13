@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for contributing to CISRE (Cognitive Ingestion & Structured Retrieval Engine).
+Thanks for contributing to CIRE-RAG.
 
 ## Scope
 
@@ -18,7 +18,7 @@ cp .env.example .env.local
 Run before opening a PR:
 
 ```bash
-ruff check app tests scripts run_worker.py orchestrator/chat_cli.py orchestrator/runtime
+ruff check app tests scripts run_worker.py
 mypy --config-file mypy.ini -m app.schemas.ingestion -m app.core.config.model_config -m app.services.retrieval.engine -m app.services.ingestion.visual_parser
 pytest tests/unit tests/integration tests/tools -q
 ```

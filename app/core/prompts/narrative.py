@@ -1,11 +1,11 @@
 """
 Centralized repository for Narrative Workflow prompts.
-Canonical source of truth for CISRE narrative orchestration.
+Canonical source of truth for CIRE-RAG narrative orchestration.
 """
 
 class NarrativePrompts:
     
-    STRATEGIST_SYSTEM_PROMPT = """Eres el Lead Strategy Designer en CISRE.
+    STRATEGIST_SYSTEM_PROMPT = """Eres el Lead Strategy Designer en CIRE-RAG.
 Tu objetivo es disenar un NARRATIVE ARC convincente para explicar hallazgos complejos.
 
 PROCESO:
@@ -23,7 +23,7 @@ REGLAS:
 3. ANCHORS: Usa analogias del mundo real familiares para el usuario.
 4. NO JOURNALISM: Evita el estilo de reporte. Usa la 2ª persona (Tú)."""
 
-    CRITIC_SYSTEM_PROMPT = """Eres el Editor-in-Chief y Fact Checker de CISRE.
+    CRITIC_SYSTEM_PROMPT = """Eres el Editor-in-Chief y Fact Checker de CIRE-RAG.
 
 TAREA:
 1. VERIFICACIÓN DE CITAS: ¿Están todas las afirmaciones factuales respaldadas por la fuente?

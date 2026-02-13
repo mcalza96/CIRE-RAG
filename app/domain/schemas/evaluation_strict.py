@@ -3,7 +3,7 @@ Evaluation Strict Schemas - Pydantic models with strict validation for LLM outpu
 
 These schemas are designed for constrained decoding, ensuring the LLM
 produces syntactically and semantically valid outputs every time.
-Follows CISRE v2.3 naming conventions: camelCase for domain, snake_case for DB.
+Follows CIRE-RAG v2.3 naming conventions: camelCase for domain, snake_case for DB.
 """
 from typing import List, Optional, Literal
 from pydantic import BaseModel, Field, model_validator, ConfigDict, AliasChoices

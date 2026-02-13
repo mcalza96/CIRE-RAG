@@ -1,6 +1,6 @@
-# Getting Started (HITL Q/A)
+# Getting Started (RAG Engine)
 
-Guia rapida para probar el flujo Human-in-the-Loop (HITL) en preguntas/respuestas.
+Guia rapida para probar ingestion y retrieval del engine.
 
 ## 1) Levantar API + worker
 
@@ -16,7 +16,7 @@ cd .
 venv/bin/python run_worker.py
 ```
 
-## 2) Enviar una pregunta potencialmente ambigua
+## 2) Consultar retrieval
 
 ```bash
 curl -s -X POST "http://localhost:8000/api/v1/knowledge/retrieve" \
@@ -28,41 +28,30 @@ Si hay ambiguedad de alcance, la respuesta devuelve:
 
 - `mode: AMBIGUOUS_SCOPE`
 - `scope_candidates`
-- `scope_message`
+- `scope_message` (cuando aplica)
 
-## 3) Aclarar alcance y pedir respuesta final
+## 3) Consultar contratos retrieval v1
 
-Usa la aclaracion directamente en la consulta siguiente:
+Chunks:
 
 ```bash
-curl -s -X POST "http://localhost:8001/api/v1/knowledge/answer" \
+curl -s -X POST "http://localhost:8000/api/v1/retrieval/chunks" \
   -H "Content-Type: application/json" \
-  -d '{"tenant_id":"<TENANT_ID>","query":"Que exige ISO 9001 sobre registro y evidencias?"}'
+  -d '{"tenant_id":"<TENANT_ID>","query":"Que exige ISO 9001 sobre registro y evidencias?","chunk_k":8,"fetch_k":40}'
 ```
 
-Si el scope queda valido, recibes:
-
-- `answer`
-- `citations`
-- `mode`
-
-## 4) Caso bloqueado por mismatch de ambito
-
-Cuando la recuperacion detecta fuentes fuera del scope pedido, el endpoint responde con bloqueo seguro:
-
-```json
-{
-  "answer": "⚠️ Se detectó inconsistencia de ámbito entre la pregunta y las fuentes recuperadas. Reformula indicando explícitamente la norma objetivo.",
-  "context_chunks": [],
-  "citations": [],
-  "mode": "HYBRID"
-}
-```
-
-## 5) KPI de seguridad de scope
+Summaries:
 
 ```bash
-curl -s "http://localhost:8001/api/v1/knowledge/scope-health?tenant_id=<TENANT_ID>"
+curl -s -X POST "http://localhost:8000/api/v1/retrieval/summaries" \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id":"<TENANT_ID>","query":"Que exige ISO 9001 sobre registro y evidencias?","summary_k":5}'
 ```
 
-Este endpoint permite monitorear tasas de aclaracion y bloqueos por mismatch.
+## 4) Health check
+
+```bash
+curl -s "http://localhost:8000/health"
+```
+
+Para observabilidad y troubleshooting, ver `runbooks/common-incidents.md`.

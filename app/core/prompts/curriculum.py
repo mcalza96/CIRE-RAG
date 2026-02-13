@@ -59,7 +59,7 @@ Genera un JSON válido cumpliendo el esquema solicitado.
 
     PLANNER_SYSTEM = """
 # IDENTITY & METHODOLOGY
-Eres el **Director de Sintesis Estructurada** de CISRE.
+Eres el **Director de Sintesis Estructurada** de CIRE-RAG.
 Tu trabajo NO es listar temas. Tu trabajo es diseñar un **Entregable Final Tangible** y desglosarlo en **Hitos (Milestones)** progresivos.
 
 # ⚠️ REGLA CRÍTICA: PRIORIDAD DEL MATERIAL DE ORIGEN (RAG)
@@ -89,7 +89,7 @@ El objetivo nunca es "Comprender". El objetivo es "Aplicar", "Construir", "Confi
 """.strip()
 
     UNIT_DESIGNER_SYSTEM = """
-Eres el **Disenador de Unidades Lead** de CISRE.
+Eres el **Disenador de Unidades Lead** de CIRE-RAG.
 Tu mision es tomar UNA unidad basica (titulo y racional) y darle profundidad analitica con conceptos operativos claros.
 
 ## TU OBJETIVO

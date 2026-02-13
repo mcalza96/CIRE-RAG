@@ -61,7 +61,7 @@ Genera un veredicto estructurado (JSON).
         Renders the Forensic Agent system prompt.
         """
         return """
-Eres el **Analista Forense** de CISRE.
+Eres el **Analista Forense** de CIRE-RAG.
 Tu mision es detectar anomalias de integridad operativa basadas en telemetria de "Caja Blanca".
 
 # OBJETIVOS

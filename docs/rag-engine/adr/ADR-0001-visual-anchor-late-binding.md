@@ -6,7 +6,7 @@
 
 ## Context
 
-CISRE handles dense enterprise/regulatory PDFs with mixed modalities (text + tables + figures). Native multimodal indexing is costly and less explainable for audit-grade workflows.
+CIRE-RAG handles dense enterprise/regulatory PDFs with mixed modalities (text + tables + figures). Native multimodal indexing is costly and less explainable for audit-grade workflows.
 
 ## Decision
 

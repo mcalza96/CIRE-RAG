@@ -7,17 +7,14 @@ RUN_DIR="$BASE_DIR/.run"
 LOG_DIR="$BASE_DIR/.logs"
 
 RAG_DIR="$BASE_DIR"
-ORCH_DIR="$BASE_DIR/orchestrator"
 
 mkdir -p "$RUN_DIR" "$LOG_DIR"
 
 RAG_API_PID_FILE="$RUN_DIR/rag-api.pid"
-ORCH_API_PID_FILE="$RUN_DIR/orchestrator-api.pid"
 RAG_WORKER_PID_FILE="$RUN_DIR/rag-worker.pid"
 COMMUNITY_WORKER_PID_FILE="$RUN_DIR/community-worker.pid"
 
 RAG_API_LOG="$LOG_DIR/rag-api.log"
-ORCH_API_LOG="$LOG_DIR/orchestrator-api.log"
 RAG_WORKER_LOG="$LOG_DIR/rag-worker.log"
 COMMUNITY_WORKER_LOG="$LOG_DIR/community-worker.log"
 
@@ -142,14 +139,11 @@ start_all() {
   load_root_env
 
   kill_port_if_busy 8000
-  kill_port_if_busy 8001
 
   : > "$RAG_API_LOG"
-  : > "$ORCH_API_LOG"
   : > "$RAG_WORKER_LOG"
   : > "$COMMUNITY_WORKER_LOG"
   start_process "RAG API" "./start_api.sh" "$RAG_DIR" "$RAG_API_PID_FILE" "$RAG_API_LOG"
-  start_process "Orchestrator API" "./start_api.sh" "$ORCH_DIR" "$ORCH_API_PID_FILE" "$ORCH_API_LOG"
   start_process "RAG Worker" "venv/bin/python run_worker.py" "$RAG_DIR" "$RAG_WORKER_PID_FILE" "$RAG_WORKER_LOG"
   start_process "Community Worker" "venv/bin/python -m app.workers.community_worker" "$RAG_DIR" "$COMMUNITY_WORKER_PID_FILE" "$COMMUNITY_WORKER_LOG"
 }
@@ -157,14 +151,12 @@ start_all() {
 stop_all() {
   stop_process "Community Worker" "$COMMUNITY_WORKER_PID_FILE"
   stop_process "RAG Worker" "$RAG_WORKER_PID_FILE"
-  stop_process "Orchestrator API" "$ORCH_API_PID_FILE"
   stop_process "RAG API" "$RAG_API_PID_FILE"
 }
 
 show_status() {
   echo "📊 Estado de servicios"
   status_process "RAG API" "$RAG_API_PID_FILE"
-  status_process "Orchestrator API" "$ORCH_API_PID_FILE"
   status_process "RAG Worker" "$RAG_WORKER_PID_FILE"
   status_process "Community Worker" "$COMMUNITY_WORKER_PID_FILE"
 }
@@ -173,17 +165,15 @@ show_logs() {
   local target="${1:-all}"
   case "$target" in
     rag-api) tail -n 80 "$RAG_API_LOG" ;;
-    orchestrator-api) tail -n 80 "$ORCH_API_LOG" ;;
     rag-worker) tail -n 80 "$RAG_WORKER_LOG" ;;
     community-worker) tail -n 80 "$COMMUNITY_WORKER_LOG" ;;
     all)
       echo "--- rag-api ---" && tail -n 40 "$RAG_API_LOG"
-      echo "--- orchestrator-api ---" && tail -n 40 "$ORCH_API_LOG"
       echo "--- rag-worker ---" && tail -n 40 "$RAG_WORKER_LOG"
       echo "--- community-worker ---" && tail -n 40 "$COMMUNITY_WORKER_LOG"
       ;;
     *)
-      echo "Uso logs: ./stack.sh logs [rag-api|orchestrator-api|rag-worker|community-worker|all]"
+      echo "Uso logs: ./stack.sh logs [rag-api|rag-worker|community-worker|all]"
       exit 1
       ;;
   esac
@@ -212,7 +202,7 @@ case "${1:-}" in
   *)
     echo "Uso:"
     echo "  ./stack.sh up|down|restart|status"
-    echo "  ./stack.sh logs [rag-api|orchestrator-api|rag-worker|community-worker|all]"
+    echo "  ./stack.sh logs [rag-api|rag-worker|community-worker|all]"
     exit 1
     ;;
 esac

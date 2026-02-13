@@ -1,7 +1,7 @@
 """
 Domain schemas for the RAG Ingestion service using Pydantic.
 Ensures type safety and clear definition of data structures.
-Follows CISRE v2.3 naming conventions:
+Follows CIRE-RAG v2.3 naming conventions:
 - camelCase for domain/entities.
 - snake_case for fields mapping to the database.
 """

@@ -58,16 +58,14 @@ Extended testing guidance: `rag-engine/testing.md`.
 - Architecture overview: `architecture.md`
 - Operational incidents and runbooks: `operations.md`
 
-## 5) Q/A Orchestrator CLI
+## 5) Ingestion CLI
 
 From repository root:
 
 ```bash
 ./ing.sh
-./chat.sh
 ```
 
 Notes:
 
-- `chat.sh` launches Q/A Orchestrator and lets you choose collection scope and multi-hop mode.
 - Existing collections are overwrite-friendly in the ingestion CLI (cleanup + reingestion workflow).

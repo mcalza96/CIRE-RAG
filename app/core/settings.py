@@ -12,7 +12,7 @@ SERVICE_ENV_LOCAL = PROJECT_ROOT / ".env.local"
 
 class Settings(BaseSettings):
     """
-    CISRE - Global Configuration Registry
+    CIRE-RAG - Global Configuration Registry
     Centralizes all environment variables using Pydantic Settings.
     """
     model_config = SettingsConfigDict(

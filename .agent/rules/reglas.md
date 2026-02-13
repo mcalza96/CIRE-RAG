@@ -2,7 +2,7 @@
 trigger: always_on
 ---
 
-# Reglas Operativas del Agente IA (CISRE)
+# Reglas Operativas del Agente IA (CIRE-RAG)
 
 Este documento define el comportamiento esperado de un agente IA que opera sobre la arquitectura descrita en el README del repositorio.
 

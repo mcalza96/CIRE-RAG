@@ -28,11 +28,6 @@ Sin estas variables, API y worker no operan de forma correcta.
 - `CHAT_LLM_MODEL_NAME`
 - `LLM_TEMPERATURE`
 
-Variables usadas por Q/A Orchestrator (`orchestrator/runtime/qa_orchestrator` y `orchestrator/chat_cli.py`):
-
-- `RAG_ENGINE_URL` (base URL del rag-engine para el orquestador; default `http://localhost:8000`).
-- `CHAT_LLM_PROVIDER` / `CHAT_LLM_MODEL_NAME` cuando se enruta por stack API.
-
 Credenciales por proveedor:
 
 - `OPENAI_API_KEY`
@@ -44,7 +39,6 @@ Credenciales por proveedor:
 ## Puertos y ejecucion
 
 - API local: `8000` (ver `start_api.sh`).
-- Orchestrator API local: `8001` (ver `../orchestrator/start_api.sh`).
 - Health endpoint: `/health`.
 
 ## Concurrencia (Fase 4)

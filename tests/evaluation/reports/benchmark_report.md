@@ -1,4 +1,4 @@
-# CISRE Visual Anchor Benchmark Report
+# CIRE-RAG Visual Anchor Benchmark Report
 
 Generated at: `2026-02-11T18:57:32.497324+00:00`
 

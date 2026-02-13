@@ -1,5 +1,5 @@
 """
-Cognitive Container - CISRE Infrastructure Layer
+Cognitive Container - CIRE-RAG Infrastructure Layer
 
 Centralizes service instantiation and dependency injection.
 Prevents static singletons in Domain nodes.

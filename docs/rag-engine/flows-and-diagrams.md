@@ -202,41 +202,22 @@ sequenceDiagram
     API-->>U: respuesta
 ```
 
-## 9) Flujo Exacto: Q/A Orchestrator (`orchestrator/runtime/qa_orchestrator`)
+## 9) Flujo Exacto: Consumo de Retrieval por Cliente Externo
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Cliente/CLI
-    participant QAO as HandleQuestionUseCase
-    participant POL as Domain Policies
-    participant RET as RetrievalToolsAdapter
-    participant GEN as GroqAnswerGeneratorAdapter
-    participant VAL as LiteralEvidenceValidator
-    participant RAG as RetrievalTools/Knowledge stack
+    participant C as Cliente
+    participant APP as Aplicacion Consumidora
+    participant RAG as Retrieval API
+    participant KB as RetrievalTools/Knowledge stack
 
-    C->>QAO: HandleQuestionCommand(query, tenant_id, collection_id)
-    QAO->>POL: classify_intent + build_retrieval_plan + detect_scope/conflicts
-    POL-->>QAO: intent + plan + scope_signals
-    alt requiere aclaracion de alcance
-      QAO-->>C: ClarificationRequest (sin retrieval)
-    else continua analisis
-    QAO->>RET: retrieve_chunks + retrieve_summaries
-    RET->>RAG: retrieve(...) con filtros de scope
-    RAG-->>RET: evidencia C#/R#
-    RET-->>QAO: EvidenceItem[]
-    QAO->>GEN: generate(query, plan, evidence)
-    GEN-->>QAO: AnswerDraft
-    QAO->>VAL: validate(answer, plan, query)
-    VAL-->>QAO: ValidationResult
-    alt scope mismatch recuperable
-      QAO-->>C: ClarificationRequest (analisis integrado vs restringido)
-    else bloqueado por mismatch
-      QAO-->>C: respuesta bloqueada con instruccion de reformulacion
-    else aceptado
-      QAO-->>C: respuesta final + trazabilidad
-    end
-    end
+    C->>APP: Query + tenant/collection
+    APP->>RAG: POST /knowledge/retrieve
+    RAG->>KB: Retrieval con filtros y fusion hibrida
+    KB-->>RAG: evidencia C#/R#
+    RAG-->>APP: Contexto grounded + citas
+    APP-->>C: Respuesta final propia
 ```
 
 ## 10) Flujo Operativo 5 Etapas (Ingestion->Proceso->Pregunta->Analisis->Respuesta)
@@ -247,7 +228,7 @@ flowchart LR
     B --> C[Proceso Worker pull job_queue]
     C --> D[Knowledge base actualizada]
     D --> E[Pregunta cliente API/CLI]
-    E --> F[Analisis Q/A Orchestrator]
+    E --> F[Analisis aplicacion cliente]
     F --> G{Validacion scope/evidencia}
     G -->|OK| H[Respuesta grounded C#/R#]
     G -->|No OK| I[Aclaracion o bloqueo]

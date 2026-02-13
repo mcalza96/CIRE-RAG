@@ -75,7 +75,7 @@ def render_markdown_report(
     ts = datetime.now(timezone.utc).isoformat()
 
     lines: list[str] = [
-        "# CISRE Visual Anchor Benchmark Report",
+        "# CIRE-RAG Visual Anchor Benchmark Report",
         "",
         f"Generated at: `{ts}`",
         "",
@@ -143,11 +143,11 @@ def render_html_report(output_path: str | Path, markdown_report_path: str | Path
     markdown_content = Path(markdown_report_path).read_text(encoding="utf-8")
 
     html = (
-        "<html><head><meta charset='utf-8'><title>CISRE Benchmark</title>"
+        "<html><head><meta charset='utf-8'><title>CIRE-RAG Benchmark</title>"
         "<style>body{font-family:Arial,sans-serif;max-width:1200px;margin:2rem auto;padding:0 1rem;}"
         "pre{white-space:pre-wrap;background:#f5f5f5;padding:1rem;border-radius:8px;}"
         "</style></head><body>"
-        "<h1>CISRE Visual Anchor Benchmark Report</h1>"
+        "<h1>CIRE-RAG Visual Anchor Benchmark Report</h1>"
         f"<pre>{_escape_html(markdown_content)}</pre>"
         "</body></html>"
     )

@@ -14,7 +14,7 @@ configure_structlog()
 logger = structlog.get_logger(__name__)
 
 app = FastAPI(
-    title="CISRE Ingestion and Structured Retrieval API",
+    title="CIRE-RAG Ingestion and Structured Retrieval API",
     description="Refactored SOLID architecture for cognitive ingestion and structured retrieval workflows.",
     version="2.0.0"
 )

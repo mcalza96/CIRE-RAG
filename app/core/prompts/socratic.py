@@ -90,7 +90,7 @@ class SocraticPrompts:
     Centralized repository for Socratic Workflow prompts.
     """
     
-    TRIAGE_SYSTEM_PROMPT = """You are the CISRE Intent Router and Diagnostic Engine.
+    TRIAGE_SYSTEM_PROMPT = """You are the CIRE-RAG Intent Router and Diagnostic Engine.
     Classify the user's latest input into the correct Intent category with high precision.
     INTENTS: FACT_QUERY, ACTION_REQUEST, CLARIFICATION, CHIT_CHAT, OFF_TOPIC."""
 

@@ -1,14 +1,13 @@
-# RAG Ingestion + Q/A Orchestrator
+# RAG Engine
 
-Motor de servicio de CISRE para ingesta cognitiva y retrieval estructurado con trazabilidad.
+Motor de servicio de CIRE-RAG para ingesta cognitiva y retrieval estructurado con trazabilidad.
 
 Disenado para operar como backend API-first en escenarios donde el naive RAG falla con tablas, figuras y dependencias entre documentos.
 
 ## Componentes principales
 
 - `RAG backend`: ingestion, persistencia, retrieval hibrido y worker.
-- `Q/A Orchestrator` (`orchestrator/runtime/qa_orchestrator`): capa de bibliotecario para planificar consulta, generar respuesta y validar evidencia.
-- Notas de integracion entre capas: `docs/qa-rag-integration-notes.md`.
+- Clientes externos (incluyendo orquestadores) consumen retrieval via HTTP.
 
 ## Filosofia operativa
 
@@ -17,27 +16,13 @@ Disenado para operar como backend API-first en escenarios donde el naive RAG fal
 - **RAPTOR (cuando aplica)**: construye un arbol jerarquico de resumenes mediante clustering semantico recursivo (no depende de estructura fija pagina/capitulo).
 - **Stack unificado**: FastAPI + Supabase (Postgres 17 + pgvector), sin fragmentar en motores separados.
 
-## Arquitectura simple por defecto (YAGNI)
-
-Evitamos sobre-abstraccion en servicios internos. La regla operativa es simple: usar clases concretas mientras no exista una necesidad real de intercambio de implementacion.
-
-- **Concreto primero**: en `qa_orchestrator`, `HandleQuestionUseCase` se compone con adapters concretos (`RetrievalToolsAdapter`, `GroqAnswerGeneratorAdapter`, `LiteralEvidenceValidator`).
-- **Interfaces solo con valor real**: mantenemos contratos cuando hay multiples implementaciones activas o frontera externa de alto cambio.
-- **Menos wiring, mas trazabilidad**: priorizamos navegabilidad, stack traces mas directos y refactors mas rapidos.
-
 ## Flujo operativo actual
 
 1. **Ingestion**: endpoints de ingesta registran documento en `queued` y devuelven snapshot de cola.
 2. **Proceso**: `run_worker.py` consume `job_queue` en modo pull (`fetch_next_job`) y ejecuta pipeline de parseo/chunking/embeddings/persistencia, con Visual Anchors + RAPTOR + Graph opcionales.
-3. **Pregunta**: consultas de retrieval por `/knowledge/*` y `/retrieval/*` (rag-engine), y respuestas por `/knowledge/answer` en Orchestrator API o `orchestrator/chat_cli.py`.
-4. **Analisis**: `Q/A Orchestrator` clasifica intencion, define plan de retrieval, detecta ambiguedad/conflicto de scope y valida evidencia.
-5. **Respuesta**: aplica Human-in-the-Loop (HITL): si falta claridad de alcance pide aclaracion al usuario; con aclaracion confirmada responde grounded con trazabilidad C#/R#; si persiste inconsistencia bloquea la respuesta.
-
-## Human-in-the-Loop en respuestas
-
-- El orquestador puede emitir `ClarificationRequest` antes de responder cuando detecta escenario multinorma o conflicto entre objetivos (ej. confidencialidad vs trazabilidad).
-- En `orchestrator/chat_cli.py`, la respuesta de aclaracion del usuario se reinyecta en la consulta (`__clarified_scope__=true`) para una segunda pasada controlada.
-- Si la validacion detecta `Scope mismatch` no recuperable, se bloquea la respuesta final y se solicita reformulacion explicita de la norma objetivo.
+3. **Pregunta**: clientes consultan retrieval por `/knowledge/retrieve` y `/retrieval/*`.
+4. **Analisis**: el engine aplica descomposicion de consulta, fusion hibrida y filtros de scope.
+5. **Respuesta**: retorna contexto grounded y trazabilidad para consumo de aplicaciones cliente.
 
 ## Quickstart
 
@@ -69,14 +54,6 @@ Health check:
 curl http://localhost:8000/health
 ```
 
-Split local (rag-engine + orchestrator):
-
-```bash
-./stack.sh up
-curl http://localhost:8000/health   # rag-engine
-curl http://localhost:8001/health   # qa-orchestrator
-```
-
 ## CLI por lotes
 
 En la raiz del repo:
@@ -99,8 +76,7 @@ Fallback legacy (archivo por request):
 
 ## Endpoints principales
 
-Base URL local rag-engine: `http://localhost:8000/api/v1`
-Base URL local orchestrator: `http://localhost:8001/api/v1`
+Base URL local: `http://localhost:8000/api/v1`
 
 - `POST /ingestion/embed`: embeddings de texto.
 - `POST /ingestion/ingest`: ingesta manual de archivo (`multipart/form-data`).
@@ -112,19 +88,17 @@ Base URL local orchestrator: `http://localhost:8001/api/v1`
 - `POST /ingestion/batches/{batch_id}/seal`: endpoint disponible (opcional/legacy en flujo CLI actual).
 - `GET /ingestion/batches/{batch_id}/status`: progreso del batch.
 - `POST /knowledge/retrieve`: retrieval de contexto grounded.
-- `POST /retrieval/chunks`: contrato v1 para chunks (consumo por orquestador).
-- `POST /retrieval/summaries`: contrato v1 para summaries (consumo por orquestador).
-- `POST /knowledge/answer`: endpoint del Orchestrator API (`http://localhost:8001/api/v1/knowledge/answer`).
+- `POST /retrieval/chunks`: contrato v1 para retrieval de chunks.
+- `POST /retrieval/summaries`: contrato v1 para retrieval de summaries.
 - `POST /synthesis/generate`: crea job asyncrono de sintesis estructurada.
 - `GET /synthesis/jobs/{job_id}`: estado del job de sintesis estructurada.
 - `POST /curriculum/generate`: crea job asyncrono de sintesis estructurada (ruta legacy).
 - `GET /curriculum/jobs/{job_id}`: estado del job de sintesis estructurada (ruta legacy).
 
-## Comportamiento HITL en `/knowledge/*`
+## Comportamiento de scope en retrieval
 
-- Si el sistema detecta alcance ambiguo, devuelve aclaracion en vez de respuesta final (`requires_scope_clarification` en `/knowledge/retrieve` del rag-engine, o `clarification` en `/knowledge/answer` del Orchestrator API).
-- Si detecta inconsistencia de ambito entre pregunta y fuentes, bloquea respuesta final y pide reformulacion explicita de norma.
-- Si el scope es valido, responde grounded con `citations` y `mode`.
+- Si el sistema detecta alcance ambiguo, devuelve `requires_scope_clarification` y candidatos de scope en `/knowledge/retrieve`.
+- Si el scope es valido, responde contexto grounded con `citations` y `mode`.
 
 Ejemplo (aclaracion de scope en `/knowledge/retrieve`):
 
@@ -139,21 +113,9 @@ Ejemplo (aclaracion de scope en `/knowledge/retrieve`):
 }
 ```
 
-Ejemplo (scope mismatch bloqueado en `/knowledge/answer`):
-
-```json
-{
-  "answer": "⚠️ Se detectó inconsistencia de ámbito entre la pregunta y las fuentes recuperadas...",
-  "context_chunks": [],
-  "citations": [],
-  "mode": "HYBRID"
-}
-```
-
 ## Estructura del modulo
 
 - `app/`: codigo productivo (API, dominio, infraestructura y workflows).
-- `orchestrator/runtime/qa_orchestrator/`: orquestador de preguntas/respuestas (antes `app/mas_simple`).
 - `tests/unit/`: pruebas unitarias.
 - `tests/integration/`: pruebas de integracion del servicio.
 - `tests/stress/`: pruebas de carga/robustez.
@@ -163,7 +125,6 @@ Ejemplo (scope mismatch bloqueado en `/knowledge/answer`):
 ## Documentacion adicional
 
 - Canonica para todo el repo: `../docs/README.md`
-- Getting started HITL: `docs/getting-started.md`
 - Arquitectura del servicio: `docs/architecture.md`
 - Flujos y diagramas: `docs/flows-and-diagrams.md`
 - Executive One-Page: `docs/one-page-architecture.md`
@@ -172,8 +133,6 @@ Ejemplo (scope mismatch bloqueado en `/knowledge/answer`):
 - Testing: `docs/testing.md`
 - Runbooks: `docs/runbooks/common-incidents.md`
 - Baseline Visual Anchors: `docs/runbooks/visual-anchor-baseline.md`
-- Migration note (rename): `docs/migration-note-qa-orchestrator-rename.md`
-- Plan split local rag-engine + orchestrator: `../docs/migration-rag-orchestrator-split-local.md`
 
 ## Dependency management
 

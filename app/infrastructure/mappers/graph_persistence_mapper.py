@@ -1,5 +1,5 @@
 """
-Graph Persistence Mapper - CISRE Infrastructure Layer
+Graph Persistence Mapper - CIRE-RAG Infrastructure Layer
 
 Mediator between Domain Models and Supabase/SQL persistence logic.
 Strictly follows naming standards: camelCase for Domain, snake_case for DB.

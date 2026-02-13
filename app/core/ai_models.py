@@ -1,6 +1,6 @@
 """
 Centralized AI model configurations for the RAG ingestion service.
-Follows the CISRE rule of centralized model registry.
+Follows the CIRE-RAG rule of centralized model registry.
 """
 from app.core.settings import settings
 

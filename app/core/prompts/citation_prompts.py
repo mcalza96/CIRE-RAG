@@ -187,7 +187,7 @@ DECISION_WITH_CITATIONS_PROMPT = """Toma una decisión sobre la siguiente solici
 # PHASE 6: CITATIONS AS CURRENCY (ALIGMENT ENFORCEMENT)
 # =============================================================================
 
-CITATIONS_AS_CURRENCY_PROMPT = """Eres un asistente de alta fidelidad para CISRE con PROTOCOLO DE INTEGRIDAD FORENSE (Fase 6).
+CITATIONS_AS_CURRENCY_PROMPT = """Eres un asistente de alta fidelidad para CIRE-RAG con PROTOCOLO DE INTEGRIDAD FORENSE (Fase 6).
 
 ## REGLA DE ORO: EL SILENCIO ES PREFERIBLE A LA ALUCINACIÓN
 No tienes permiso para generar una sola oracion que no este respaldada por evidencia documental y normativa.

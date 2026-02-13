@@ -1,4 +1,4 @@
-# CISRE (Cognitive Ingestion & Structured Retrieval Engine)
+# CIRE-RAG
 
 Open-source and API-first back-end engine for high-precision RAG (Retrieval-Augmented Generation) and audit workflows.
 
@@ -8,11 +8,11 @@ Open-source and API-first back-end engine for high-precision RAG (Retrieval-Augm
 
 ### Vision
 
-CISRE does not flatten content indiscriminately: it treats document structure as a first-class data type, enabling robust reasoning over tables, figures, and relationships between documents.
+CIRE-RAG does not flatten content indiscriminately: it treats document structure as a first-class data type, enabling robust reasoning over tables, figures, and relationships between documents.
 
 ### Architecture Philosophy
 
-CISRE prioritizes operational simplicity and deterministic results over agentic complexity.
+CIRE-RAG prioritizes operational simplicity and deterministic results over agentic complexity.
 
 - **Cognitive Ingestion (Visual Anchors)**: Uses VLMs (e.g., Gemini 2.5 Flash Lite) to parse tables/figures into structured JSON. Applies **Dual-Model Extraction**: defaults to high-speed LITE model and automatically escalates to full FLASH on technical parse errors.
 - **Atomic Retrieval (Atomic Engine)**: Dynamic orchestration via `QueryDecomposer` that combines Vector Search, Full-Text Search (FTS), and multi-hop graph navigation in a single atomic retrieval phase.
@@ -57,11 +57,11 @@ Domain agnostic. Designed for contexts where precision is critical (legal, finan
 
 ### Visión
 
-CISRE no aplana el contenido indiscriminadamente: trata la estructura del documento como un tipo de dato de primera clase, permitiendo un razonamiento robusto sobre tablas, figuras y relaciones entre documentos.
+CIRE-RAG no aplana el contenido indiscriminadamente: trata la estructura del documento como un tipo de dato de primera clase, permitiendo un razonamiento robusto sobre tablas, figuras y relaciones entre documentos.
 
 ### Filosofía de Arquitectura
 
-CISRE prioriza la simplicidad operativa y los resultados deterministas sobre la complejidad agéntica.
+CIRE-RAG prioriza la simplicidad operativa y los resultados deterministas sobre la complejidad agéntica.
 
 - **Ingesta Cognitiva (Visual Anchors)**: Usa VLMs (ej. Gemini 2.5 Flash Lite) para parsear tablas/figuras en JSON estructurado. Aplica **Dual-Model Extraction**: usa el modelo LITE por defecto y escala automáticamente al modelo FLASH completo ante errores técnicos de parseo.
 - **Retrieval Atómico (Atomic Engine)**: Orquestación dinámica mediante `QueryDecomposer` que combina Vector Search, Full-Text Search (FTS) y navegación de grafos multi-hop en una única fase de búsqueda atómica.
@@ -146,7 +146,6 @@ Health check:
 
 CLI workflow:
 `./ing.sh`
-`./chat.sh`
 
 ### Configuration / Configuración
 

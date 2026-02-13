@@ -1,6 +1,6 @@
 """
 Centralized prompt registry for the RAG ingestion service.
-Follows the CISRE rule of centralized instruction management.
+Follows the CIRE-RAG rule of centralized instruction management.
 """
 
 class PromptRegistry:

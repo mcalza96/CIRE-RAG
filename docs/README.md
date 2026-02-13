@@ -1,6 +1,6 @@
 # Documentation
 
-This is the canonical documentation entrypoint for CISRE (Cognitive Ingestion & Structured Retrieval Engine).
+This is the canonical documentation entrypoint for CIRE-RAG.
 
 ## Start Here
 
@@ -8,7 +8,6 @@ This is the canonical documentation entrypoint for CISRE (Cognitive Ingestion & 
 - Local development and quality gates: `developer-guide.md`
 - System architecture and ADRs: `architecture.md`
 - Operations, incidents, and deployment context: `operations.md`
-- Local split migration plan (rag-engine + qa-orchestrator): `migration-rag-orchestrator-split-local.md`
 
 ## Audience-Based Navigation
 
@@ -28,7 +27,6 @@ This is the canonical documentation entrypoint for CISRE (Cognitive Ingestion & 
 - Onboarding and local setup: `getting-started.md`
 - Runtime architecture and flow semantics: `rag-engine/architecture.md`
 - Sequence/operational diagrams: `rag-engine/flows-and-diagrams.md`
-- HITL behavior and API examples: `rag-engine/getting-started.md`
 - Incident response: `rag-engine/runbooks/common-incidents.md`
 - Config and env vars: `rag-engine/configuration.md`
 
@@ -37,7 +35,6 @@ This is the canonical documentation entrypoint for CISRE (Cognitive Ingestion & 
 - Project overview: `../README.md`
 - Contribution guide: `../CONTRIBUTING.md`
 - Service README: `rag-engine/README.md`
-- Service HITL getting started: `rag-engine/getting-started.md`
 - Service architecture deep dive: `rag-engine/architecture.md`
 - Flow diagrams: `rag-engine/flows-and-diagrams.md`
 - ADR index: `rag-engine/adr/README.md`

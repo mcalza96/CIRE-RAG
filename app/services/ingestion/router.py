@@ -150,7 +150,7 @@ class DocumentStructureRouter:
         """Create page-level ingestion tasks (text or visual)."""
 
         tasks: list[IngestionTask] = []
-        output_dir = Path(temp_image_dir or Path(gettempdir()) / "cisre_visual_router")
+        output_dir = Path(temp_image_dir or Path(gettempdir()) / "cire_rag_visual_router")
         output_dir.mkdir(parents=True, exist_ok=True)
 
         with fitz.open(file_path) as doc:
