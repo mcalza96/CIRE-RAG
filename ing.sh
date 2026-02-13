@@ -406,8 +406,8 @@ choose_embedding_mode() {
     local env_files=(
       "$BASE_DIR/.env.local"
       "$BASE_DIR/.env"
-      "$BASE_DIR/rag-ingestion/.env.local"
-      "$BASE_DIR/rag-ingestion/.env"
+      "$BASE_DIR/.env.local"
+      "$BASE_DIR/.env"
     )
     local f
     for f in "${env_files[@]}"; do
@@ -724,7 +724,7 @@ preflight_visual_estimate() {
     return 0
   fi
 
-  local py_exec="$BASE_DIR/rag-ingestion/venv/bin/python"
+  local py_exec="$BASE_DIR/venv/bin/python"
   if [[ ! -x "$py_exec" ]]; then
     py_exec="python3"
   fi

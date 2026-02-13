@@ -11,10 +11,10 @@ Contribution policy: `../CONTRIBUTING.md`.
 
 ## Local Quality Gates
 
-Run from `rag-ingestion`:
+Run from repo root:
 
 ```bash
-ruff check app tests scripts run_worker.py doc_chat_cli.py
+ruff check app tests scripts run_worker.py orchestrator/chat_cli.py orchestrator/runtime
 mypy --config-file mypy.ini -m app.schemas.ingestion -m app.core.config.model_config -m app.services.retrieval.engine -m app.services.ingestion.visual_parser
 pytest tests/unit tests/integration tests/tools -q
 ```
@@ -33,16 +33,16 @@ pre-commit run --all-files
 - Stress tests: performance and robustness scenarios.
 - Evaluation tests: retrieval/answer quality benchmarks.
 
-Reference: `../rag-ingestion/docs/testing.md`.
+Reference: `rag-engine/testing.md`.
 
 ## Dependency Management
 
-- Edit direct dependencies in `rag-ingestion/requirements.in`.
-- Keep pinned versions in `rag-ingestion/requirements.txt`.
+- Edit direct dependencies in `requirements.in`.
+- Keep pinned versions in `requirements.txt`.
 - Use focused dependency update PRs.
 
 ## Documentation Rules
 
 - Project navigation lives in `docs/*`.
-- Service internals live in `rag-ingestion/docs/*`.
-- Architecture-level decisions must reference ADRs in `../rag-ingestion/docs/adr/README.md`.
+- Service internals live in `docs/rag-engine/*`.
+- Architecture-level decisions must reference ADRs in `docs/rag-engine/adr/README.md`.

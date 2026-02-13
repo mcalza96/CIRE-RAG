@@ -1,0 +1,111 @@
+from pydantic import Field, AliasChoices
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Optional
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+ROOT_ENV = PROJECT_ROOT / ".env"
+ROOT_ENV_LOCAL = PROJECT_ROOT / ".env.local"
+SERVICE_ENV = PROJECT_ROOT / ".env"
+SERVICE_ENV_LOCAL = PROJECT_ROOT / ".env.local"
+
+class Settings(BaseSettings):
+    """
+    CISRE - Global Configuration Registry
+    Centralizes all environment variables using Pydantic Settings.
+    """
+    model_config = SettingsConfigDict(
+        env_file=(
+            str(ROOT_ENV),
+            str(ROOT_ENV_LOCAL),
+            str(SERVICE_ENV),
+            str(SERVICE_ENV_LOCAL),
+        ),
+        env_file_encoding="utf-8", 
+        extra="ignore"
+    )
+
+    # Infrastructure
+    DATABASE_URL: Optional[str] = None
+    SUPABASE_DB_URL: Optional[str] = None
+    SUPABASE_URL: Optional[str] = Field(None, validation_alias=AliasChoices("SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL"))
+    SUPABASE_SERVICE_KEY: Optional[str] = Field(None, alias="SUPABASE_SERVICE_ROLE_KEY")
+    NEXT_PUBLIC_SUPABASE_URL: Optional[str] = None
+    REDIS_URL: str = "redis://localhost:6379/0"
+    RAG_SERVICE_URL: str = "http://localhost:8000"
+    RAG_ENGINE_URL: Optional[str] = None
+    
+    # Security
+    RAG_SERVICE_SECRET: str = "development-secret"
+    SYSTEM_TENANT_ID: str = "00000000-0000-0000-0000-000000000000"
+    
+    # AI Models & Services
+    OPENAI_API_KEY: Optional[str] = None
+    GROQ_API_KEY: Optional[str] = None
+    GEMINI_API_KEY: Optional[str] = None
+    ANTHROPIC_API_KEY: Optional[str] = None
+    JINA_API_KEY: Optional[str] = None
+    JINA_MODE: str = "LOCAL" # LOCAL or CLOUD
+    OPENAI_FALLBACK_MODEL: str = "gpt-4o-mini"
+    JINA_BASE_URL: str = "https://api.jina.ai/v1/embeddings"
+    JINA_MODEL_NAME: str = "jinaai/jina-embeddings-v3"
+    JINA_EMBEDDING_DIMENSIONS: int = 1024
+    JINA_RERANK_URL: str = "https://api.jina.ai/v1/rerank"
+    JINA_RERANK_MODEL: str = "jina-reranker-v2-base-multilingual"
+    
+    # API Config
+    API_PORT: int = 8000
+    LOG_LEVEL: str = "INFO"
+    ENVIRONMENT: str = "development"
+    FORENSIC_LOGGING_LEVEL: str = "METADATA_ONLY"
+
+    # Worker / Throughput controls
+    WORKER_CONCURRENCY: int = 3
+    WORKER_PER_TENANT_CONCURRENCY: int = 1
+    WORKER_POLL_INTERVAL_SECONDS: int = 2
+    EMBEDDING_CONCURRENCY: int = 5
+    WORKER_TENANT_QUEUE_SAMPLE_LIMIT: int = 1000
+    WORKER_TENANT_QUEUE_DEPTH_ALERT: int = 200
+    WORKER_TENANT_QUEUE_WAIT_ALERT_SECONDS: int = 300
+    INGESTION_MAX_PENDING_PER_TENANT: int = 500
+    INGESTION_DOCS_PER_MINUTE_PER_WORKER: int = 2
+    COMMUNITY_REBUILD_ENABLED: bool = False
+    COMMUNITY_REBUILD_INTERVAL_SECONDS: int = 3600
+    COMMUNITY_REBUILD_TENANTS: str = ""
+
+    # Storage
+    RAG_STORAGE_BUCKET: str = "private_assets"
+    INSTITUTIONAL_STORAGE_BUCKET: str = "institutional"
+
+    # Feature flags
+    USE_TRICAMERAL: bool = False
+    ENABLE_HEART_VERIFICATION: bool = False
+    DAILY_VLM_LIMIT: Optional[int] = None
+    QUERY_DECOMPOSER_ENABLED: bool = True
+    QUERY_DECOMPOSER_TIMEOUT_MS: int = 800
+    RETRIEVAL_ENGINE_MODE: str = "atomic"  # unified | atomic | hybrid
+    SCOPE_STRICT_FILTERING: bool = False
+    ATOMIC_ENABLE_FTS: bool = True
+    ATOMIC_ENABLE_GRAPH_HOP: bool = True
+    ATOMIC_MATCH_THRESHOLD: float = 0.25
+    ATOMIC_RRF_VECTOR_WEIGHT: float = 0.7
+    ATOMIC_RRF_FTS_WEIGHT: float = 0.3
+    ATOMIC_RRF_K: int = 60
+    ATOMIC_MAX_SOURCE_IDS: int = 5000
+    QA_LITERAL_SEMANTIC_FALLBACK_ENABLED: bool = True
+    QA_LITERAL_SEMANTIC_MIN_KEYWORD_OVERLAP: int = 2
+    QA_LITERAL_SEMANTIC_MIN_SIMILARITY: float = 0.3
+
+    # Visual router
+    VISUAL_ROUTER_MAX_VISUAL_RATIO: float = 0.35
+    VISUAL_ROUTER_MAX_VISUAL_PAGES: int = 12
+    VISUAL_ROUTER_FULL_PAGE_MIN_SCORE: int = 5
+    VISUAL_ROUTER_ALWAYS_VISUAL_SCORE: int = 8
+    VISUAL_PARSE_TIMEOUT_SECONDS: int = 45
+    VISUAL_CACHE_PROMPT_VERSION: str = "v1"
+    VISUAL_CACHE_SCHEMA_VERSION: str = "VisualParseResult:v1"
+    VISUAL_CACHE_KEY_V2_ENABLED: bool = True
+    VISUAL_CACHE_BATCH_PREFETCH_ENABLED: bool = True
+
+settings = Settings()

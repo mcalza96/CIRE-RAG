@@ -1,0 +1,50 @@
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+from supabase import AsyncClient, create_async_client
+from app.core.settings import settings
+
+
+def find_and_load_env():
+    """
+    Walks up from the service directory to find and load
+    .env.local or .env from the project root.
+    """
+    current = Path(__file__).resolve().parent
+    for _ in range(6):  # Walk up max 6 levels
+        env_local = current / ".env.local"
+        env_file = current / ".env"
+        if env_local.exists():
+            load_dotenv(env_local, override=False)
+            return
+        if env_file.exists():
+            load_dotenv(env_file, override=False)
+            return
+        current = current.parent
+    # Fallback: load from cwd
+    load_dotenv(override=False)
+
+_async_supabase_client = None
+
+async def get_async_supabase_client() -> AsyncClient:
+    """
+    Returns a shared instance of the Async Supabase Client using centralized settings.
+    """
+    global _async_supabase_client
+    if _async_supabase_client is None:
+        url = settings.SUPABASE_URL
+        key = settings.SUPABASE_SERVICE_KEY
+        
+        if not url or not key:
+            raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY (or SERVICE_ROLE) must be set in settings.")
+        _async_supabase_client = await create_async_client(url, key)
+    return _async_supabase_client
+
+
+def reset_async_supabase_client():
+    """
+    Invalidates the global Supabase client, forcing recreation on next get.
+    Use this when HTTP/2 connections become corrupted.
+    """
+    global _async_supabase_client
+    _async_supabase_client = None

@@ -117,9 +117,9 @@ Agnóstico al dominio. Diseñado para contextos donde la precisión es crítica 
 
 ### Repository Layout / Estructura del Repositorio
 
-- `rag-ingestion`: Main service codebase.
-- `rag-ingestion/app`: API, domain, services, workflows, infrastructure.
-- `rag-ingestion/tests`: Unit, integration, stress, evaluation suites.
+- `app`: API, domain, services, workflows, infrastructure.
+- `tests`: Unit, integration, stress, evaluation suites.
+- `docs/rag-engine`: Engine-specific architecture, runbooks, and contracts.
 - `supabase/migrations`: SQL migrations.
 - `.agent/rules/reglas.md`: Operational guardrails for AI-agent behavior.
 
@@ -128,7 +128,7 @@ Documentation hub: `docs/README.md`.
 ### Quickstart / Inicio Rápido
 
 ```bash
-cd rag-ingestion
+cd .
 cp .env.example .env.local
 ./bootstrap.sh
 ./start_api.sh
@@ -137,7 +137,7 @@ cp .env.example .env.local
 Run worker in a second terminal:
 
 ```bash
-cd rag-ingestion
+cd .
 venv/bin/python run_worker.py
 ```
 
@@ -157,17 +157,17 @@ Minimum required variables:
 Optional providers:
 - `JINA_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`
 
-Full details: `rag-ingestion/docs/configuration.md`.
+Full details: `docs/rag-engine/configuration.md`.
 
 ### Testing
 
 ```bash
-cd rag-ingestion
+cd .
 venv/bin/pytest tests/unit -q
 venv/bin/pytest tests/integration -q
 ```
 
-Evaluation workflows: `rag-ingestion/tests/evaluation`.
+Evaluation workflows: `tests/evaluation`.
 
 ### Contributing / Contribuciones
 

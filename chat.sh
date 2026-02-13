@@ -1,89 +1,10 @@
 #!/bin/bash
-# chat.sh — Launch MAS Simple chat CLI
+# chat.sh — Launch Q/A Orchestrator chat CLI (HTTP split mode)
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RAG_URL="${RAG_URL:-${RAG_SERVICE_URL:-http://localhost:8000}}"
+ORCH_URL="${ORCH_URL:-${ORCHESTRATOR_URL:-http://localhost:8001}}"
 REGISTRY_FILE="$BASE_DIR/.rag_tenants.json"
-
-read_env_var_from_file() {
-    local file_path="$1"
-    local var_name="$2"
-    [ -f "$file_path" ] || return 1
-
-    python3 - "$file_path" "$var_name" <<'PY'
-import sys
-from pathlib import Path
-
-file_path = Path(sys.argv[1])
-var_name = sys.argv[2]
-
-for raw in file_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-    line = raw.strip()
-    if not line or line.startswith("#"):
-        continue
-    if line.startswith("export "):
-        line = line[len("export "):].strip()
-    if "=" not in line:
-        continue
-    key, value = line.split("=", 1)
-    if key.strip() != var_name:
-        continue
-    value = value.strip().strip('"').strip("'")
-    if value:
-        print(value, end="")
-        raise SystemExit(0)
-
-raise SystemExit(1)
-PY
-}
-
-ensure_jina_key_for_cloud() {
-    if [ -n "${JINA_API_KEY:-}" ]; then
-        return 0
-    fi
-
-    local candidates=(
-        "$BASE_DIR/rag-ingestion/.env"
-        "$BASE_DIR/rag-ingestion/.env.local"
-        "$BASE_DIR/.env"
-        "$BASE_DIR/.env.local"
-    )
-
-    local f value
-    for f in "${candidates[@]}"; do
-        value=$(read_env_var_from_file "$f" "JINA_API_KEY" || true)
-        if [ -n "$value" ]; then
-            export JINA_API_KEY="$value"
-            return 0
-        fi
-    done
-    return 1
-}
-
-choose_chat_embedding_mode() {
-    echo ""
-    echo "🧠 Embeddings para chat"
-    echo "[1] CLOUD (Jina API)"
-    echo "[2] LOCAL"
-    local opt
-    read -r -p "📝 Modo embeddings [1]: " opt
-    [[ -z "$opt" ]] && opt=1
-
-    if [[ "$opt" == "2" ]]; then
-        export JINA_MODE="LOCAL"
-        echo "✅ Embeddings chat: LOCAL"
-        return 0
-    fi
-
-    if ! ensure_jina_key_for_cloud; then
-        echo "⚠️  No encontré JINA_API_KEY. Uso LOCAL para esta sesión de chat."
-        export JINA_MODE="LOCAL"
-        return 0
-    fi
-
-    export JINA_MODE="CLOUD"
-    echo "✅ Embeddings chat: CLOUD"
-}
 
 check_service_health() {
     local service_name="$1"
@@ -267,11 +188,18 @@ PY
     return 0
 }
 
-CLI_DIR="$BASE_DIR/rag-ingestion"
-SCRIPT="doc_chat_cli.py"
+CLI_DIR="$BASE_DIR/orchestrator"
+SCRIPT="chat_cli.py"
+ENGINE_DIR="$BASE_DIR"
 
 if ! check_service_health "RAG API" "$RAG_URL/health"; then
     echo "💡 Ejecuta primero ./dev.sh o ./stack.sh up"
+    exit 1
+fi
+
+if ! check_service_health "Orchestrator API" "$ORCH_URL/health"; then
+    echo "❌ Orchestrator API no está disponible en $ORCH_URL/health"
+    echo "💡 Ejecuta ./stack.sh up y verifica logs con ./stack.sh logs orchestrator-api"
     exit 1
 fi
 
@@ -279,25 +207,19 @@ if ! choose_tenant_and_collection; then
     exit 1
 fi
 
-choose_chat_embedding_mode
-
 CLI_ARGS=(--tenant-id "$CHAT_TENANT_ID")
 if [ -n "${CHAT_COLLECTION_ID:-}" ]; then
     CLI_ARGS+=(--collection-id "$CHAT_COLLECTION_ID" --collection-name "$CHAT_COLLECTION_NAME")
 fi
+CLI_ARGS+=(--orchestrator-url "$ORCH_URL")
 
-read -r -p "🧠 ¿Activar multi-hop entre documentos? [Y/n]: " mh_opt
-if [[ "${mh_opt:-Y}" =~ ^[Nn]$ ]]; then
-    CLI_ARGS+=(--no-multi-hop)
-fi
-
-VENV_PYTHON="$CLI_DIR/venv/bin/python3"
+VENV_PYTHON="$ENGINE_DIR/venv/bin/python3"
 
 if [ ! -f "$VENV_PYTHON" ]; then
-    echo "❌ Error: No se encontró el entorno virtual en $CLI_DIR/venv"
+    echo "❌ Error: No se encontró el entorno virtual en $ENGINE_DIR/venv"
     exit 1
 fi
 
-export PYTHONPATH="$PYTHONPATH:$CLI_DIR"
+export PYTHONPATH="$PYTHONPATH:$CLI_DIR:$ENGINE_DIR"
 cd "$CLI_DIR" || exit 1
 "$VENV_PYTHON" "$SCRIPT" "${CLI_ARGS[@]}" "$@"

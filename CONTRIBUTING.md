@@ -4,12 +4,11 @@ Thanks for contributing to CISRE (Cognitive Ingestion & Structured Retrieval Eng
 
 ## Scope
 
-Primary service: `rag-ingestion`.
+Primary service: `rag-engine` (repo root).
 
 ## Development setup
 
 ```bash
-cd rag-ingestion
 cp .env.example .env.local
 ./bootstrap.sh
 ```
@@ -19,8 +18,7 @@ cp .env.example .env.local
 Run before opening a PR:
 
 ```bash
-cd rag-ingestion
-ruff check app tests scripts run_worker.py doc_chat_cli.py
+ruff check app tests scripts run_worker.py orchestrator/chat_cli.py orchestrator/runtime
 mypy --config-file mypy.ini -m app.schemas.ingestion -m app.core.config.model_config -m app.services.retrieval.engine -m app.services.ingestion.visual_parser
 pytest tests/unit tests/integration tests/tools -q
 ```
@@ -42,8 +40,8 @@ pre-commit run --all-files
 
 ## Dependency policy
 
-- Add/remove direct dependencies in `rag-ingestion/requirements.in`.
-- Keep `rag-ingestion/requirements.txt` pinned.
+- Add/remove direct dependencies in `requirements.in`.
+- Keep `requirements.txt` pinned.
 - Dependency update PRs are managed via Dependabot.
 
 ## Pull request checklist
