@@ -39,7 +39,7 @@ flowchart TD
     P -->|Images| V[Visual Anchor Task]
     
     C --> J[Jina v3 Embedding]
-    V --> VLM[Gemini 2.5 Flash]
+    V --> VLM[Gemini 2.5 Flash Lite + Fallback Flash]
     
     VLM --> S[Structured JSON]
     VLM --> CR[Image Crop]

@@ -12,10 +12,9 @@ Disenado para operar como backend API-first en escenarios donde el naive RAG fal
 
 ## Filosofia operativa
 
-- **Estructura como dato**: el pipeline visual parsea tablas/figuras a JSON y no solo texto plano.
-- **Late Binding**: el contexto visual se hidrata cuando agrega valor, reduciendo costo y latencia.
-- **Orquestacion Tricameral**: enrutamiento dinamico entre Vector, GraphRAG SQL-native y RAPTOR.
-- **Stack unificado**: FastAPI + Supabase (Postgres + pgvector), sin fragmentar en motores separados.
+- **Ingesta Cognitiva (Visual Anchors)**: el pipeline visual parsea tablas/figuras a JSON estructurado. Aplica **Dual-Model Extraction** (Lite + Flash fallback).
+- **Orquestación Tricameral**: enrutamiento dinámico nativo entre Vector Search, GraphRAG SQL-native y RAPTOR.
+- **Stack unificado**: FastAPI + Supabase (Postgres 17 + pgvector), sin fragmentar en motores separados.
 
 ## Quickstart
 
@@ -95,6 +94,7 @@ Base URL local: `http://localhost:8000/api/v1`
 - Canonica para todo el repo: `../docs/README.md`
 - Arquitectura del servicio: `docs/architecture.md`
 - Flujos y diagramas: `docs/flows-and-diagrams.md`
+- Executive One-Page: `docs/one-page-architecture.md`
 - ADRs: `docs/adr/README.md`
 - Configuracion: `docs/configuration.md`
 - Testing: `docs/testing.md`

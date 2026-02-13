@@ -8,7 +8,7 @@
 - Casos de uso en `app/application`.
 - Reglas de negocio e interfaces en `app/domain`.
 - Integraciones externas en `app/infrastructure`.
-- Logica de ingestion/retrieval en `app/services`.
+- Logica de ingestion/retrieval en `app/services`: incluye `AtomicRetrievalEngine` por defecto.
 - Orquestacion de procesos en `app/workflows`.
 
 ## Flujo 1: ingesta manual
@@ -29,8 +29,8 @@
 ## Flujo 3: retrieval
 
 1. Cliente llama `POST /api/v1/knowledge/retrieve` con `tenant_id` y query.
-2. `KnowledgeService` coordina estrategia de retrieval y grounding.
-3. Se retorna contexto con chunks relevantes para consumo de capas superiores.
+2. `KnowledgeService` coordina la estrategia de retrieval delegando en el `AtomicRetrievalEngine` (enrutado tricameral).
+3. Se retorna contexto con chunks relevantes, visual anchors y trazabilidad de modo.
 
 ## API y middleware
 
@@ -50,7 +50,8 @@
 
 - Supabase client en `app/infrastructure/supabase/client.py`.
 - Repositorios Supabase en `app/infrastructure/repositories`.
-- Migraciones SQL en `app/infrastructure/migrations` y `app/infrastructure/database/migrations`.
+- Esquema Consolidado: Se mantiene un núcleo de **34 tablas core** optimizadas, habiendo purgado todo el legado de "TeacherOS".
+- Migraciones SQL en `app/infrastructure/migrations`.
 
 ## Coexistencia Q/A Orchestrator y RAG
 

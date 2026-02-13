@@ -14,12 +14,12 @@ CISRE does not flatten content indiscriminately: it treats document structure as
 
 CISRE prioritizes operational simplicity and deterministic results over agentic complexity.
 
-- **Cognitive Ingestion (Visual Anchors)**: Uses VLMs (e.g., Gemini Flash) to parse tables/figures into structured JSON. Applies **Late Binding**: indexes semantic structure and hydrates visual context only when needed.
+- **Cognitive Ingestion (Visual Anchors)**: Uses VLMs (e.g., Gemini 2.5 Flash Lite) to parse tables/figures into structured JSON. Applies **Dual-Model Extraction**: defaults to high-speed LITE model and automatically escalates to full FLASH on technical parse errors.
 - **Tricameral Orchestration**: Classifies query intent and dynamically routes between:
   - `Vector Search` for direct semantic similarity.
   - `GraphRAG (SQL-Native)` for relationships and multi-hop queries executed in Postgres.
   - `RAPTOR` for hierarchical summaries and high-level questions.
-- **Unified Stack**: Python + Supabase (Postgres + pgvector), without separating vector DB and graph DB into different products.
+- **Unified Stack**: Python 3.13 + Supabase (Postgres + pgvector), without separating vector DB and graph DB into different products.
 
 ### Use Case
 
@@ -55,12 +55,12 @@ CISRE no aplana el contenido indiscriminadamente: trata la estructura del docume
 
 CISRE prioriza la simplicidad operativa y los resultados deterministas sobre la complejidad agéntica.
 
-- **Ingesta Cognitiva (Visual Anchors)**: Usa VLMs (ej. Gemini Flash) para parsear tablas/figuras en JSON estructurado. Aplica **Late Binding**: indexa la estructura semántica e hidrata el contexto visual solo cuando es necesario.
+- **Ingesta Cognitiva (Visual Anchors)**: Usa VLMs (ej. Gemini 2.5 Flash Lite) para parsear tablas/figuras en JSON estructurado. Aplica **Dual-Model Extraction**: usa el modelo LITE por defecto y escala automáticamente al modelo FLASH completo ante errores técnicos de parseo.
 - **Orquestación Tricameral**: Clasifica la intención de la consulta y enruta dinámicamente entre:
   - `Búsqueda Vectorial` para similitud semántica directa.
   - `GraphRAG (SQL Nativo)` para relaciones y consultas de múltiples saltos ejecutadas en Postgres.
   - `RAPTOR` para resúmenes jerárquicos y preguntas de alto nivel.
-- **Stack Unificado**: Python + Supabase (Postgres + pgvector), sin separar la base de datos vectorial y de grafos en productos distintos.
+- **Stack Unificado**: Python 3.13 + Supabase (Postgres + pgvector), sin separar la base de datos vectorial y de grafos en productos distintos.
 
 ### Casos de Uso
 
@@ -90,12 +90,12 @@ Agnóstico al dominio. Diseñado para contextos donde la precisión es crítica 
 
 ### Tech Stack / Stack Tecnológico
 
-- Python 3.11+
+- Python 3.13+
 - FastAPI + Uvicorn
 - Supabase (PostgreSQL + pgvector + Realtime)
 - LangChain + LangGraph
 - Jina Embeddings v3
-- Gemini / Groq / OpenAI adapters (provider-agnostic model layer)
+- Gemini (Native Lite + Fallback Flash) / Groq / OpenAI adapters
 - DSPy (prompt/model optimization workflows)
 - Pytest + DeepEval
 
