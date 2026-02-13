@@ -15,11 +15,18 @@ CISRE does not flatten content indiscriminately: it treats document structure as
 CISRE prioritizes operational simplicity and deterministic results over agentic complexity.
 
 - **Cognitive Ingestion (Visual Anchors)**: Uses VLMs (e.g., Gemini 2.5 Flash Lite) to parse tables/figures into structured JSON. Applies **Dual-Model Extraction**: defaults to high-speed LITE model and automatically escalates to full FLASH on technical parse errors.
-- **Tricameral Orchestration**: Classifies query intent and dynamically routes between:
-  - `Vector Search` for direct semantic similarity.
-  - `GraphRAG (SQL-Native)` for relationships and multi-hop queries executed in Postgres.
-  - `RAPTOR` for hierarchical summaries and high-level questions.
+- **Atomic Retrieval (Atomic Engine)**: Dynamic orchestration via `QueryDecomposer` that combines Vector Search, Full-Text Search (FTS), and multi-hop graph navigation in a single atomic retrieval phase.
 - **Unified Stack**: Python 3.13 + Supabase (Postgres + pgvector), without separating vector DB and graph DB into different products.
+
+### AI-First Design Philosophy
+
+This repository may appear "over-engineered" from a traditional human perspective due to its high fragmentation and extensive use of interfaces. However, this structure is **intentional** and serves as a **high-speed rail for AI-assisted programming**.
+
+- **Interfaces as Guardrails**: Abstract classes and interfaces limit AI hallucination, defining explicit contracts that agents must respect.
+- **Structural Prompt Engineering**: Atomization allows the AI to work on small, specialized contexts, increasing the quality of generated code.
+- **Security by Design**: We separate dynamic orchestration (Python) from immutable data processing (SQL in Supabase), where the system's "muscle" remains efficient and secure.
+
+We don't just write code for humans; we write **code to be safely extended by machines**. We sacrifice "visual simplicity" to gain **traceability, extensibility, and synthetic iteration speed**.
 
 ### Use Case
 
@@ -57,11 +64,18 @@ CISRE no aplana el contenido indiscriminadamente: trata la estructura del docume
 CISRE prioriza la simplicidad operativa y los resultados deterministas sobre la complejidad agéntica.
 
 - **Ingesta Cognitiva (Visual Anchors)**: Usa VLMs (ej. Gemini 2.5 Flash Lite) para parsear tablas/figuras en JSON estructurado. Aplica **Dual-Model Extraction**: usa el modelo LITE por defecto y escala automáticamente al modelo FLASH completo ante errores técnicos de parseo.
-- **Orquestación Tricameral**: Clasifica la intención de la consulta y enruta dinámicamente entre:
-  - `Búsqueda Vectorial` para similitud semántica directa.
-  - `GraphRAG (SQL Nativo)` para relaciones y consultas de múltiples saltos ejecutadas en Postgres.
-  - `RAPTOR` para resúmenes jerárquicos y preguntas de alto nivel.
+- **Retrieval Atómico (Atomic Engine)**: Orquestación dinámica mediante `QueryDecomposer` que combina Vector Search, Full-Text Search (FTS) y navegación de grafos multi-hop en una única fase de búsqueda atómica.
 - **Stack Unificado**: Python 3.13 + Supabase (Postgres + pgvector), sin separar la base de datos vectorial y de grafos en productos distintos.
+
+### Filosofía de Diseño AI-First
+
+Este repositorio puede parecer "sobre-ingenierizado" bajo una mirada humana tradicional debido a su alta fragmentación y uso extensivo de interfaces. Sin embargo, esta estructura es **intencional** y constituye una **carretera de alta velocidad para la programación asistida por IA**.
+
+- **Interfaces como Guardrails**: Las clases abstractas e interfaces limitan la alucinación de la IA, definiendo contratos explícitos que los agentes deben respetar.
+- **Ingeniería de Prompts Estructural**: La atomización permite que la IA trabaje en contextos pequeños y especializados, aumentando la calidad del código generado.
+- **Seguridad por Diseño**: Separamos la orquestación dinámica (Python) del procesamiento de datos inmutable (SQL en Supabase), donde el "músculo" del sistema permanece eficiente y seguro.
+
+No escribimos código solo para humanos; escribimos **código para ser extendido por máquinas de forma segura**. Sacrificamos la "simplicidad visual" para ganar en **trazabilidad, extensibilidad y velocidad de iteración sintética**.
 
 ### Casos de Uso
 
