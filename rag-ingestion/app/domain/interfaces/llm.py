@@ -1,16 +1,14 @@
-from abc import ABC, abstractmethod
-from typing import TypeVar, Type, Optional, Any, Union
+from typing import TypeVar, Type, Optional, Any, Union, Protocol
 from pydantic import BaseModel
 
 T = TypeVar('T', bound=BaseModel)
 
-class IStructuredEngine(ABC):
+class IStructuredEngine(Protocol):
     """
     Interface for structured generation engines.
     Encapsulates constrained decoding logic.
     """
 
-    @abstractmethod
     def generate(
         self,
         prompt: str,
@@ -21,9 +19,8 @@ class IStructuredEngine(ABC):
         """
         Generate a structured response conforming to the given schema.
         """
-        pass
+        ...
 
-    @abstractmethod
     def generate_or_error(
         self,
         prompt: str,
@@ -35,4 +32,4 @@ class IStructuredEngine(ABC):
         """
         Generate a response that can be either success or error.
         """
-        pass
+        ...

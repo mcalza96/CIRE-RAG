@@ -19,6 +19,9 @@ class PlannedSubQuery:
     id: int
     query: str
     dependency_id: int | None = None
+    target_relations: list[str] | None = None
+    target_node_types: list[str] | None = None
+    is_deep: bool = False
 
 
 @dataclass
@@ -77,7 +80,10 @@ class QueryDecomposer:
             "If query requires dependencies between facts, set is_multihop=true. "
             "Output schema: "
             "{\"is_multihop\": boolean, \"execution_mode\": \"parallel\"|\"sequential\", "
-            "\"sub_queries\": [{\"id\": int, \"query\": string, \"dependency_id\": int|null}]}. "
+            "\"sub_queries\": [{\"id\": int, \"query\": string, \"dependency_id\": int|null, "
+            "\"target_relations\": string[]|null, \"target_node_types\": string[]|null, \"is_deep\": boolean}]}. "
+            "Use target_relations when relation traversal is explicit (e.g., prerequisite, misconception_of, remedies). "
+            "Use target_node_types when node type is explicit (e.g., competency, misconception, bridge). "
             "Keep sub_queries concise and optimized for retrieval."
         )
 
@@ -104,6 +110,42 @@ class QueryDecomposer:
 
     @staticmethod
     def _normalize_plan(payload: dict[str, Any], original_query: str) -> QueryPlan:
+        def infer_graph_controls(query_text: str) -> tuple[list[str] | None, list[str] | None, bool]:
+            text = (query_text or "").strip().lower()
+
+            relation_map: dict[str, tuple[str, ...]] = {
+                "prerequisite": ("prerrequis", "prerequis", "previo", "base de", "depends on"),
+                "misconception_of": ("error", "misconcep", "confusi", "malentendido"),
+                "remedies": ("remedio", "correg", "intervenci", "refuerzo", "mitigar"),
+            }
+            node_map: dict[str, tuple[str, ...]] = {
+                "competency": ("competenc", "habilidad", "skill"),
+                "misconception": ("misconcep", "error", "confusi", "malentendido"),
+                "bridge": ("puente", "bridge", "conexi", "vincul"),
+            }
+
+            relations: list[str] = [
+                rel for rel, hints in relation_map.items() if any(h in text for h in hints)
+            ]
+            node_types: list[str] = [
+                node for node, hints in node_map.items() if any(h in text for h in hints)
+            ]
+
+            deep_markers = (
+                "causa",
+                "impact",
+                "relacion",
+                "relación",
+                "depende",
+                "cadena",
+                "how",
+                "por que",
+                "por qué",
+            )
+            is_deep = any(marker in text for marker in deep_markers)
+
+            return (relations or None, node_types or None, is_deep)
+
         is_multihop = bool(payload.get("is_multihop", False))
         raw_mode = str(payload.get("execution_mode", "parallel")).strip().lower()
         execution_mode = "sequential" if raw_mode == "sequential" else "parallel"
@@ -130,10 +172,56 @@ class QueryDecomposer:
                     dep_id = dep
                 elif isinstance(dep, str) and dep.strip().isdigit():
                     dep_id = int(dep.strip())
-                sub_queries.append(PlannedSubQuery(id=qid, query=raw_query, dependency_id=dep_id))
+
+                raw_relations = item.get("target_relations")
+                target_relations: list[str] | None = None
+                if isinstance(raw_relations, list):
+                    target_relations = [
+                        str(value).strip()
+                        for value in raw_relations
+                        if isinstance(value, str) and str(value).strip()
+                    ] or None
+
+                raw_node_types = item.get("target_node_types")
+                target_node_types: list[str] | None = None
+                if isinstance(raw_node_types, list):
+                    target_node_types = [
+                        str(value).strip()
+                        for value in raw_node_types
+                        if isinstance(value, str) and str(value).strip()
+                    ] or None
+
+                is_deep = bool(item.get("is_deep", False))
+                inferred_relations, inferred_node_types, inferred_deep = infer_graph_controls(raw_query)
+                if target_relations is None:
+                    target_relations = inferred_relations
+                if target_node_types is None:
+                    target_node_types = inferred_node_types
+                if not is_deep:
+                    is_deep = inferred_deep
+
+                sub_queries.append(
+                    PlannedSubQuery(
+                        id=qid,
+                        query=raw_query,
+                        dependency_id=dep_id,
+                        target_relations=target_relations,
+                        target_node_types=target_node_types,
+                        is_deep=is_deep,
+                    )
+                )
 
         if not sub_queries:
-            sub_queries = [PlannedSubQuery(id=1, query=original_query)]
+            fallback_relations, fallback_node_types, fallback_deep = infer_graph_controls(original_query)
+            sub_queries = [
+                PlannedSubQuery(
+                    id=1,
+                    query=original_query,
+                    target_relations=fallback_relations,
+                    target_node_types=fallback_node_types,
+                    is_deep=fallback_deep,
+                )
+            ]
             is_multihop = False
             execution_mode = "parallel"
 

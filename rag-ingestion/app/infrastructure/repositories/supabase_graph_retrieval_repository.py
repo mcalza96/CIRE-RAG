@@ -140,6 +140,35 @@ class SupabaseGraphRetrievalRepository:
         filter_relation_types: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         client = await self._get_client()
+
+        def _normalize_nav_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            normalized: list[dict[str, Any]] = []
+            for row in rows:
+                path_info = row.get("path_info")
+                path_ids: list[str] = []
+                if isinstance(path_info, list):
+                    for step in path_info:
+                        if isinstance(step, dict) and step.get("id"):
+                            path_ids.append(str(step.get("id")))
+
+                entity_id = row.get("entity_id") or row.get("id")
+                entity_name = row.get("entity_name") or row.get("title")
+                entity_type = row.get("entity_type") or row.get("node_type")
+                entity_description = row.get("entity_description") or row.get("description")
+
+                normalized.append(
+                    {
+                        "entity_id": entity_id,
+                        "entity_name": entity_name,
+                        "entity_type": entity_type,
+                        "entity_description": entity_description,
+                        "similarity": row.get("similarity"),
+                        "hop_depth": row.get("hop_depth"),
+                        "path_ids": row.get("path_ids") or path_ids,
+                    }
+                )
+            return normalized
+
         try:
             response = await client.rpc(
                 "search_graph_nav",
@@ -156,29 +185,28 @@ class SupabaseGraphRetrievalRepository:
             ).execute()
             nav_rows = self._rows(response.data)
             if nav_rows:
-                normalized: list[dict[str, Any]] = []
-                for row in nav_rows:
-                    path_info = row.get("path_info")
-                    path_ids: list[str] = []
-                    if isinstance(path_info, list):
-                        for step in path_info:
-                            if isinstance(step, dict) and step.get("id"):
-                                path_ids.append(str(step.get("id")))
-
-                    normalized.append(
-                        {
-                            "entity_id": row.get("id"),
-                            "entity_name": row.get("title"),
-                            "entity_type": row.get("node_type"),
-                            "entity_description": row.get("description"),
-                            "similarity": row.get("similarity"),
-                            "hop_depth": row.get("hop_depth"),
-                            "path_ids": path_ids,
-                        }
-                    )
-                return normalized
+                return _normalize_nav_rows(nav_rows)
         except Exception as exc:
             logger.info("search_graph_nav_unavailable_fallback", error=str(exc))
+
+        try:
+            response = await client.rpc(
+                "search_graph_nav",
+                {
+                    "query_embedding": query_vector,
+                    "match_threshold": match_threshold,
+                    "limit_count": limit_count,
+                    "max_hops": max_hops,
+                    "decay_factor": decay_factor,
+                    "filter_entity_types": filter_node_types,
+                    "filter_relation_types": filter_relation_types,
+                },
+            ).execute()
+            nav_rows = self._rows(response.data)
+            if nav_rows:
+                return _normalize_nav_rows(nav_rows)
+        except Exception as exc:
+            logger.info("search_graph_nav_alt_signature_unavailable", error=str(exc))
 
         response = await client.rpc(
             "hybrid_multi_hop_search",

@@ -13,10 +13,13 @@ PATTERNS = {
     "figure_id": re.compile(r"(?:Figura|Imagen|Gráfico)\s+(\d+(?:\.\d+)?)", re.IGNORECASE),
 }
 
+ISO_PATTERN = re.compile(r"\bISO\s*[-:]?\s*(\d{4,5})(?::\s*\d{4})?\b", re.IGNORECASE)
+CLAUSE_PATTERN = re.compile(r"\b\d+(?:\.\d+)+\b")
+
 
 def enrich_metadata(text: str, current_metadata: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     """Scan text patterns and enrich metadata deterministically."""
-    updates: Dict[str, str] = {}
+    updates: Dict[str, Any] = {}
     found_tags = []
 
     for key, pattern in PATTERNS.items():
@@ -25,6 +28,16 @@ def enrich_metadata(text: str, current_metadata: Dict[str, Any]) -> Tuple[str, D
             value = match.group(1)
             updates[key] = value
             found_tags.append(f"[{key.upper()}: {value}]")
+
+    iso_match = ISO_PATTERN.search(text)
+    if iso_match:
+        standard = f"ISO {iso_match.group(1)}"
+        updates["source_standard"] = standard
+        updates["scope"] = standard
+
+    clause_refs = list(dict.fromkeys(CLAUSE_PATTERN.findall(text)))
+    if clause_refs:
+        updates["clause_refs"] = clause_refs[:20]
 
     new_metadata = current_metadata.copy()
     new_metadata.update(updates)

@@ -1,9 +1,11 @@
 import time
+import re
 from typing import List, Dict, Any
 from uuid import uuid4
 import structlog
 from app.core.retrieval_config import retrieval_settings
 from app.core.settings import settings
+from app.core.observability.scope_metrics import scope_metrics_store
 from app.application.services.tricameral_orchestrator import TricameralOrchestrator
 from app.domain.knowledge_schemas import RetrievalIntent, AgentRole, TaskType
 
@@ -27,6 +29,38 @@ class KnowledgeService:
         retrieval_request_id = str(uuid4())
         start = time.perf_counter()
         selected_mode = "tricameral" if self._use_tricameral() else "vector_only"
+        scope_metrics_store.record_request(institution_id)
+        scope_resolution = self._resolve_scope(query)
+        logger.info(
+            "scope_resolution",
+            query_preview=query[:80],
+            tenant_id=institution_id,
+            requested_scopes=list(scope_resolution["requested_standards"]),
+            requires_scope_clarification=scope_resolution["requires_scope_clarification"],
+            scope_candidates=list(scope_resolution["suggested_scopes"]),
+        )
+
+        if scope_resolution["requires_scope_clarification"]:
+            suggested = ", ".join(scope_resolution["suggested_scopes"])
+            scope_metrics_store.record_clarification(institution_id)
+            logger.info(
+                "scope_clarification_required",
+                tenant_id=institution_id,
+                query_preview=query[:80],
+                scope_candidates=list(scope_resolution["suggested_scopes"]),
+            )
+            return {
+                "context_chunks": [],
+                "context_map": {},
+                "citations": [],
+                "mode": "AMBIGUOUS_SCOPE",
+                "requires_scope_clarification": True,
+                "scope_candidates": scope_resolution["suggested_scopes"],
+                "scope_message": (
+                    "Necesito desambiguar la norma objetivo antes de responder con trazabilidad. "
+                    f"Sugeridas: {suggested}."
+                ),
+            }
 
         logger.info(
             "Retrieving grounded context",
@@ -46,6 +80,7 @@ class KnowledgeService:
                 k,
                 container,
                 retrieval_request_id,
+                requested_standards=scope_resolution["requested_standards"],
             )
         else:
             result = await self._get_context_vector_only(
@@ -54,6 +89,7 @@ class KnowledgeService:
                 k,
                 container,
                 retrieval_request_id,
+                requested_standards=scope_resolution["requested_standards"],
             )
 
         elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
@@ -79,6 +115,7 @@ class KnowledgeService:
         k: int,
         container: Any,
         retrieval_request_id: str,
+        requested_standards: tuple[str, ...] = (),
     ) -> Dict[str, Any]:
         from app.core.middleware.security import LeakCanary
 
@@ -91,11 +128,29 @@ class KnowledgeService:
             tenant_id=institution_id,
             role=AgentRole.SOCRATIC_MENTOR,
             task=TaskType.EXPLANATION,
-            metadata={"retrieval_request_id": retrieval_request_id},
+            metadata={
+                "retrieval_request_id": retrieval_request_id,
+                "requested_scopes": list(requested_standards),
+            },
         )
 
         output = await orchestrator.orchestrate(intent=intent, k=k)
         results = output.get("results", []) or []
+        filtered_results = self._filter_results_by_scope(results, requested_standards)
+        scope_mismatch = bool(requested_standards and results and not filtered_results)
+        if filtered_results:
+            results = filtered_results
+        if scope_mismatch:
+            scope_metrics_store.record_mismatch_detected(institution_id)
+            logger.warning(
+                "scope_mismatch_detected",
+                tenant_id=institution_id,
+                query_preview=query[:80],
+                requested_scopes=list(requested_standards),
+                original_result_count=len(output.get("results", []) or []),
+                filtered_result_count=len(filtered_results),
+                mismatch_blocked_count=1,
+            )
 
         try:
             LeakCanary.verify_isolation(institution_id, results)
@@ -109,8 +164,10 @@ class KnowledgeService:
         return {
             "context_chunks": context_chunks,
             "context_map": context_map,
-            "citations": output.get("citations", []),
+            "citations": [str(r.get("id")) for r in results if r.get("id")],
             "mode": output.get("mode", "HYBRID"),
+            "requested_scopes": list(requested_standards),
+            "scope_mismatch_detected": scope_mismatch,
         }
 
     async def _get_context_vector_only(
@@ -120,19 +177,40 @@ class KnowledgeService:
         k: int,
         container: Any,
         retrieval_request_id: str,
+        requested_standards: tuple[str, ...] = (),
     ) -> Dict[str, Any]:
         """Vector-only retrieval path."""
         retrieval_tools = container.retrieval_tools
         from app.core.middleware.security import LeakCanary
 
         # 1. Execute Retrieval
-        scope = {"type": "institutional", "tenant_id": institution_id}
+        scope: Dict[str, Any] = {"type": "institutional", "tenant_id": institution_id}
+        if requested_standards:
+            scope["filters"] = {
+                "source_standards": list(requested_standards),
+                "source_standard": requested_standards[0],
+            }
         retrieve_start = time.perf_counter()
         results = await retrieval_tools.retrieve(
             query=query,
             scope_context=scope,
             k=k
         )
+        filtered_results = self._filter_results_by_scope(results, requested_standards)
+        scope_mismatch = bool(requested_standards and results and not filtered_results)
+        if filtered_results:
+            results = filtered_results
+        if scope_mismatch:
+            scope_metrics_store.record_mismatch_detected(institution_id)
+            logger.warning(
+                "scope_mismatch_detected",
+                tenant_id=institution_id,
+                query_preview=query[:80],
+                requested_scopes=list(requested_standards),
+                original_result_count=len(results or []),
+                filtered_result_count=len(filtered_results),
+                mismatch_blocked_count=1,
+            )
 
         logger.info(
             "retrieval_pipeline_timing",
@@ -156,8 +234,84 @@ class KnowledgeService:
 
         return {
             "context_chunks": context_chunks, 
-            "context_map": context_map
+            "context_map": context_map,
+            "citations": [str(r.get("id")) for r in results if r.get("id")],
+            "mode": "VECTOR_ONLY",
+            "requested_scopes": list(requested_standards),
+            "scope_mismatch_detected": scope_mismatch,
         }
+
+    @staticmethod
+    def _extract_requested_standards(query: str) -> tuple[str, ...]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for match in re.findall(r"\biso\s*[-:]?\s*(\d{4,5})\b", (query or ""), flags=re.IGNORECASE):
+            value = f"ISO {match}"
+            if value in seen:
+                continue
+            seen.add(value)
+            ordered.append(value)
+        return tuple(ordered)
+
+    @staticmethod
+    def _has_clause_reference(query: str) -> bool:
+        return bool(re.search(r"\b\d+(?:\.\d+)+\b", (query or "")))
+
+    @staticmethod
+    def _suggest_scope_candidates(query: str) -> tuple[str, ...]:
+        text = (query or "").strip().lower()
+        hints: dict[str, tuple[str, ...]] = {
+            "ISO 9001": ("calidad", "cliente", "producto", "servicio"),
+            "ISO 14001": ("ambient", "legal", "cumplimiento", "aspecto ambiental"),
+            "ISO 45001": ("seguridad", "salud", "sst", "trabajador"),
+        }
+        ranked = [standard for standard, keys in hints.items() if any(key in text for key in keys)]
+        if ranked:
+            return tuple(dict.fromkeys(ranked))
+        return ("ISO 9001", "ISO 14001", "ISO 45001")
+
+    def _resolve_scope(self, query: str) -> dict[str, Any]:
+        requested = self._extract_requested_standards(query)
+        ambiguous = self._has_clause_reference(query) and not requested
+        return {
+            "requested_standards": requested,
+            "requires_scope_clarification": ambiguous,
+            "suggested_scopes": self._suggest_scope_candidates(query),
+        }
+
+    @staticmethod
+    def _extract_result_scope(item: Dict[str, Any]) -> str:
+        meta_raw = item.get("metadata")
+        metadata: Dict[str, Any] = meta_raw if isinstance(meta_raw, dict) else {}
+        candidates = [
+            metadata.get("source_standard"),
+            metadata.get("standard"),
+            metadata.get("scope"),
+            metadata.get("norma"),
+            item.get("source_standard"),
+        ]
+        for value in candidates:
+            if isinstance(value, str) and value.strip():
+                return value.strip().upper()
+        content = str(item.get("content") or "").upper()
+        for token in ("ISO 9001", "ISO 14001", "ISO 45001"):
+            if token in content:
+                return token
+        return ""
+
+    def _filter_results_by_scope(self, results: List[Dict[str, Any]], requested_standards: tuple[str, ...]) -> List[Dict[str, Any]]:
+        if not requested_standards:
+            return results
+
+        requested_upper = {item.upper() for item in requested_standards}
+        filtered: List[Dict[str, Any]] = []
+        for item in results:
+            scope = self._extract_result_scope(item)
+            if not scope:
+                continue
+            if any(target in scope for target in requested_upper):
+                filtered.append(item)
+        return filtered
 
     def optimize_context_for_prompt(self, context_chunks: List[str], context_map: Dict[str, Any]) -> str:
         """

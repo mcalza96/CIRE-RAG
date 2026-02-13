@@ -1,5 +1,6 @@
 import structlog
 import time
+import re
 from typing import List, Dict, Any, Optional
 from app.application.services.query_decomposer import QueryDecomposer, QueryPlan
 from app.core.settings import settings
@@ -8,6 +9,7 @@ from app.services.knowledge.gravity_reranker import GravityReranker
 from app.services.knowledge.jina_reranker import JinaReranker
 from app.services.ingestion.metadata_enricher import enrich_metadata
 from app.core.observability.forensic import ForensicRecorder
+from app.core.observability.scope_metrics import scope_metrics_store
 from app.domain.knowledge_schemas import RAGSearchResult, RetrievalIntent, AgentRole, TaskType
 from app.domain.interfaces.retrieval_interface import IRetrievalRepository
 from app.services.knowledge.retrieval_strategies import DirectRetrievalStrategy, IterativeRetrievalStrategy, IRetrievalStrategy
@@ -38,6 +40,88 @@ class RetrievalBroker:
         if mode not in {"unified", "atomic", "hybrid"}:
             return "hybrid"
         return mode
+
+    @staticmethod
+    def _extract_requested_standards(query: str) -> tuple[str, ...]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for match in re.findall(r"\biso\s*[-:]?\s*(\d{4,5})\b", (query or ""), flags=re.IGNORECASE):
+            value = f"ISO {match}"
+            if value in seen:
+                continue
+            seen.add(value)
+            ordered.append(value)
+        return tuple(ordered)
+
+    @staticmethod
+    def _extract_row_scope(item: Dict[str, Any]) -> str:
+        meta_raw = item.get("metadata")
+        metadata: Dict[str, Any] = meta_raw if isinstance(meta_raw, dict) else {}
+        candidates = [
+            metadata.get("source_standard"),
+            metadata.get("standard"),
+            metadata.get("scope"),
+            metadata.get("norma"),
+            item.get("source_standard"),
+        ]
+        for value in candidates:
+            if isinstance(value, str) and value.strip():
+                return value.strip().upper()
+        return ""
+
+    @staticmethod
+    def _requested_scopes_from_context(scope_context: Dict[str, Any]) -> tuple[str, ...]:
+        if not isinstance(scope_context, dict):
+            return ()
+
+        nested = scope_context.get("filters") if isinstance(scope_context.get("filters"), dict) else {}
+        raw_list = scope_context.get("source_standards")
+        if not raw_list and nested:
+            raw_list = nested.get("source_standards")
+
+        values: list[str] = []
+        if isinstance(raw_list, list):
+            values.extend(str(v).strip() for v in raw_list if isinstance(v, str) and str(v).strip())
+
+        single = scope_context.get("source_standard") or (nested.get("source_standard") if nested else None)
+        if isinstance(single, str) and single.strip():
+            values.append(single.strip())
+
+        if not values:
+            return ()
+        return tuple(dict.fromkeys(values))
+
+    def _apply_scope_penalty(self, results: List[Dict[str, Any]], requested_scopes: tuple[str, ...]) -> List[Dict[str, Any]]:
+        if not requested_scopes:
+            return results
+
+        requested_upper = {item.upper() for item in requested_scopes}
+        reranked: list[Dict[str, Any]] = []
+        for row in results:
+            row_scope = self._extract_row_scope(row)
+            if not row_scope:
+                reranked.append(row)
+                continue
+
+            if any(scope in row_scope for scope in requested_upper):
+                reranked.append(row)
+                continue
+
+            adjusted = dict(row)
+            base_similarity = float(adjusted.get("jina_relevance_score", adjusted.get("similarity", adjusted.get("score", 0.0))) or 0.0)
+            penalized = max(base_similarity * 0.25, 0.0)
+            adjusted["scope_penalized"] = True
+            adjusted["scope_penalty"] = 0.75
+            adjusted["similarity"] = penalized
+            adjusted["score"] = penalized
+            adjusted["jina_relevance_score"] = penalized
+            reranked.append(adjusted)
+
+        return reranked
+
+    @staticmethod
+    def _count_scope_penalized(results: List[Dict[str, Any]]) -> int:
+        return sum(1 for item in results if bool(item.get("scope_penalized")))
 
     async def retrieve(
         self, 
@@ -141,7 +225,7 @@ class RetrievalBroker:
 
             # 4. Reranking Phase
             if enable_reranking and raw_results:
-                return await self._apply_reranking(query, raw_results, scope_context, k)
+                return await self._apply_reranking(query, raw_results, filter_conditions, k)
 
             return raw_results[:k]
 
@@ -202,12 +286,26 @@ class RetrievalBroker:
         scope_collection = scope_context.get("collection_id")
         if scope_collection and not filters.get("collection_id"):
             filters["collection_id"] = scope_collection
-             
+
+        requested_standards = self._extract_requested_standards(query)
+        if requested_standards:
+            if not filters.get("source_standards"):
+                filters["source_standards"] = list(requested_standards)
+            if not filters.get("source_standard"):
+                filters["source_standard"] = requested_standards[0]
+
+        if not filters.get("source_standards"):
+            context_scopes = self._requested_scopes_from_context(scope_context)
+            if context_scopes:
+                filters["source_standards"] = list(context_scopes)
+                filters["source_standard"] = context_scopes[0]
+              
         return filters
 
     async def _apply_reranking(self, query: str, results: List[Dict], scope_context: Dict, k: int) -> List[Dict]:
         try:
             semantic_ranked = results
+            requested_scopes = self._requested_scopes_from_context(scope_context)
             jina_started = time.perf_counter()
             if self.jina_reranker.is_enabled() and results:
                 docs = [str(item.get("content") or "") for item in results]
@@ -228,6 +326,27 @@ class RetrievalBroker:
                     if reordered:
                         semantic_ranked = reordered
 
+            if requested_scopes:
+                semantic_ranked = self._apply_scope_penalty(semantic_ranked, requested_scopes)
+            candidate_count = len(semantic_ranked)
+            scope_penalized_count = self._count_scope_penalized(semantic_ranked)
+            tenant_id = str(scope_context.get("tenant_id") or "")
+            scope_metrics_store.record_rerank_penalized(
+                tenant_id=tenant_id,
+                penalized_count=scope_penalized_count,
+                candidate_count=candidate_count,
+            )
+
+            if requested_scopes and settings.SCOPE_STRICT_FILTERING:
+                strict_filtered = [item for item in semantic_ranked if not bool(item.get("scope_penalized"))]
+                if strict_filtered:
+                    semantic_ranked = strict_filtered
+
+            scope_penalized_ratio = round(
+                (scope_penalized_count / candidate_count) if candidate_count else 0.0,
+                4,
+            )
+
             logger.info(
                 "retrieval_pipeline_timing",
                 stage="jina_rerank",
@@ -235,6 +354,9 @@ class RetrievalBroker:
                 enabled=self.jina_reranker.is_enabled(),
                 candidates=len(results),
                 ranked=len(semantic_ranked),
+                requested_scopes=list(requested_scopes),
+                scope_penalized_count=scope_penalized_count,
+                scope_penalized_ratio=scope_penalized_ratio,
             )
 
             raw_by_id = {str(item.get("id", "")): item for item in results}

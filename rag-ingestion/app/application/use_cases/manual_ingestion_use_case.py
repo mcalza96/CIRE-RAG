@@ -17,11 +17,8 @@ from app.domain.types.ingestion_status import IngestionStatus
 
 from app.infrastructure.repositories.supabase_content_repository import SupabaseContentRepository
 from app.infrastructure.repositories.supabase_source_repository import SupabaseSourceRepository
-from app.services.knowledge.raptor_processor import RaptorProcessor
-from app.infrastructure.repositories.supabase_raptor_repository import SupabaseRaptorRepository
-from app.domain.raptor_schemas import BaseChunk
-from uuid import uuid4, UUID
-from app.infrastructure.supabase.client import get_async_supabase_client
+from uuid import uuid4
+from app.infrastructure.services.manual_ingestion_query_service import ManualIngestionQueryService
 from app.core.settings import settings
 
 class ManualIngestionUseCase:
@@ -30,6 +27,7 @@ class ManualIngestionUseCase:
         self.taxonomy_manager = TaxonomyManager()
         self.content_repo = SupabaseContentRepository()
         self.source_repo = SupabaseSourceRepository()
+        self.query_service = ManualIngestionQueryService()
         # Lazy init for Raptor to avoid async issues in init if needed, 
         # but here we can just init repositories.
         # We need a client for RaptorRepo. 
@@ -46,25 +44,17 @@ class ManualIngestionUseCase:
             }
 
         limit = max_pending + 1 if max_pending > 0 else 1000
-        client = await get_async_supabase_client()
-        response = (
-            await client.table("source_documents")
-            .select("id")
-            .eq("institution_id", str(tenant_id))
-            .in_(
-                "status",
-                [
-                    IngestionStatus.QUEUED.value,
-                    IngestionStatus.PENDING.value,
-                    IngestionStatus.PENDING_INGESTION.value,
-                    IngestionStatus.PROCESSING.value,
-                    IngestionStatus.PROCESSING_V2.value,
-                ],
-            )
-            .limit(limit)
-            .execute()
+        pending_count = await self.query_service.count_pending_documents(
+            tenant_id=str(tenant_id),
+            limit=limit,
+            statuses=[
+                IngestionStatus.QUEUED.value,
+                IngestionStatus.PENDING.value,
+                IngestionStatus.PENDING_INGESTION.value,
+                IngestionStatus.PROCESSING.value,
+                IngestionStatus.PROCESSING_V2.value,
+            ],
         )
-        pending_count = len(response.data or [])
         docs_per_minute_per_worker = max(1, int(getattr(settings, "INGESTION_DOCS_PER_MINUTE_PER_WORKER", 2) or 2))
         worker_concurrency = max(1, int(getattr(settings, "WORKER_CONCURRENCY", 1) or 1))
         throughput_per_minute = docs_per_minute_per_worker * worker_concurrency
@@ -105,81 +95,16 @@ class ManualIngestionUseCase:
         """
         Lists recently registered documents from Supabase.
         """
-        client = await get_async_supabase_client()
-        res = await client.table("source_documents").select("*").order("created_at", desc=True).limit(limit).execute()
-        return res.data
+        return await self.query_service.list_recent_documents(limit=limit)
 
     async def list_collections(self, tenant_id: str) -> List[Dict[str, Any]]:
-        client = await get_async_supabase_client()
-        res = (
-            await client.table("collections")
-            .select("id,tenant_id,collection_key,name,status,created_at")
-            .eq("tenant_id", str(tenant_id))
-            .order("created_at", desc=False)
-            .execute()
-        )
-        return res.data or []
+        return await self.query_service.list_collections(tenant_id=str(tenant_id))
 
     async def cleanup_collection(self, tenant_id: str, collection_key: str) -> Dict[str, Any]:
-        tenant = str(tenant_id or "").strip()
-        key = str(collection_key or "").strip().lower()
-        if not tenant or not key:
-            raise ValueError("INVALID_COLLECTION_SCOPE")
-
-        client = await get_async_supabase_client()
-        collection_res = (
-            await client.table("collections")
-            .select("id,tenant_id,collection_key,status")
-            .eq("tenant_id", tenant)
-            .eq("collection_key", key)
-            .maybe_single()
-            .execute()
+        return await self.query_service.cleanup_collection(
+            tenant_id=str(tenant_id),
+            collection_key=str(collection_key),
         )
-        collection = collection_res.data
-        if not collection:
-            raise ValueError("COLLECTION_NOT_FOUND")
-
-        collection_id = str(collection["id"])
-
-        docs_res = (
-            await client.table("source_documents")
-            .select("id")
-            .eq("collection_id", collection_id)
-            .execute()
-        )
-        doc_count = len(docs_res.data or [])
-
-        nodes_res = (
-            await client.table("regulatory_nodes")
-            .select("id")
-            .eq("collection_id", collection_id)
-            .execute()
-        )
-        regulatory_nodes_count = len(nodes_res.data or [])
-
-        batches_res = (
-            await client.table("ingestion_batches")
-            .select("id")
-            .eq("collection_id", collection_id)
-            .execute()
-        )
-        batches_count = len(batches_res.data or [])
-
-        await client.table("regulatory_nodes").delete().eq("collection_id", collection_id).execute()
-        await client.table("source_documents").delete().eq("collection_id", collection_id).execute()
-        await client.table("ingestion_batches").delete().eq("collection_id", collection_id).execute()
-
-        return {
-            "status": "cleaned",
-            "tenant_id": tenant,
-            "collection_id": collection_id,
-            "collection_key": key,
-            "deleted": {
-                "source_documents": doc_count,
-                "regulatory_nodes": regulatory_nodes_count,
-                "ingestion_batches": batches_count,
-            },
-        }
 
     async def retry_ingestion(self, doc_id: str):
         """
@@ -317,30 +242,15 @@ class ManualIngestionUseCase:
             collection_name=collection_name,
         )
 
-        client = await get_async_supabase_client()
-        payload = {
-            "tenant_id": str(tenant_id),
-            "collection_id": str(collection["id"]),
-            "total_files": int(total_files),
-            "status": "pending",
-            "auto_seal": bool(auto_seal),
-            "metadata": {
-                "collection_key": collection["collection_key"],
-                "collection_name": collection.get("name") or collection["collection_key"],
-                **(metadata or {}),
-            },
-        }
-        result = await client.table("ingestion_batches").insert(payload).execute()
-        row = (result.data or [{}])[0]
-        return {
-            "batch_id": row.get("id"),
-            "tenant_id": payload["tenant_id"],
-            "collection_id": payload["collection_id"],
-            "collection_key": collection["collection_key"],
-            "status": row.get("status") or "pending",
-            "total_files": payload["total_files"],
-            "auto_seal": payload["auto_seal"],
-        }
+        return await self.query_service.create_batch(
+            tenant_id=str(tenant_id),
+            collection_id=str(collection["id"]),
+            collection_key=str(collection["collection_key"]),
+            collection_name=str(collection.get("name") or collection["collection_key"]),
+            total_files=int(total_files),
+            auto_seal=bool(auto_seal),
+            metadata=metadata,
+        )
 
     async def add_file_to_batch(
         self,
@@ -348,43 +258,19 @@ class ManualIngestionUseCase:
         file: UploadFile,
         metadata: Optional[str] = None,
     ) -> Dict[str, Any]:
-        client = await get_async_supabase_client()
+        context = await self.query_service.get_batch_upload_context(batch_id=str(batch_id))
+        batch = context.get("batch")
+        collection = context.get("collection")
+        docs = context.get("documents") or []
 
-        batch_res = (
-            await client.table("ingestion_batches")
-            .select("id,tenant_id,collection_id,total_files,auto_seal,status")
-            .eq("id", batch_id)
-            .maybe_single()
-            .execute()
-        )
-        batch = batch_res.data
-        if not batch:
+        if not isinstance(batch, dict):
             raise ValueError("BATCH_NOT_FOUND")
-
-        if not batch.get("collection_id"):
-            raise ValueError("BATCH_MISSING_COLLECTION")
-
-        collection_res = (
-            await client.table("collections")
-            .select("id,tenant_id,collection_key,name,status")
-            .eq("id", batch["collection_id"])
-            .maybe_single()
-            .execute()
-        )
-        collection = collection_res.data
-        if not collection:
+        if not isinstance(collection, dict):
             raise ValueError("COLLECTION_NOT_FOUND")
-        if str(collection.get("status", "open")).lower() == "sealed":
-            await client.table("collections").update({"status": "open"}).eq("id", collection["id"]).execute()
 
-        docs_res = (
-            await client.table("source_documents")
-            .select("id,filename,status")
-            .eq("batch_id", batch_id)
-            .execute()
-        )
-        docs = docs_res.data or []
         for doc in docs:
+            if not isinstance(doc, dict):
+                continue
             if str(doc.get("filename")) == str(file.filename):
                 queue = await self._get_pending_snapshot(tenant_id=str(batch["tenant_id"]))
                 return {
@@ -417,12 +303,13 @@ class ManualIngestionUseCase:
             raise ValueError("EMPTY_FILE")
 
         target_bucket = settings.RAG_STORAGE_BUCKET
-        storage = client.storage.from_(target_bucket)
         content_type = file.content_type or "application/octet-stream"
-        try:
-            await storage.upload(path=storage_path, file=content_bytes, file_options={"content-type": content_type, "upsert": "false"})
-        except TypeError:
-            await storage.upload(storage_path, content_bytes, {"content-type": content_type, "upsert": "false"})
+        await self.query_service.upload_to_storage(
+            bucket=target_bucket,
+            path=storage_path,
+            content_bytes=content_bytes,
+            content_type=content_type,
+        )
 
         merged_metadata = {
             "status": IngestionStatus.QUEUED.value,
@@ -452,9 +339,10 @@ class ManualIngestionUseCase:
             "collection_id": str(collection["id"]),
             "batch_id": str(batch_id),
         }
-        await client.table("source_documents").insert(insert_payload).execute()
-
-        await client.table("ingestion_batches").update({"status": "processing"}).eq("id", batch_id).execute()
+        await self.query_service.queue_source_document_for_batch(
+            payload=insert_payload,
+            batch_id=str(batch_id),
+        )
 
         queue = await self._get_pending_snapshot(tenant_id=str(batch["tenant_id"]))
 
@@ -468,30 +356,13 @@ class ManualIngestionUseCase:
         }
 
     async def seal_batch(self, batch_id: str) -> Dict[str, Any]:
-        client = await get_async_supabase_client()
-
-        batch_res = (
-            await client.table("ingestion_batches")
-            .select("id,collection_id,total_files,completed,failed,status")
-            .eq("id", batch_id)
-            .maybe_single()
-            .execute()
-        )
-        batch = batch_res.data
-        if not batch:
-            raise ValueError("BATCH_NOT_FOUND")
+        batch = await self.query_service.get_batch_for_seal(batch_id=str(batch_id))
 
         collection_id = batch.get("collection_id")
         if collection_id:
-            await client.table("collections").update({"status": "sealed"}).eq("id", collection_id).execute()
+            await self.query_service.seal_collection(collection_id=str(collection_id))
 
-        docs_res = (
-            await client.table("source_documents")
-            .select("status")
-            .eq("batch_id", batch_id)
-            .execute()
-        )
-        docs = docs_res.data or []
+        docs = await self.query_service.list_document_statuses_for_batch(batch_id=str(batch_id))
         success_states = {"success", "processed", "completed", "ready"}
         failed_states = {"failed", "error", "dead_letter"}
 
@@ -518,13 +389,12 @@ class ManualIngestionUseCase:
         else:
             status = "processing"
 
-        await client.table("ingestion_batches").update(
-            {
-                "completed": completed,
-                "failed": failed,
-                "status": status,
-            }
-        ).eq("id", batch_id).execute()
+        await self.query_service.update_batch_status_counters(
+            batch_id=str(batch_id),
+            completed=completed,
+            failed=failed,
+            status=status,
+        )
 
         return {
             "batch_id": batch_id,
@@ -536,39 +406,19 @@ class ManualIngestionUseCase:
         }
 
     async def get_batch_status(self, batch_id: str) -> Dict[str, Any]:
-        client = await get_async_supabase_client()
-        batch_res = (
-            await client.table("ingestion_batches")
-            .select("id,tenant_id,collection_id,total_files,completed,failed,status,auto_seal,metadata,created_at,updated_at")
-            .eq("id", batch_id)
-            .maybe_single()
-            .execute()
-        )
-        batch = batch_res.data
-        if not batch:
+        status_data = await self.query_service.get_batch_status_data(batch_id=str(batch_id))
+        batch = status_data.get("batch")
+        docs = status_data.get("documents") or []
+        events = status_data.get("events") or []
+
+        if not isinstance(batch, dict):
             raise ValueError("BATCH_NOT_FOUND")
 
-        docs_res = (
-            await client.table("source_documents")
-            .select("id,filename,status,created_at,batch_id,metadata")
-            .eq("batch_id", batch_id)
-            .order("created_at", desc=False)
-            .execute()
-        )
-
-        docs = docs_res.data or []
         doc_ids = [str(d.get("id")) for d in docs if isinstance(d, dict) and d.get("id")]
 
         latest_event_by_doc: Dict[str, Dict[str, Any]] = {}
         if doc_ids:
-            events_res = (
-                await client.table("ingestion_events")
-                .select("source_document_id,message,status,created_at")
-                .in_("source_document_id", doc_ids)
-                .order("created_at", desc=True)
-                .execute()
-            )
-            for ev in events_res.data or []:
+            for ev in events:
                 if not isinstance(ev, dict):
                     continue
                 source_id = str(ev.get("source_document_id") or "")

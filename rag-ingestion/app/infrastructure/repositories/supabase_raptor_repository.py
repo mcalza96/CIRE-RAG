@@ -48,3 +48,15 @@ class SupabaseRaptorRepository(IRaptorRepository):
         except Exception as e:
             logger.error(f"Failed to persist summary node {node.id}: {e}")
             raise
+
+    async def backfill_collection_id(self, source_document_id: str, collection_id: str) -> None:
+        if not source_document_id or not collection_id:
+            return
+
+        client = await self.get_client()
+        await (
+            client.table("regulatory_nodes")
+            .update({"collection_id": str(collection_id)})
+            .eq("source_document_id", str(source_document_id))
+            .execute()
+        )

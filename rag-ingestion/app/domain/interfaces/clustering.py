@@ -1,17 +1,16 @@
-from abc import ABC, abstractmethod
+from typing import Protocol
 import numpy as np
 from typing import List
 from uuid import UUID
 from app.domain.raptor_schemas import ClusterResult
 
-class IClusteringService(ABC):
+class IClusteringService(Protocol):
     """
     Interface for semantic clustering services.
     Allows for different clustering algorithms (GMM, K-Means, etc.) 
     to be swapped without affecting the processor.
     """
 
-    @abstractmethod
     def cluster(
         self, 
         chunk_ids: List[UUID], 
@@ -20,4 +19,4 @@ class IClusteringService(ABC):
         """
         Cluster embeddings and assign chunk IDs to clusters.
         """
-        pass
+        ...

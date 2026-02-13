@@ -110,6 +110,7 @@ class IngestionWorker:
             metadata_adapter=SupabaseMetadataAdapter(),
             policy=self.policy,
             raptor_processor=self.raptor_processor,
+            raptor_repo=self.raptor_repo,
             # NEW: Pass specialized services from container
             download_service=container.download_service,
             state_manager=container.state_manager

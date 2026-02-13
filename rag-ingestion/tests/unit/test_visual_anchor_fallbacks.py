@@ -132,9 +132,9 @@ def _stub_heavy_modules_for_worker() -> None:
     fake_graph_repo.SupabaseGraphRepository = object
     sys.modules.setdefault("app.infrastructure.repositories.supabase_graph_repository", fake_graph_repo)
 
-    fake_dispatcher = types.ModuleType("app.domain.interfaces.ingestion_dispatcher_interface")
-    fake_dispatcher.IIngestionDispatcher = object
-    sys.modules.setdefault("app.domain.interfaces.ingestion_dispatcher_interface", fake_dispatcher)
+    fake_dispatcher = types.ModuleType("app.workflows.ingestion.dispatcher")
+    fake_dispatcher.IngestionDispatcher = object
+    sys.modules.setdefault("app.workflows.ingestion.dispatcher", fake_dispatcher)
 
     fake_correlation = types.ModuleType("app.core.observability.correlation")
     fake_correlation.set_correlation_id = lambda *_args, **_kwargs: None

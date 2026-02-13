@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import structlog
 from pydantic import ValidationError
 
 from app.core.caching.middleware import cached_extraction
-from app.core.models.factory import ModelFactory
+from app.core.models.factory import create_ingest_fallback_model, create_ingest_model
 from app.core.models.interfaces import BaseVLM, ModelAdapterError
 from app.core.models.schemas import VerificationResult, VisualParseResult
 from app.core.settings import settings
@@ -32,7 +32,9 @@ class VisualDocumentParser:
 
     def __init__(
         self,
-        model_factory: ModelFactory | None = None,
+        model_factory: Any | None = None,
+        ingest_model_builder: Callable[[], BaseVLM] | None = None,
+        ingest_fallback_model_builder: Callable[[], BaseVLM | None] | None = None,
         model: BaseVLM | None = None,
         max_retries: int = 2,
         retry_delay_seconds: float = 0.35,
@@ -40,7 +42,9 @@ class VisualDocumentParser:
     ) -> None:
         """Initialize parser with dependency-injected model factory/adapter."""
 
-        self._factory = model_factory or ModelFactory()
+        self._model_factory = model_factory
+        self._ingest_model_builder = ingest_model_builder or create_ingest_model
+        self._ingest_fallback_model_builder = ingest_fallback_model_builder or create_ingest_fallback_model
         self._model = model
         self._max_retries = max_retries
         self._retry_delay_seconds = retry_delay_seconds
@@ -111,7 +115,7 @@ class VisualDocumentParser:
 
         image_payload = await self._resolve_image_payload(image_path=image_path, image_bytes=image_bytes)
         user_prompt = self._build_prompt(content_type=content_type, source_metadata=source_metadata)
-        model = self._model or self._factory.create_ingest_model()
+        model = self._model or self._build_ingest_model()
         model_escalated = False
 
         last_error: Exception | None = None
@@ -193,7 +197,7 @@ class VisualDocumentParser:
 
                 if not model_escalated and self._is_technical_parse_error(exc):
                     try:
-                        fallback_model = self._factory.create_ingest_fallback_model()
+                        fallback_model = self._build_ingest_fallback_model()
                     except Exception as fallback_exc:
                         fallback_model = None
                         logger.warning(
@@ -214,6 +218,16 @@ class VisualDocumentParser:
                     await asyncio.sleep(self._retry_delay_seconds)
 
         raise VisualParsingError(f"Visual parsing failed after {attempts_done} attempts: {last_error}")
+
+    def _build_ingest_model(self) -> BaseVLM:
+        if self._model_factory is not None:
+            return self._model_factory.create_ingest_model()
+        return self._ingest_model_builder()
+
+    def _build_ingest_fallback_model(self) -> BaseVLM | None:
+        if self._model_factory is not None:
+            return self._model_factory.create_ingest_fallback_model()
+        return self._ingest_fallback_model_builder()
 
     async def parse_task(self, task: Any, mime_type: str = "image/png") -> VisualParseResult:
         """Parse a routed ingestion task that points to a visual image path."""

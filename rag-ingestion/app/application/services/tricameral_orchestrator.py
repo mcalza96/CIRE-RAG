@@ -1,4 +1,5 @@
 import asyncio
+import re
 import time
 from enum import Enum
 from typing import Any, Optional
@@ -10,6 +11,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from app.application.services.query_decomposer import QueryDecomposer, QueryPlan
 from app.core.llm import get_llm
 from app.core.settings import settings
+from app.core.observability.scope_metrics import scope_metrics_store
 from app.domain.knowledge_schemas import (
     AgentRole,
     RAGSearchResult,
@@ -80,6 +82,65 @@ class TricameralOrchestrator:
         if intent.tenant_id:
             return {"type": "institutional", "tenant_id": intent.tenant_id}
         return {"type": "global"}
+
+    @staticmethod
+    def _extract_requested_scopes(intent: RetrievalIntent) -> tuple[str, ...]:
+        metadata = intent.metadata if isinstance(intent.metadata, dict) else {}
+        values: list[str] = []
+
+        raw = metadata.get("requested_scopes")
+        if isinstance(raw, list):
+            values.extend(str(v).strip() for v in raw if isinstance(v, str) and str(v).strip())
+
+        if not values:
+            seen: set[str] = set()
+            for match in re.findall(r"\biso\s*[-:]?\s*(\d{4,5})\b", intent.query or "", flags=re.IGNORECASE):
+                item = f"ISO {match}"
+                if item in seen:
+                    continue
+                seen.add(item)
+                values.append(item)
+
+        return tuple(dict.fromkeys(values))
+
+    @staticmethod
+    def _extract_item_scope(item: dict[str, Any]) -> str:
+        meta_raw = item.get("metadata")
+        metadata: dict[str, Any] = meta_raw if isinstance(meta_raw, dict) else {}
+        candidates = [
+            metadata.get("source_standard"),
+            metadata.get("standard"),
+            metadata.get("scope"),
+            metadata.get("norma"),
+            item.get("source_standard"),
+        ]
+        for value in candidates:
+            if isinstance(value, str) and value.strip():
+                return value.strip().upper()
+        return ""
+
+    def _apply_scope_penalty(self, items: list[dict[str, Any]], requested_scopes: tuple[str, ...]) -> list[dict[str, Any]]:
+        if not requested_scopes:
+            return items
+
+        requested_upper = {scope.upper() for scope in requested_scopes}
+        scored: list[dict[str, Any]] = []
+        for item in items:
+            row_scope = self._extract_item_scope(item)
+            if not row_scope or any(scope in row_scope for scope in requested_upper):
+                scored.append(item)
+                continue
+
+            patched = dict(item)
+            base = float(patched.get("score", patched.get("similarity", 0.0)) or 0.0)
+            penalized = max(base * 0.25, 0.0)
+            patched["scope_penalized"] = True
+            patched["scope_penalty"] = 0.75
+            patched["score"] = penalized
+            patched["similarity"] = penalized
+            scored.append(patched)
+
+        return scored
 
     async def _probe_specificity(self, intent: RetrievalIntent) -> int:
         tenant_uuid = self._tenant_uuid(intent.tenant_id)
@@ -265,6 +326,7 @@ class TricameralOrchestrator:
     async def orchestrate(self, intent: RetrievalIntent, k: int = 20) -> dict[str, Any]:
         total_start = time.perf_counter()
         retrieval_request_id = str((intent.metadata or {}).get("retrieval_request_id") or "")
+        requested_scopes = self._extract_requested_scopes(intent)
 
         scope_context = self._scope_from_intent(intent)
         planner_start = time.perf_counter()
@@ -373,6 +435,20 @@ class TricameralOrchestrator:
             vector_results = await self.vector_tools.retrieve(query=intent.query, scope_context=scope_context, k=max(k, 15))
 
         merged = self._dedupe_results(vector_results + graph_context_results + raptor_results)
+        if requested_scopes:
+            merged = self._apply_scope_penalty(merged, requested_scopes)
+            scope_penalized_count = sum(1 for item in merged if bool(item.get("scope_penalized")))
+            scope_metrics_store.record_rerank_penalized(
+                tenant_id=intent.tenant_id,
+                penalized_count=scope_penalized_count,
+                candidate_count=len(merged),
+            )
+            if settings.SCOPE_STRICT_FILTERING:
+                strict_filtered = [item for item in merged if not bool(item.get("scope_penalized"))]
+                if strict_filtered:
+                    merged = strict_filtered
+        else:
+            scope_penalized_count = 0
         logger.info(
             "retrieval_pipeline_timing",
             stage="tricameral_sources",
@@ -386,6 +462,8 @@ class TricameralOrchestrator:
                 "raptor": len(raptor_results),
                 "merged": len(merged),
             },
+            requested_scopes=list(requested_scopes),
+            scope_penalized_count=scope_penalized_count,
             fallback_triggered=fallback_triggered,
         )
 

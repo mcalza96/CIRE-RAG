@@ -1,7 +1,14 @@
 from app.domain.types.ingestion_status import IngestionStatus
-from app.domain.interfaces.ingestion_policy_interface import IIngestionPolicy, RetryAction
+from enum import Enum
+from typing import Optional, Dict, Any
 
-class IngestionPolicy(IIngestionPolicy):
+
+class RetryAction(Enum):
+    RETRY = "RETRY"
+    DEAD_LETTER = "DEAD_LETTER"
+
+
+class IngestionPolicy:
     """
     Domain Service that encapsulates the rules for when a document 
     should be picked up for processing by the ingestion pipeline.
@@ -16,7 +23,7 @@ class IngestionPolicy(IIngestionPolicy):
 
     MAX_RETRIES = 3
 
-    def should_process(self, status: str, meta_status: str, metadata: dict = None) -> bool:
+    def should_process(self, status: str, meta_status: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
         """
         Determines if a document should be processed based on its current status, 
         metadata status, and retry threshold.

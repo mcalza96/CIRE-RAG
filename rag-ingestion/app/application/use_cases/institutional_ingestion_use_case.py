@@ -1,14 +1,13 @@
 import logging
 import math
 from typing import Dict, Any, Optional
-from uuid import UUID
 
 from app.domain.types.ingestion_status import IngestionStatus
 
 logger = logging.getLogger(__name__)
 
 from app.infrastructure.repositories.supabase_source_repository import SupabaseSourceRepository
-from app.infrastructure.supabase.client import get_async_supabase_client
+from app.infrastructure.services.manual_ingestion_query_service import ManualIngestionQueryService
 import os
 from app.core.observability.correlation import get_correlation_id
 from app.services.database.taxonomy_manager import TaxonomyManager
@@ -25,20 +24,16 @@ class InstitutionalIngestionUseCase:
     def __init__(self):
         self.repo = SupabaseSourceRepository()
         self.taxonomy_manager = TaxonomyManager()
+        self.query_service = ManualIngestionQueryService()
 
     async def _get_pending_snapshot(self, tenant_id: str) -> Dict[str, Optional[int]]:
         max_pending = int(getattr(settings, "INGESTION_MAX_PENDING_PER_TENANT", 0) or 0)
         limit = max_pending + 1 if max_pending > 0 else 1000
-        client = await get_async_supabase_client()
-        response = (
-            await client.table("source_documents")
-            .select("id")
-            .eq("institution_id", str(tenant_id))
-            .in_("status", ["queued", "pending", "pending_ingestion", "processing", "processing_v2"])
-            .limit(limit)
-            .execute()
+        pending_count = await self.query_service.count_pending_documents(
+            tenant_id=str(tenant_id),
+            limit=limit,
+            statuses=["queued", "pending", "pending_ingestion", "processing", "processing_v2"],
         )
-        pending_count = len(response.data or [])
         docs_per_minute_per_worker = max(1, int(getattr(settings, "INGESTION_DOCS_PER_MINUTE_PER_WORKER", 2) or 2))
         worker_concurrency = max(1, int(getattr(settings, "WORKER_CONCURRENCY", 1) or 1))
         throughput_per_minute = docs_per_minute_per_worker * worker_concurrency
@@ -128,34 +123,14 @@ class InstitutionalIngestionUseCase:
                 merged_metadata["collection_name"] = collection.get("name")
 
             # 1.1 Ensure source_document exists without forcing invalid course_id FKs
-            client = await get_async_supabase_client()
-            upsert_payload = {
-                "id": str(document_id),
-                "filename": os.path.basename(file_path),
-                "status": IngestionStatus.QUEUED.value,
-                "metadata": merged_metadata,
-                "institution_id": str(tenant_id),
-            }
-            if collection_id:
-                upsert_payload["collection_id"] = str(collection_id)
-
-            course_id_raw = (metadata or {}).get("course_id")
-            if course_id_raw:
-                try:
-                    upsert_payload["course_id"] = str(UUID(str(course_id_raw)))
-                except Exception:
-                    logger.warning(f"Ignoring invalid course_id in institutional metadata: {course_id_raw}")
-
-            try:
-                await client.table("source_documents").upsert(upsert_payload).execute()
-            except Exception as e:
-                # Defensive retry if a provided course_id breaks FK
-                if "source_documents_course_id_fkey" in str(e) and "course_id" in upsert_payload:
-                    logger.warning("course_id FK failed; retrying source_document upsert without course_id")
-                    upsert_payload.pop("course_id", None)
-                    await client.table("source_documents").upsert(upsert_payload).execute()
-                else:
-                    raise
+            await self.query_service.upsert_source_document(
+                document_id=str(document_id),
+                filename=os.path.basename(file_path),
+                tenant_id=str(tenant_id),
+                metadata=merged_metadata,
+                collection_id=str(collection_id) if collection_id else None,
+                course_id=str((metadata or {}).get("course_id")) if (metadata or {}).get("course_id") else None,
+            )
 
             logger.info(
                 "Routing institutional ingest via worker strategy %s (ext=%s tenant=%s)",

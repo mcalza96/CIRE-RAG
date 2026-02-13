@@ -30,6 +30,9 @@ class AtomicRetrievalEngine:
         scope_context: dict[str, Any] | None = None,
         k: int = 10,
         fetch_k: int = 40,
+        graph_filter_relation_types: list[str] | None = None,
+        graph_filter_node_types: list[str] | None = None,
+        graph_max_hops: int | None = None,
     ) -> list[dict[str, Any]]:
         if not query.strip():
             return []
@@ -52,7 +55,14 @@ class AtomicRetrievalEngine:
             fts_ms = round((time.perf_counter() - fts_start) * 1000, 2)
 
         fused = self._fuse_rrf(vector_rows=vector_rows, fts_rows=fts_rows, k=max(fetch_k, k))
-        graph_rows = await self._graph_hop(query_vector=query_vector, scope_context=scope_context or {}, fetch_k=fetch_k)
+        graph_rows = await self._graph_hop(
+            query_vector=query_vector,
+            scope_context=scope_context or {},
+            fetch_k=fetch_k,
+            graph_filter_relation_types=graph_filter_relation_types,
+            graph_filter_node_types=graph_filter_node_types,
+            graph_max_hops=graph_max_hops,
+        )
 
         merged = self._dedupe_by_id(fused + graph_rows)
         logger.info(
@@ -84,14 +94,47 @@ class AtomicRetrievalEngine:
         if plan.execution_mode == "sequential":
             merged: list[dict[str, Any]] = []
             for sq in plan.sub_queries:
-                rows = await self.retrieve_context(query=sq.query, scope_context=scope_context, k=max(k, 12), fetch_k=fetch_k)
+                rows = await self.retrieve_context(
+                    query=sq.query,
+                    scope_context=scope_context,
+                    k=max(k, 12),
+                    fetch_k=fetch_k,
+                    graph_filter_relation_types=sq.target_relations,
+                    graph_filter_node_types=sq.target_node_types,
+                    graph_max_hops=2 if sq.is_deep else 1,
+                )
                 merged.extend(rows)
+            safety = await self.retrieve_context(
+                query=query,
+                scope_context=scope_context,
+                k=max(k, 12),
+                fetch_k=fetch_k,
+                graph_max_hops=0,
+            )
+            merged.extend(safety)
             return self._dedupe_by_id(merged)[:k]
 
         tasks = [
-            self.retrieve_context(query=sq.query, scope_context=scope_context, k=max(k, 12), fetch_k=fetch_k)
+            self.retrieve_context(
+                query=sq.query,
+                scope_context=scope_context,
+                k=max(k, 12),
+                fetch_k=fetch_k,
+                graph_filter_relation_types=sq.target_relations,
+                graph_filter_node_types=sq.target_node_types,
+                graph_max_hops=2 if sq.is_deep else 1,
+            )
             for sq in plan.sub_queries
         ]
+        tasks.append(
+            self.retrieve_context(
+                query=query,
+                scope_context=scope_context,
+                k=max(k, 12),
+                fetch_k=fetch_k,
+                graph_max_hops=0,
+            )
+        )
         responses = await asyncio.gather(*tasks, return_exceptions=True)
         merged: list[dict[str, Any]] = []
         for payload in responses:
@@ -163,7 +206,15 @@ class AtomicRetrievalEngine:
             )
         return normalized
 
-    async def _graph_hop(self, query_vector: list[float], scope_context: dict[str, Any], fetch_k: int) -> list[dict[str, Any]]:
+    async def _graph_hop(
+        self,
+        query_vector: list[float],
+        scope_context: dict[str, Any],
+        fetch_k: int,
+        graph_filter_relation_types: list[str] | None = None,
+        graph_filter_node_types: list[str] | None = None,
+        graph_max_hops: int | None = None,
+    ) -> list[dict[str, Any]]:
         if not settings.ATOMIC_ENABLE_GRAPH_HOP:
             return []
 
@@ -177,19 +228,20 @@ class AtomicRetrievalEngine:
             return []
 
         try:
-            node_types = scope_context.get("graph_filter_node_types")
-            relation_types = scope_context.get("graph_filter_relation_types")
+            node_types = graph_filter_node_types or scope_context.get("graph_filter_node_types")
+            relation_types = graph_filter_relation_types or scope_context.get("graph_filter_relation_types")
             if not isinstance(node_types, list):
                 node_types = None
             if not isinstance(relation_types, list):
                 relation_types = None
+            hops = graph_max_hops if isinstance(graph_max_hops, int) else 2
 
             rows = await self._graph_repo.search_multi_hop_context(
                 tenant_id=tenant_uuid,
                 query_vector=query_vector,
                 match_threshold=min(settings.ATOMIC_MATCH_THRESHOLD, 0.35),
                 limit_count=max(min(fetch_k, 12), 6),
-                max_hops=2,
+                max_hops=max(0, hops),
                 decay_factor=0.82,
                 filter_node_types=node_types,
                 filter_relation_types=relation_types,
@@ -278,6 +330,8 @@ class AtomicRetrievalEngine:
                     if isinstance(value, str) and value.strip():
                         row_scope = value.strip().lower()
                         break
+                if settings.SCOPE_STRICT_FILTERING and not row_scope:
+                    continue
                 if row_scope and not any(target in row_scope for target in source_standards):
                     continue
 

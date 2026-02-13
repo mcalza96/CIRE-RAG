@@ -1,81 +1,84 @@
-"""Factory for provider-agnostic model adapter creation."""
+"""Provider selection helpers for VLM adapters."""
 
 from __future__ import annotations
+
+from typing import Callable
 
 from app.core.config.model_config import ModelSettings, ProviderName, get_model_settings
 from app.core.models.interfaces import BaseVLM
 from app.core.models.providers.gemini import GeminiAdapter
 from app.core.models.providers.openai import OpenAIAdapter
 
+ModelBuilder = Callable[[ModelSettings, str, float], BaseVLM]
 
-class ModelFactory:
-    """Create concrete adapters from validated configuration."""
 
-    def __init__(self, settings: ModelSettings | None = None) -> None:
-        """Initialize the factory with dependency-injected settings."""
+def _build_google(settings: ModelSettings, model_name: str, temperature: float) -> BaseVLM:
+    if not settings.google_api_key:
+        raise ValueError("Missing GEMINI_API_KEY/GOOGLE_GENERATIVE_AI_API_KEY for google provider.")
+    return GeminiAdapter(model_name=model_name, api_key=settings.google_api_key, temperature=temperature)
 
-        self._settings = settings or get_model_settings()
 
-    def create_ingest_model(self) -> BaseVLM:
-        """Create the ingestion-time visual model adapter."""
+def _build_openai(settings: ModelSettings, model_name: str, temperature: float) -> BaseVLM:
+    if not settings.openai_api_key:
+        raise ValueError("Missing OPENAI_API_KEY for openai provider.")
+    return OpenAIAdapter(model_name=model_name, api_key=settings.openai_api_key, temperature=temperature)
 
-        return self._create_model(
-            provider=self._settings.resolved_ingest_provider,
-            model_name=self._settings.resolved_ingest_model_name,
-            temperature=self._settings.resolved_ingest_temperature,
-        )
 
-    def create_chat_model(self) -> BaseVLM:
-        """Create the chat-time reasoning model adapter."""
+def _build_local(_: ModelSettings, __: str, ___: float) -> BaseVLM:
+    raise NotImplementedError(
+        "Local provider selected but no local adapter is implemented yet. "
+        "Add app/core/models/providers/local.py and wire it in model provider registry."
+    )
 
-        return self._create_model(
-            provider=self._settings.resolved_chat_provider,
-            model_name=self._settings.resolved_chat_model_name,
-            temperature=self._settings.resolved_chat_temperature,
-        )
 
-    def create_ingest_fallback_model(self) -> BaseVLM | None:
-        """Create optional ingestion fallback model adapter."""
+MODEL_BUILDERS: dict[ProviderName, ModelBuilder] = {
+    ProviderName.GOOGLE: _build_google,
+    ProviderName.OPENAI: _build_openai,
+    ProviderName.LOCAL: _build_local,
+}
 
-        fallback_name = self._settings.resolved_ingest_fallback_model_name
-        if not fallback_name:
-            return None
 
-        return self._create_model(
-            provider=self._settings.resolved_ingest_provider,
-            model_name=fallback_name,
-            temperature=self._settings.resolved_ingest_temperature,
-        )
-
-    def _create_model(self, provider: ProviderName, model_name: str, temperature: float) -> BaseVLM:
-        """Build the concrete adapter for the requested provider."""
-
-        if provider == ProviderName.GOOGLE:
-            if not self._settings.google_api_key:
-                raise ValueError("Missing GEMINI_API_KEY/GOOGLE_GENERATIVE_AI_API_KEY for google provider.")
-            return GeminiAdapter(model_name=model_name, api_key=self._settings.google_api_key, temperature=temperature)
-
-        if provider == ProviderName.OPENAI:
-            if not self._settings.openai_api_key:
-                raise ValueError("Missing OPENAI_API_KEY for openai provider.")
-            return OpenAIAdapter(model_name=model_name, api_key=self._settings.openai_api_key, temperature=temperature)
-
-        if provider == ProviderName.LOCAL:
-            raise NotImplementedError(
-                "Local provider selected but no local adapter is implemented yet. "
-                "Add app/core/models/providers/local.py and wire it in ModelFactory."
-            )
-
+def create_model(
+    provider: ProviderName,
+    model_name: str,
+    temperature: float,
+    settings: ModelSettings | None = None,
+) -> BaseVLM:
+    resolved_settings = settings or get_model_settings()
+    builder = MODEL_BUILDERS.get(provider)
+    if builder is None:
         raise ValueError(f"Unsupported provider: {provider}")
+    return builder(resolved_settings, model_name, temperature)
 
 
 def create_ingest_model(settings: ModelSettings | None = None) -> BaseVLM:
-    """Convenience function for DI containers and direct usage."""
-
-    return ModelFactory(settings=settings).create_ingest_model()
+    resolved_settings = settings or get_model_settings()
+    return create_model(
+        provider=resolved_settings.resolved_ingest_provider,
+        model_name=resolved_settings.resolved_ingest_model_name,
+        temperature=resolved_settings.resolved_ingest_temperature,
+        settings=resolved_settings,
+    )
 
 
 def create_chat_model(settings: ModelSettings | None = None) -> BaseVLM:
-    """Convenience function for DI containers and direct usage."""
+    resolved_settings = settings or get_model_settings()
+    return create_model(
+        provider=resolved_settings.resolved_chat_provider,
+        model_name=resolved_settings.resolved_chat_model_name,
+        temperature=resolved_settings.resolved_chat_temperature,
+        settings=resolved_settings,
+    )
 
-    return ModelFactory(settings=settings).create_chat_model()
+
+def create_ingest_fallback_model(settings: ModelSettings | None = None) -> BaseVLM | None:
+    resolved_settings = settings or get_model_settings()
+    fallback_name = resolved_settings.resolved_ingest_fallback_model_name
+    if not fallback_name:
+        return None
+    return create_model(
+        provider=resolved_settings.resolved_ingest_provider,
+        model_name=fallback_name,
+        temperature=resolved_settings.resolved_ingest_temperature,
+        settings=resolved_settings,
+    )

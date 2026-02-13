@@ -57,3 +57,20 @@
 - Logs estructurados con `structlog`.
 - Correlation ID propagado por middleware.
 - Hooks de metricas/forensics en `app/core/observability`.
+
+## Guia de contratos (interfaces y Protocol)
+
+Usar contratos solo cuando bajan complejidad total. Regla general: en Python priorizar simplicidad y duck typing.
+
+- Crear contrato nuevo solo si hay 2+ implementaciones reales o un cambio de proveedor esperado en el corto plazo.
+- Mantener fronteras explicitas para dependencias externas caras: DB, LLM, embeddings, red.
+- Para colaboraciones internas con una sola implementacion, preferir clase concreta y evitar archivos de interfaz 1:1.
+- Preferir `Protocol` sobre `ABC` cuando solo se necesita contrato de tipos (sin comportamiento compartido).
+- Si una interfaz no tiene consumidores activos o no aporta seam de test real, eliminarla.
+
+Checklist rapido para PRs:
+
+1. Esta abstraccion reduce acoplamiento real o solo agrega wiring?
+2. Existe al menos una segunda implementacion plausible y cercana?
+3. Que test o escenario quedaria mas dificil sin este contrato?
+4. El costo cognitivo (archivos/imports/saltos) esta justificado?

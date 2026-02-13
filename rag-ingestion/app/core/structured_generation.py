@@ -17,7 +17,7 @@ from pydantic import BaseModel, RootModel
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.domain.interfaces.llm import IStructuredEngine
-from app.infrastructure.ai.instructor_factory import InstructorClientFactory
+from app.infrastructure.ai.instructor_factory import create_async_instructor_client, create_instructor_client
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +59,9 @@ class StrictEngine(IStructuredEngine):
             self._async_client = None
         else:
             # Note: This fallback is for convenience, but DI is preferred.
-            self._client, self._model = InstructorClientFactory.create_client()
+            self._client, self._model = create_instructor_client()
             try:
-                self._async_client, _ = InstructorClientFactory.create_async_client()
+                self._async_client, _ = create_async_instructor_client()
             except Exception:
                 self._async_client = None
     

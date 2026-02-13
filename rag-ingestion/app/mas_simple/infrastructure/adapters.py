@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from app.core.settings import settings
 from app.core.tools.retrieval import RetrievalTools
 from app.mas_simple.domain.models import AnswerDraft, EvidenceItem, RetrievalPlan, ValidationResult
 from app.mas_simple.domain.policies import extract_requested_standards
@@ -116,7 +117,9 @@ class RetrievalToolsAdapter:
             ]
 
         filtered_by_scope = [r for r in rows if _row_matches_standards(r, requested_standards)]
-        if strict_scope and filtered_by_scope:
+        if strict_scope and settings.SCOPE_STRICT_FILTERING:
+            rows = filtered_by_scope
+        elif strict_scope and filtered_by_scope:
             rows = filtered_by_scope
         elif not strict_scope:
             rows = filtered_by_scope or rows
@@ -173,7 +176,9 @@ class RetrievalToolsAdapter:
             rows = filtered
 
         filtered_by_scope = [r for r in rows if _row_matches_standards(r, requested_standards)]
-        if strict_scope and filtered_by_scope:
+        if strict_scope and settings.SCOPE_STRICT_FILTERING:
+            rows = filtered_by_scope
+        elif strict_scope and filtered_by_scope:
             rows = filtered_by_scope
         elif not strict_scope:
             rows = filtered_by_scope or rows

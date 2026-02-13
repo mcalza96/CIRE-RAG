@@ -84,6 +84,7 @@ class Settings(BaseSettings):
     QUERY_DECOMPOSER_ENABLED: bool = True
     QUERY_DECOMPOSER_TIMEOUT_MS: int = 800
     RETRIEVAL_ENGINE_MODE: str = "atomic"  # unified | atomic | hybrid
+    SCOPE_STRICT_FILTERING: bool = False
     ATOMIC_ENABLE_FTS: bool = True
     ATOMIC_ENABLE_GRAPH_HOP: bool = True
     ATOMIC_MATCH_THRESHOLD: float = 0.25

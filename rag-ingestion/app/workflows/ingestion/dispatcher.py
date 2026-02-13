@@ -4,13 +4,12 @@ from typing import Dict, Any, Type, Optional
 from app.schemas.ingestion import IngestionMetadata, IngestionType
 from app.workflows.ingestion.strategies import IngestionResult, IngestionStrategy
 from app.domain.models.ingestion_source import IngestionSource
-from app.domain.interfaces.ingestion_dispatcher_interface import IIngestionDispatcher
 from app.core.registry import registry
 
 
 logger = structlog.get_logger(__name__)
 
-class IngestionDispatcher(IIngestionDispatcher):
+class IngestionDispatcher:
     """
     Traffic controller for file ingestion.
     Decides which strategy to use (OCP). Pure transformation (SRP).
