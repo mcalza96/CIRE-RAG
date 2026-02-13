@@ -104,6 +104,8 @@ Contexto conversacional en chat:
 
 - El motor atomico puede usar RPC unificada `retrieve_hybrid_optimized` para ejecutar vector + FTS + RRF en una sola llamada SQL.
 - Control por flag `ATOMIC_USE_HYBRID_RPC=true` (fallback automatico a primitives si la RPC falla).
+- Ajuste fino HNSW por consulta: `ATOMIC_HNSW_EF_SEARCH`.
+- Control de latencia de reranking: `RERANK_MAX_CANDIDATES`.
 
 ## Mapa de migracion (legacy -> v1)
 

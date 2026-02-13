@@ -123,6 +123,7 @@ class AtomicRetrievalEngine:
                 "rrf_k": settings.ATOMIC_RRF_K,
                 "vector_weight": settings.ATOMIC_RRF_VECTOR_WEIGHT,
                 "fts_weight": settings.ATOMIC_RRF_FTS_WEIGHT,
+                "hnsw_ef_search": max(10, int(settings.ATOMIC_HNSW_EF_SEARCH or 80)),
             },
         ).execute()
         rows = response.data if isinstance(response.data, list) else []

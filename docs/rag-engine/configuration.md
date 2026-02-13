@@ -45,6 +45,8 @@ Flags de pipeline cloud/local:
 - `RERANK_MODE` (`local` | `jina` | `hybrid`)
 - `AUTHORITY_CLASSIFIER_MODE` (`rules` | `embedding_first`)
 - `ATOMIC_USE_HYBRID_RPC` (`true` | `false`; usa RPC SQL unificada para vector + FTS + RRF)
+- `ATOMIC_HNSW_EF_SEARCH` (precision/latencia en HNSW; default `80`)
+- `RERANK_MAX_CANDIDATES` (tope de candidatos enviados a reranker; default `10`)
 
 ## Puertos y ejecucion
 

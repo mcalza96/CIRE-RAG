@@ -328,23 +328,26 @@ class RetrievalBroker:
             use_local = rerank_mode in {"local", "hybrid"}
 
             if use_jina and self.jina_reranker.is_enabled() and results:
-                docs = [str(item.get("content") or "") for item in results]
+                max_candidates = max(1, int(settings.RERANK_MAX_CANDIDATES or 10))
+                rerank_candidates = results[: max_candidates]
+                docs = [str(item.get("content") or "") for item in rerank_candidates]
                 rows = await self.jina_reranker.rerank_documents(
                     query=query,
                     documents=docs,
-                    top_n=max(k, min(len(results), 40)),
+                    top_n=max(1, min(k, len(rerank_candidates))),
                 )
                 if rows:
                     reordered: list[Dict[str, Any]] = []
                     for row in rows:
                         idx = row.get("index")
-                        if not isinstance(idx, int) or idx < 0 or idx >= len(results):
+                        if not isinstance(idx, int) or idx < 0 or idx >= len(rerank_candidates):
                             continue
-                        source = dict(results[idx])
+                        source = dict(rerank_candidates[idx])
                         source["jina_relevance_score"] = float(row.get("relevance_score") or 0.0)
                         reordered.append(source)
                     if reordered:
-                        semantic_ranked = reordered
+                        remainder = results[len(rerank_candidates) :]
+                        semantic_ranked = reordered + remainder
 
             if requested_scopes:
                 semantic_ranked = self._apply_scope_penalty(semantic_ranked, requested_scopes)

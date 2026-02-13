@@ -98,6 +98,7 @@ class Settings(BaseSettings):
     ATOMIC_ENABLE_GRAPH_HOP: bool = True
     ATOMIC_USE_HYBRID_RPC: bool = True
     ATOMIC_MATCH_THRESHOLD: float = 0.25
+    ATOMIC_HNSW_EF_SEARCH: int = 80
     ATOMIC_RRF_VECTOR_WEIGHT: float = 0.7
     ATOMIC_RRF_FTS_WEIGHT: float = 0.3
     ATOMIC_RRF_K: int = 60
@@ -108,6 +109,7 @@ class Settings(BaseSettings):
     INGEST_PARSER_MODE: str = "local"  # local | cloud
     JINA_READER_URL_TEMPLATE: Optional[str] = None  # e.g. https://r.jina.ai/http://host/{path}
     RERANK_MODE: str = "hybrid"  # local | jina | hybrid
+    RERANK_MAX_CANDIDATES: int = 10
     AUTHORITY_CLASSIFIER_MODE: str = "rules"  # rules | embedding_first
 
     # Visual router

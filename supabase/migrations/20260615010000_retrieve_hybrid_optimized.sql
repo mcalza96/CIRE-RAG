@@ -9,7 +9,8 @@ CREATE OR REPLACE FUNCTION public.retrieve_hybrid_optimized(
   match_count integer DEFAULT 40,
   rrf_k integer DEFAULT 60,
   vector_weight double precision DEFAULT 0.7,
-  fts_weight double precision DEFAULT 0.3
+  fts_weight double precision DEFAULT 0.3,
+  hnsw_ef_search integer DEFAULT 80
 )
 RETURNS TABLE(
   id uuid,
@@ -24,7 +25,10 @@ LANGUAGE sql
 SECURITY DEFINER
 SET search_path TO 'public', 'extensions'
 AS $$
-WITH vector_hits AS (
+WITH _cfg AS (
+  SELECT set_config('hnsw.ef_search', GREATEST(hnsw_ef_search, 10)::text, true)
+),
+vector_hits AS (
   SELECT
     cc.id,
     cc.content,
