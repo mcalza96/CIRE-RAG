@@ -42,22 +42,29 @@ async def require_service_auth(
     Accepts either Bearer token or X-Service-Secret using RAG_SERVICE_SECRET value.
     """
     expected = str(settings.RAG_SERVICE_SECRET or "").strip()
+    env_inconsistent = (expected and expected != "development-secret") and (
+        settings.RUNNING_IN_DOCKER
+        or bool(settings.APP_ENV in {"staging", "production", "prod"})
+        or bool(settings.ENVIRONMENT in {"staging", "production", "prod"})
+    )
     if not settings.is_deployed_environment:
         logger.info(
             "service_auth_bypass",
             auth_mode="local_bypass",
             service_secret_configured=bool(expected and expected != "development-secret"),
         )
-        if (expected and expected != "development-secret") and (
-            settings.RUNNING_IN_DOCKER
-            or bool(settings.APP_ENV in {"staging", "production", "prod"})
-            or bool(settings.ENVIRONMENT in {"staging", "production", "prod"})
-        ):
+        if env_inconsistent:
             logger.critical(
                 "service_auth_env_inconsistent",
                 app_env=settings.APP_ENV,
                 environment=settings.ENVIRONMENT,
                 running_in_docker=settings.RUNNING_IN_DOCKER,
+            )
+            raise ApiError(
+                status_code=500,
+                code="AUTH_ENV_INCONSISTENT",
+                message="Invalid auth environment configuration",
+                details="Auth bypass active while runtime signals non-local deployment",
             )
         return
 

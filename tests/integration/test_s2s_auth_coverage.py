@@ -86,6 +86,26 @@ def test_ingestion_embed_requires_service_auth_in_deployed() -> None:
         _restore(original)
 
 
+def test_auth_bypass_fails_closed_when_env_is_inconsistent() -> None:
+    original = (settings.APP_ENV, settings.ENVIRONMENT, settings.RUNNING_IN_DOCKER, settings.RAG_SERVICE_SECRET)
+    settings.APP_ENV = "local"
+    settings.ENVIRONMENT = "development"
+    settings.RUNNING_IN_DOCKER = True
+    settings.RAG_SERVICE_SECRET = "topsecret"
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/retrieval/chunks",
+                headers={"X-Tenant-ID": "tenant-demo"},
+                json={"query": "q", "tenant_id": "tenant-demo"},
+            )
+        assert response.status_code == 500
+        assert response.json()["error"]["code"] == "AUTH_ENV_INCONSISTENT"
+    finally:
+        _restore(original)
+
+
 def test_retrieval_chunks_returns_security_isolation_breach_on_canary_detection(monkeypatch) -> None:
     original = _set_deployed()
     monkeypatch.setattr(CognitiveContainer, "get_instance", classmethod(lambda cls: _FakeContainer()))
