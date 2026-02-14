@@ -138,6 +138,7 @@ def _stub_heavy_modules_for_worker() -> None:
 
     fake_correlation = types.ModuleType("app.core.observability.correlation")
     fake_correlation.set_correlation_id = lambda *_args, **_kwargs: None
+    fake_correlation.get_correlation_id = lambda *_args, **_kwargs: "test-correlation"
     sys.modules.setdefault("app.core.observability.correlation", fake_correlation)
 
     fake_logger_config = types.ModuleType("app.core.observability.logger_config")
@@ -232,7 +233,7 @@ async def test_worker_inline_fallback_when_visual_integration_raises(monkeypatch
 
     import app.application.use_cases.process_document_worker_use_case as worker_module
 
-    monkeypatch.setattr(worker_module, "get_async_supabase_client", _fake_get_client)
+    monkeypatch.setattr("app.application.services.visual_anchor_service.get_async_supabase_client", _fake_get_client)
 
     use_case = ProcessDocumentWorkerUseCase(
         repository=_Dummy(),
@@ -311,7 +312,7 @@ async def test_worker_inline_fallback_when_visual_parse_raises(monkeypatch) -> N
 
     import app.application.use_cases.process_document_worker_use_case as worker_module
 
-    monkeypatch.setattr(worker_module, "get_async_supabase_client", _fake_get_client)
+    monkeypatch.setattr("app.application.services.visual_anchor_service.get_async_supabase_client", _fake_get_client)
 
     use_case = ProcessDocumentWorkerUseCase(
         repository=_Dummy(),

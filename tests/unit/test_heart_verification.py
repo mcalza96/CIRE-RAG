@@ -47,6 +47,10 @@ def _noop_cache_decorator(func):
 
 def _fresh_parser_class():
     """Force-reimport VisualDocumentParser to pick up fresh env vars and patches."""
+    # Force reload settings to avoid singleton stale state
+    import app.core.settings as core_settings
+    importlib.reload(core_settings)
+
     # Patch the cache decorator to a no-op BEFORE reloading the module
     import app.core.caching.middleware as cm
     original_decorator = cm.cached_extraction

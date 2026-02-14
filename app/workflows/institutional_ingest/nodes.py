@@ -25,7 +25,38 @@ class SecurityContextError(Exception):
 
 # Initialize Models
 chunker = JinaEmbeddingService.get_instance()
-PARSE_WINDOW_CONCURRENCY = max(1, min(10, int(getattr(settings, "WORKER_PER_TENANT_CONCURRENCY", 5))))
+PARSE_WINDOW_CONCURRENCY = max(1, min(10, int(getattr(settings, "PARSER_WINDOW_CONCURRENCY", 5))))
+PARSE_WINDOW_MAX_RETRIES = max(0, int(getattr(settings, "PARSER_WINDOW_MAX_RETRIES", 2)))
+PARSE_WINDOW_RETRY_BASE_DELAY_SECONDS = max(
+    0.1, float(getattr(settings, "PARSER_WINDOW_RETRY_BASE_DELAY_SECONDS", 0.75))
+)
+
+
+def _extract_status_code(exc: Exception) -> int | None:
+    for attr_name in ("status_code", "status", "http_status"):
+        value = getattr(exc, attr_name, None)
+        if isinstance(value, int):
+            return value
+    response = getattr(exc, "response", None)
+    code = getattr(response, "status_code", None)
+    return int(code) if isinstance(code, int) else None
+
+
+def _is_retryable_parse_error(exc: Exception) -> bool:
+    status_code = _extract_status_code(exc)
+    if status_code in {429, 500, 502, 503, 504}:
+        return True
+    message = str(exc).lower()
+    retryable_markers = (
+        "too many requests",
+        "rate limit",
+        "timeout",
+        "timed out",
+        "temporarily unavailable",
+        "connection reset",
+        "connection aborted",
+    )
+    return any(marker in message for marker in retryable_markers)
 
 # --- NODES ---
 
@@ -86,20 +117,31 @@ async def parse_node(state: InstitutionalState):
 
         async def _process_window(i: int, window: str) -> str:
             user_content = f"CONTENIDO A ESTRUCTURAR (parte {i+1}/{len(windows)}):\n\n{window}"
-
-            # Parallel parsing with bounded concurrency to avoid rate/memory spikes.
-            async with semaphore:
+            total_attempts = PARSE_WINDOW_MAX_RETRIES + 1
+            for attempt in range(1, total_attempts + 1):
                 try:
-                    response = await llm.ainvoke([
-                        SystemMessage(content=system_prompt),
-                        HumanMessage(content=user_content)
-                    ])
+                    # Parallel parsing with bounded concurrency to avoid rate/memory spikes.
+                    async with semaphore:
+                        response = await llm.ainvoke([
+                            SystemMessage(content=system_prompt),
+                            HumanMessage(content=user_content)
+                        ])
+                    return str(response.content)
                 except Exception as exc:
-                    raise RuntimeError(
-                        f"Window parsing failed at part {i+1}/{len(windows)}: {str(exc)}"
-                    ) from exc
+                    should_retry = _is_retryable_parse_error(exc) and attempt < total_attempts
+                    if not should_retry:
+                        raise RuntimeError(
+                            f"Window parsing failed at part {i+1}/{len(windows)}: {str(exc)}"
+                        ) from exc
 
-            return str(response.content)
+                    backoff_seconds = PARSE_WINDOW_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+                    print(
+                        f"    Retry parte {i+1}/{len(windows)} intento {attempt + 1}/{total_attempts} "
+                        f"en {backoff_seconds:.2f}s"
+                    )
+                    await asyncio.sleep(backoff_seconds)
+
+            raise RuntimeError(f"Window parsing failed at part {i+1}/{len(windows)}: max retries exceeded")
 
         tasks = [_process_window(i, window) for i, window in enumerate(windows)]
         # gather preserves order of input tasks, so document coherence is retained.
