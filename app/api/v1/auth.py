@@ -42,7 +42,7 @@ async def require_service_auth(
     Accepts either Bearer token or X-Service-Secret using RAG_SERVICE_SECRET value.
     """
     expected = str(settings.RAG_SERVICE_SECRET or "").strip()
-    env_inconsistent = (expected and expected != "development-secret") and (
+    env_inconsistent = (
         settings.RUNNING_IN_DOCKER
         or bool(settings.APP_ENV in {"staging", "production", "prod"})
         or bool(settings.ENVIRONMENT in {"staging", "production", "prod"})
