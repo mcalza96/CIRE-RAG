@@ -2,10 +2,12 @@
 Nodes for the Institutional Ingest Graph.
 Implements Ingest -> Parse -> Embed -> Index pipeline with Strict Tenant Isolation.
 """
+import asyncio
 import os
 import fitz  # PyMuPDF
 from dotenv import load_dotenv
 from app.core.llm import get_llm
+from app.core.settings import settings
 
 # Initialize Models
 from app.services.embedding_service import JinaEmbeddingService
@@ -23,6 +25,7 @@ class SecurityContextError(Exception):
 
 # Initialize Models
 chunker = JinaEmbeddingService.get_instance()
+PARSE_WINDOW_CONCURRENCY = max(1, min(10, int(getattr(settings, "WORKER_PER_TENANT_CONCURRENCY", 5))))
 
 # --- NODES ---
 
@@ -78,17 +81,30 @@ async def parse_node(state: InstitutionalState):
         print(f"    Map-reduce: {len(windows)} windows for {len(raw_text)} chars")
 
     try:
-        parsed_parts = []
-        for i, window in enumerate(windows):
+        semaphore = asyncio.Semaphore(PARSE_WINDOW_CONCURRENCY)
+        llm = get_llm(temperature=0)
+
+        async def _process_window(i: int, window: str) -> str:
             user_content = f"CONTENIDO A ESTRUCTURAR (parte {i+1}/{len(windows)}):\n\n{window}"
-            
-            # Use ainvoke() to avoid blocking the event loop
-            response = await get_llm(temperature=0).ainvoke([
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=user_content)
-            ])
-            parsed_parts.append(response.content)
-        
+
+            # Parallel parsing with bounded concurrency to avoid rate/memory spikes.
+            async with semaphore:
+                try:
+                    response = await llm.ainvoke([
+                        SystemMessage(content=system_prompt),
+                        HumanMessage(content=user_content)
+                    ])
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Window parsing failed at part {i+1}/{len(windows)}: {str(exc)}"
+                    ) from exc
+
+            return str(response.content)
+
+        tasks = [_process_window(i, window) for i, window in enumerate(windows)]
+        # gather preserves order of input tasks, so document coherence is retained.
+        parsed_parts = await asyncio.gather(*tasks)
+
         # Reduce: concatenate all parsed parts
         full_parsed = "\n\n".join(parsed_parts)
         return {"parsed_content": full_parsed}
