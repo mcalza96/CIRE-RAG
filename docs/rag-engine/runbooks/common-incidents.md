@@ -43,11 +43,12 @@ Pasos:
 
 Sintoma:
 
-- `POST /api/v1/knowledge/retrieve` retorna poco contexto o vacio.
+- `POST /api/v1/chat/completions` retorna poco contexto o vacio.
 
 Pasos:
 
 1. Confirmar que tenant/documentos existen en BD.
 2. Revisar que ingestion previa haya finalizado correctamente.
 3. Validar proveedor de embeddings (`JINA_MODE`, `JINA_API_KEY` si aplica).
-4. Ejecutar pruebas unit/integration del modulo de retrieval.
+4. Validar con `POST /api/v1/debug/retrieval/chunks` para inspeccionar evidencia recuperada.
+5. Ejecutar pruebas unit/integration del modulo de retrieval.

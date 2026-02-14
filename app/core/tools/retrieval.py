@@ -39,7 +39,18 @@ class RetrievalTools(dspy.Retrieve):
         results = await self.retrieve(query=query, scope_context=scope, k=k or self.k)
         return [r["content"] for r in results]
 
-    async def retrieve(self, query: str, scope_context: Dict[str, Any], k: int = retrieval_settings.TOP_K, fetch_k: int = 50, enable_reranking: bool = True) -> List[Dict[str, Any]]:
+    async def retrieve(
+        self,
+        query: str,
+        scope_context: Dict[str, Any],
+        k: int = retrieval_settings.TOP_K,
+        fetch_k: int = 50,
+        enable_reranking: bool = True,
+        return_trace: bool = False,
+        graph_filter_relation_types: Optional[list[str]] = None,
+        graph_filter_node_types: Optional[list[str]] = None,
+        graph_max_hops: Optional[int] = None,
+    ) -> Any:
         """
         Delegates to RetrievalBroker.
         """
@@ -48,7 +59,11 @@ class RetrievalTools(dspy.Retrieve):
             scope_context=scope_context,
             k=k,
             fetch_k=fetch_k,
-            enable_reranking=enable_reranking
+            enable_reranking=enable_reranking,
+            return_trace=return_trace,
+            graph_filter_relation_types=graph_filter_relation_types,
+            graph_filter_node_types=graph_filter_node_types,
+            graph_max_hops=graph_max_hops,
         )
 
     async def retrieve_summaries(

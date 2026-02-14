@@ -138,24 +138,35 @@ class RetrievalBroker:
         fetch_k: int = 50,
         enable_reranking: bool = True,
         iterative: bool = False,
+        return_trace: bool = False,
         **strategy_kwargs
-    ) -> List[Dict[str, Any]]:
+    ) -> List[Dict[str, Any]] | Dict[str, Any]:
         """
         Main entry point for retrieval orchestration.
         """
         if not query:
-            return []
+            return {"items": [], "trace": {"timings_ms": {"total": 0.0}}} if return_trace else []
 
         # 1. Scope & Filter Resolution
         filter_conditions = self._resolve_filters(query, scope_context)
+        trace_payload: Dict[str, Any] = {
+            "filters_applied": dict(filter_conditions),
+            "engine_mode": self._engine_mode(),
+            "planner_used": False,
+            "planner_multihop": False,
+            "fallback_used": False,
+            "timings_ms": {},
+        }
+        total_started = time.perf_counter()
         
         try:
+            retrieval_started = time.perf_counter()
             # 2. Strategy Selection & Execution
             if iterative:
                 engine = JinaEmbeddingService.get_instance()
                 vectors = await engine.embed_texts([query], task="retrieval.query")
                 if not vectors or not vectors[0]:
-                    return []
+                    return {"items": [], "trace": {"timings_ms": {"total": 0.0}}} if return_trace else []
                 vector = vectors[0]
 
                 strategy = self.iterative_strategy
@@ -165,6 +176,7 @@ class RetrievalBroker:
                     strategy=strategy.__class__.__name__,
                     filters=filter_conditions,
                 )
+                trace_payload["engine_mode"] = "iterative"
 
                 raw_results = await strategy.execute(
                     query_vector=vector,
@@ -181,6 +193,9 @@ class RetrievalBroker:
                     plan = await self.query_decomposer.decompose(query)
                 else:
                     plan = QueryPlan(is_multihop=False, execution_mode="parallel", sub_queries=[])
+                trace_payload["engine_mode"] = mode
+                trace_payload["planner_used"] = planner_used
+                trace_payload["planner_multihop"] = bool(plan.is_multihop)
 
                 logger.info(
                     "retrieval_strategy_execution",
@@ -201,6 +216,9 @@ class RetrievalBroker:
                             scope_context=filter_conditions,
                             k=k,
                             fetch_k=fetch_k,
+                            graph_filter_relation_types=strategy_kwargs.get("graph_filter_relation_types"),
+                            graph_filter_node_types=strategy_kwargs.get("graph_filter_node_types"),
+                            graph_max_hops=strategy_kwargs.get("graph_max_hops"),
                         )
                     else:
                         raw_results = await self.atomic_engine.retrieve_context(
@@ -208,6 +226,9 @@ class RetrievalBroker:
                             scope_context=filter_conditions,
                             k=k,
                             fetch_k=fetch_k,
+                            graph_filter_relation_types=strategy_kwargs.get("graph_filter_relation_types"),
+                            graph_filter_node_types=strategy_kwargs.get("graph_filter_node_types"),
+                            graph_max_hops=strategy_kwargs.get("graph_max_hops"),
                         )
                 except Exception as atomic_exc:
                     logger.warning("atomic_engine_failed", error=str(atomic_exc), mode=mode)
@@ -224,6 +245,7 @@ class RetrievalBroker:
                             strategy="DirectRetrievalStrategy",
                             reason="atomic_empty_or_failed",
                         )
+                        trace_payload["fallback_used"] = True
                         raw_results = await self.direct_strategy.execute(
                             query_vector=vectors[0],
                             query_text=query,
@@ -233,17 +255,26 @@ class RetrievalBroker:
                             **strategy_kwargs,
                         )
 
+            trace_payload["timings_ms"]["retrieval"] = round((time.perf_counter() - retrieval_started) * 1000, 2)
             if not raw_results:
                 ForensicRecorder.record_retrieval(query, [], {"scope": scope_context.get("type"), "filters": filter_conditions})
-                return []
+                trace_payload["timings_ms"]["total"] = round((time.perf_counter() - total_started) * 1000, 2)
+                return {"items": [], "trace": trace_payload} if return_trace else []
 
             ForensicRecorder.record_retrieval(query, raw_results, {"scope": scope_context.get("type"), "filters": filter_conditions})
 
             # 4. Reranking Phase
+            rerank_started = time.perf_counter()
             if enable_reranking and raw_results:
-                return await self._apply_reranking(query, raw_results, filter_conditions, k)
+                ranked = await self._apply_reranking(query, raw_results, filter_conditions, k)
+            else:
+                ranked = raw_results[:k]
 
-            return raw_results[:k]
+            trace_payload["timings_ms"]["rerank"] = round((time.perf_counter() - rerank_started) * 1000, 2)
+            trace_payload["timings_ms"]["total"] = round((time.perf_counter() - total_started) * 1000, 2)
+            if return_trace:
+                return {"items": ranked, "trace": trace_payload}
+            return ranked
 
         except Exception as e:
             logger.error("broker_retrieval_failed", error=str(e), query=query)

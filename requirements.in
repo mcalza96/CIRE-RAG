@@ -10,8 +10,6 @@ structlog
 psycopg[binary]
 psycopg_pool
 pydantic
-torch
-transformers
 httpx
 tqdm
 rich

@@ -13,15 +13,15 @@
 
 ## Flujo E2E actual (ingestion -> proceso -> pregunta -> analisis -> respuesta)
 
-1. **Ingestion**: `POST /api/v1/ingestion/ingest` o `POST /api/v1/ingestion/institutional` registran `source_documents` en estado `queued`, con metadatos de tenant/coleccion/estrategia y snapshot de cola.
+1. **Ingestion**: `POST /api/v1/documents` registra `source_documents` en estado `queued`, con metadatos de tenant/coleccion/estrategia y snapshot de cola.
 2. **Proceso**: el worker (`app/worker.py`) opera en modo pull sobre `job_queue` (`fetch_next_job`) y ejecuta `ProcessDocumentWorkerUseCase` con control de concurrencia global y por tenant.
-3. **Pregunta**: el cliente consulta retrieval en rag-engine (`/knowledge/retrieve`, `/retrieval/*`).
+3. **Pregunta**: el cliente consulta retrieval en rag-engine via `POST /api/v1/chat/completions`.
 4. **Analisis**: el engine clasifica/filtra el contexto recuperado y aplica politicas de scope.
 5. **Respuesta**: se retorna contexto grounded con trazabilidad para consumo de clientes.
 
 ## Flujo 1: ingesta manual
 
-1. Cliente llama `POST /api/v1/ingestion/ingest`.
+1. Cliente llama `POST /api/v1/documents`.
 2. `ManualIngestionUseCase` valida metadata, aplica backpressure por tenant y registra `source_documents` en `queued`.
 3. Se devuelve `accepted` con snapshot de cola (`queue_depth`, `estimated_wait_seconds`, `max_pending`).
 4. El worker toma el job en modo pull y ejecuta parsing/chunking/embeddings/persistencia/etapas opcionales.
@@ -36,9 +36,15 @@
 
 ## Flujo 3: retrieval
 
-1. Cliente llama `POST /api/v1/knowledge/retrieve` con `tenant_id` y query.
+1. Cliente llama `POST /api/v1/chat/completions` con `tenant_id` y `message`.
 2. `KnowledgeService` coordina la estrategia de retrieval delegando en el `AtomicRetrievalEngine` (enrutado tricameral).
-3. Se retorna contexto con chunks relevantes, visual anchors y trazabilidad de modo.
+3. Se retorna contexto con `context_chunks`, `context_map`, `citations`, `mode` y señales de aclaracion de scope.
+
+## Endpoints retirados
+
+- `POST /api/v1/knowledge/retrieve`
+- `POST /api/v1/retrieval/chunks`
+- `POST /api/v1/retrieval/summaries`
 
 ## API y middleware
 

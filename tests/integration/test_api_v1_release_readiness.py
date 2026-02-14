@@ -61,12 +61,12 @@ def test_documents_create_idempotency_replays_payload() -> None:
         documents_router._reset_idempotency_cache_for_tests()
 
 
-def test_legacy_routes_include_deprecation_headers() -> None:
+def test_ingestion_routes_do_not_include_deprecation_headers() -> None:
     with TestClient(app) as client:
         response = client.get("/api/v1/ingestion/queue/status?tenant_id=tenant-demo", headers={"X-Tenant-ID": "tenant-demo"})
 
-    assert response.headers.get("Deprecation") == "true"
-    assert response.headers.get("Sunset") is not None
+    assert "Deprecation" not in response.headers
+    assert "Sunset" not in response.headers
 
 
 def test_tenant_header_required_for_s2s_routes() -> None:

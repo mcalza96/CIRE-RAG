@@ -58,16 +58,3 @@ Extended testing guidance: `rag-engine/testing.md`.
 - Architecture overview: `architecture.md`
 - Operational incidents and runbooks: `operations.md`
 
-## 5) Ingestion CLI
-
-From repository root:
-
-```bash
-./ing.sh
-```
-
-`ing.sh` en raiz redirige a `tools/ingestion-client/ing.sh`.
-
-Notes:
-
-- Existing collections are overwrite-friendly in the ingestion CLI (cleanup + reingestion workflow).

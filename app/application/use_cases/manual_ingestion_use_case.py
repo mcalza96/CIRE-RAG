@@ -4,6 +4,7 @@ import math
 import shutil
 import tempfile
 import structlog
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from fastapi import UploadFile
 from app.workflows.ingestion.dispatcher import IngestionDispatcher
@@ -22,6 +23,21 @@ from app.infrastructure.services.manual_ingestion_query_service import ManualIng
 from app.core.settings import settings
 
 class ManualIngestionUseCase:
+    TERMINAL_SUCCESS_STATES = {"success", "processed", "completed", "ready"}
+    TERMINAL_FAILED_STATES = {"failed", "error", "dead_letter"}
+    TERMINAL_BATCH_STATES = {"completed", "partial", "failed"}
+    STAGE_WEIGHTS: Dict[str, float] = {
+        "INGEST": 0.15,
+        "PERSIST": 0.35,
+        "VISUAL": 0.55,
+        "RAPTOR": 0.72,
+        "GRAPH": 0.88,
+        "DONE": 1.0,
+        "ERROR": 1.0,
+        "OTHER": 0.25,
+        "QUEUED": 0.05,
+    }
+
     def __init__(self, dispatcher: IngestionDispatcher):
         self.dispatcher = dispatcher
         self.taxonomy_manager = TaxonomyManager()
@@ -438,6 +454,9 @@ class ManualIngestionUseCase:
             doc_id = str(doc.get("id") or "")
             latest_event = latest_event_by_doc.get(doc_id)
             if not latest_event:
+                doc_status = str(doc.get("status") or "").lower()
+                if doc_status in {"queued", "pending", "pending_ingestion"}:
+                    stage_counts["QUEUED"] = stage_counts.get("QUEUED", 0) + 1
                 continue
 
             message = str(latest_event.get("message") or "")
@@ -530,12 +549,74 @@ class ManualIngestionUseCase:
             "sample_refs": sample_stage_refs,
         }
 
+        queue_snapshot = await self._get_pending_snapshot(tenant_id=str(batch.get("tenant_id") or ""))
+        observability = self._build_observability_projection(
+            batch=batch,
+            docs=docs,
+            events=events,
+            stage_counts=stage_counts,
+            queue_snapshot=queue_snapshot,
+        )
+
         return {
             "batch": batch,
             "documents": docs,
             "visual_accounting": visual_accounting,
             "worker_progress": worker_progress,
+            "observability": observability,
         }
+
+    async def get_batch_progress(self, batch_id: str) -> Dict[str, Any]:
+        status = await self.get_batch_status(batch_id=batch_id)
+        batch = status.get("batch") if isinstance(status.get("batch"), dict) else {}
+        return {
+            "batch": batch,
+            "observability": status.get("observability", {}),
+            "worker_progress": status.get("worker_progress", {}),
+            "visual_accounting": status.get("visual_accounting", {}),
+            "documents_count": len(status.get("documents") or []),
+        }
+
+    async def get_batch_events(
+        self,
+        batch_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        payload = await self.query_service.get_batch_events(batch_id=str(batch_id), cursor=cursor, limit=limit)
+        items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        enriched: list[Dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            stage = self._infer_worker_stage(str(item.get("message") or ""))
+            event = dict(item)
+            event["stage"] = stage
+            enriched.append(event)
+        return {
+            "batch": payload.get("batch"),
+            "items": enriched,
+            "next_cursor": payload.get("next_cursor"),
+            "has_more": bool(payload.get("has_more", False)),
+        }
+
+    async def list_active_batches(self, tenant_id: str, limit: int = 10) -> Dict[str, Any]:
+        rows = await self.query_service.list_active_batches(tenant_id=str(tenant_id), limit=int(limit))
+        items: list[Dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            batch_id = str(row.get("id") or "").strip()
+            if not batch_id:
+                continue
+            try:
+                progress = await self.get_batch_progress(batch_id=batch_id)
+                items.append(progress)
+            except Exception as exc:
+                logger.warning("active_batch_progress_failed", batch_id=batch_id, error=str(exc))
+                items.append({"batch": row, "observability": {}, "worker_progress": {}, "visual_accounting": {}})
+        return {"items": items}
 
     @staticmethod
     def _infer_worker_stage(message: str) -> str:
@@ -555,3 +636,138 @@ class ManualIngestionUseCase:
         if "exitoso" in text or "success" in text:
             return "DONE"
         return "OTHER"
+
+    @classmethod
+    def _is_terminal_doc_status(cls, status: str) -> bool:
+        normalized = str(status or "").lower().strip()
+        return normalized in cls.TERMINAL_SUCCESS_STATES or normalized in cls.TERMINAL_FAILED_STATES
+
+    @staticmethod
+    def _parse_datetime(value: Any) -> datetime | None:
+        if not value:
+            return None
+        try:
+            text = str(value).strip()
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            parsed = datetime.fromisoformat(text)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        except Exception:
+            return None
+
+    @classmethod
+    def _score_for_doc(cls, doc: Dict[str, Any]) -> float:
+        status = str(doc.get("status") or "").lower().strip()
+        if cls._is_terminal_doc_status(status):
+            return 1.0
+        if status in {"queued", "pending", "pending_ingestion"}:
+            return cls.STAGE_WEIGHTS["QUEUED"]
+        stage = str(doc.get("worker_stage") or "").strip().upper()
+        if not stage:
+            stage = "OTHER"
+        return float(cls.STAGE_WEIGHTS.get(stage, cls.STAGE_WEIGHTS["OTHER"]))
+
+    @classmethod
+    def _event_cursor(cls, events: List[Dict[str, Any]]) -> str | None:
+        if not events:
+            return None
+        for row in events:
+            if not isinstance(row, dict):
+                continue
+            created_at = str(row.get("created_at") or "").strip()
+            event_id = str(row.get("id") or row.get("event_id") or "").strip()
+            if created_at and event_id:
+                return f"{created_at}|{event_id}"
+        return None
+
+    @classmethod
+    def _build_observability_projection(
+        cls,
+        *,
+        batch: Dict[str, Any],
+        docs: List[Dict[str, Any]],
+        events: List[Dict[str, Any]],
+        stage_counts: Dict[str, int],
+        queue_snapshot: Dict[str, Optional[int]],
+    ) -> Dict[str, Any]:
+        total_files = int(batch.get("total_files") or 0)
+        if total_files <= 0:
+            total_files = len(docs)
+
+        terminal_docs = 0
+        queued_docs = 0
+        processing_docs = 0
+        score_acc = 0.0
+
+        for doc in docs:
+            if not isinstance(doc, dict):
+                continue
+            status = str(doc.get("status") or "").lower().strip()
+            if cls._is_terminal_doc_status(status):
+                terminal_docs += 1
+            elif status in {"queued", "pending", "pending_ingestion"}:
+                queued_docs += 1
+            else:
+                processing_docs += 1
+            score_acc += cls._score_for_doc(doc)
+
+        missing_docs = max(0, total_files - len(docs))
+        if missing_docs > 0:
+            score_acc += missing_docs * cls.STAGE_WEIGHTS["QUEUED"]
+            queued_docs += missing_docs
+
+        denominator = max(1, total_files)
+        progress_percent = round((score_acc / denominator) * 100, 1)
+        batch_status = str(batch.get("status") or "").lower().strip()
+        if batch_status in cls.TERMINAL_BATCH_STATES and terminal_docs >= denominator:
+            progress_percent = 100.0
+
+        dominant_stage = "QUEUED"
+        if stage_counts:
+            dominant_stage = max(stage_counts.items(), key=lambda item: int(item[1] or 0))[0]
+        elif processing_docs > 0:
+            dominant_stage = "INGEST"
+        elif terminal_docs >= denominator and denominator > 0:
+            dominant_stage = "DONE"
+
+        created_at = cls._parse_datetime(batch.get("created_at"))
+        now = datetime.now(timezone.utc)
+        elapsed_seconds = 0
+        if created_at is not None:
+            elapsed_seconds = max(0, int((now - created_at).total_seconds()))
+
+        eta_seconds = int(queue_snapshot.get("estimated_wait_seconds") or 0)
+        remaining_docs = max(0, denominator - terminal_docs)
+        if elapsed_seconds > 0 and terminal_docs > 0 and remaining_docs > 0:
+            throughput_docs_per_second = terminal_docs / float(elapsed_seconds)
+            if throughput_docs_per_second > 0:
+                eta_seconds = int(math.ceil(remaining_docs / throughput_docs_per_second))
+        elif remaining_docs <= 0:
+            eta_seconds = 0
+
+        last_event_at = None
+        if events:
+            latest = events[0] if isinstance(events[0], dict) else None
+            if isinstance(latest, dict):
+                last_event_at = str(latest.get("created_at") or "") or None
+        last_event_dt = cls._parse_datetime(last_event_at)
+
+        stalled = False
+        if batch_status not in cls.TERMINAL_BATCH_STATES and last_event_dt is not None:
+            stalled = (now - last_event_dt).total_seconds() > 180
+
+        return {
+            "progress_percent": progress_percent,
+            "dominant_stage": dominant_stage,
+            "eta_seconds": int(max(0, eta_seconds)),
+            "stalled": bool(stalled),
+            "cursor": cls._event_cursor(events),
+            "total_files": denominator,
+            "terminal_docs": int(terminal_docs),
+            "processing_docs": int(processing_docs),
+            "queued_docs": int(queued_docs),
+            "elapsed_seconds": int(max(0, elapsed_seconds)),
+            "last_event_at": last_event_at,
+        }

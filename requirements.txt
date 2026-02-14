@@ -1,5 +1,6 @@
 # Compatibility file for local tooling.
-# Source of truth:
+# Source of truth (unpinned): requirements.in / requirements-local.in
+# Source of truth (pinned):
 # - requirements-core.txt
 # - requirements-local.txt (optional heavy runtime)
 

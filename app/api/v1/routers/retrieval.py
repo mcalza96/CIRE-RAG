@@ -1,114 +1,107 @@
-from typing import Any, Dict, Optional
+from __future__ import annotations
 
 import structlog
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
 
 from app.api.v1.auth import require_service_auth
-from app.api.v1.errors import ApiError
+from app.api.v1.errors import ERROR_RESPONSES, ApiError
+from app.api.v1.schemas.retrieval_advanced import (
+    ExplainRetrievalRequest,
+    ExplainRetrievalResponse,
+    HybridRetrievalRequest,
+    HybridRetrievalResponse,
+    MultiQueryRetrievalRequest,
+    MultiQueryRetrievalResponse,
+    ValidateScopeRequest,
+    ValidateScopeResponse,
+)
 from app.api.v1.tenant_guard import enforce_tenant_match
-from app.core.middleware.security import LeakCanary, SecurityViolationError
-from app.infrastructure.container import CognitiveContainer
+from app.application.services.retrieval_contract_service import RetrievalContractService
 
 logger = structlog.get_logger(__name__)
+
 router = APIRouter(prefix="/retrieval", tags=["retrieval"], dependencies=[Depends(require_service_auth)])
 
 
-class RetrievalRequest(BaseModel):
-    query: str
-    tenant_id: str
-    collection_id: Optional[str] = None
-    chunk_k: int = 12
-    fetch_k: int = 60
+def get_retrieval_contract_service() -> RetrievalContractService:
+    return RetrievalContractService()
 
 
-class SummaryRequest(BaseModel):
-    query: str
-    tenant_id: str
-    collection_id: Optional[str] = None
-    summary_k: int = 5
-
-
-@router.post("/chunks", response_model=Dict[str, Any])
-async def retrieve_chunks(request: RetrievalRequest):
+@router.post(
+    "/validate-scope",
+    response_model=ValidateScopeResponse,
+    responses={400: ERROR_RESPONSES[400], 401: ERROR_RESPONSES[401], 500: ERROR_RESPONSES[500]},
+)
+async def validate_scope(
+    request: ValidateScopeRequest,
+    service: RetrievalContractService = Depends(get_retrieval_contract_service),
+) -> ValidateScopeResponse:
+    tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")
+    normalized_request = request.model_copy(update={"tenant_id": tenant_id})
     try:
-        tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")
-
-        scope_context: Dict[str, Any] = {"type": "institutional", "tenant_id": tenant_id}
-        if request.collection_id:
-            scope_context["filters"] = {"collection_id": request.collection_id}
-
-        container = CognitiveContainer.get_instance()
-        rows = await container.retrieval_tools.retrieve(
-            query=request.query,
-            scope_context=scope_context,
-            k=max(1, int(request.chunk_k)),
-            fetch_k=max(1, int(request.fetch_k)),
-            enable_reranking=True,
-        )
-        LeakCanary.verify_isolation(tenant_id, rows)
-
-        items = [
-            {
-                "source": f"C{i+1}",
-                "content": str(row.get("content") or "").strip(),
-                "score": float(row.get("similarity") or 0.0),
-                "metadata": {"row": row},
-            }
-            for i, row in enumerate(rows)
-            if row.get("content")
-        ]
-        return {"items": items}
-    except SecurityViolationError as exc:
-        logger.critical("security_isolation_breach", endpoint="/retrieval/chunks", tenant_id=request.tenant_id, error=str(exc))
-        raise ApiError(
-            status_code=500,
-            code="SECURITY_ISOLATION_BREACH",
-            message="Security isolation validation failed",
-            details=str(exc),
-        )
+        return service.validate_scope(normalized_request)
     except ApiError:
         raise
     except Exception as exc:
-        logger.error("retrieval_chunks_failed", error=str(exc))
-        raise ApiError(status_code=500, code="RETRIEVAL_CHUNKS_FAILED", message="Retrieval chunks failed")
+        logger.error("retrieval_validate_scope_failed", error=str(exc))
+        raise ApiError(status_code=500, code="SCOPE_VALIDATION_FAILED", message="Scope validation failed")
 
 
-@router.post("/summaries", response_model=Dict[str, Any])
-async def retrieve_summaries(request: SummaryRequest):
+@router.post(
+    "/hybrid",
+    response_model=HybridRetrievalResponse,
+    responses={400: ERROR_RESPONSES[400], 401: ERROR_RESPONSES[401], 500: ERROR_RESPONSES[500], 502: ERROR_RESPONSES[500]},
+)
+async def retrieval_hybrid(
+    request: HybridRetrievalRequest,
+    service: RetrievalContractService = Depends(get_retrieval_contract_service),
+) -> HybridRetrievalResponse:
+    tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")
+    normalized_request = request.model_copy(update={"tenant_id": tenant_id})
     try:
-        tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")
-
-        container = CognitiveContainer.get_instance()
-        rows = await container.retrieval_tools.retrieve_summaries(
-            query=request.query,
-            tenant_id=tenant_id,
-            k=max(1, int(request.summary_k)),
-            collection_id=request.collection_id,
-        )
-        LeakCanary.verify_isolation(tenant_id, rows)
-
-        items = [
-            {
-                "source": f"R{i+1}",
-                "content": str(row.get("content") or "").strip(),
-                "score": float(row.get("similarity") or 0.0),
-                "metadata": {"row": row},
-            }
-            for i, row in enumerate(rows)
-            if row.get("content")
-        ]
-        return {"items": items}
-    except SecurityViolationError as exc:
-        logger.critical("security_isolation_breach", endpoint="/retrieval/summaries", tenant_id=request.tenant_id, error=str(exc))
-        raise ApiError(
-            status_code=500,
-            code="SECURITY_ISOLATION_BREACH",
-            message="Security isolation validation failed",
-            details=str(exc),
-        )
+        return await service.run_hybrid(normalized_request)
     except ApiError:
         raise
     except Exception as exc:
-        logger.error("retrieval_summaries_failed", error=str(exc))
-        raise ApiError(status_code=500, code="RETRIEVAL_SUMMARIES_FAILED", message="Retrieval summaries failed")
+        logger.error("hybrid_retrieval_failed", error=str(exc))
+        raise ApiError(status_code=500, code="HYBRID_RETRIEVAL_FAILED", message="Hybrid retrieval failed")
+
+
+@router.post(
+    "/multi-query",
+    response_model=MultiQueryRetrievalResponse,
+    responses={400: ERROR_RESPONSES[400], 401: ERROR_RESPONSES[401], 500: ERROR_RESPONSES[500], 502: ERROR_RESPONSES[500]},
+)
+async def retrieval_multi_query(
+    request: MultiQueryRetrievalRequest,
+    service: RetrievalContractService = Depends(get_retrieval_contract_service),
+) -> MultiQueryRetrievalResponse:
+    tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")
+    normalized_request = request.model_copy(update={"tenant_id": tenant_id})
+    try:
+        return await service.run_multi_query(normalized_request)
+    except ApiError:
+        raise
+    except Exception as exc:
+        logger.error("multi_query_retrieval_failed", error=str(exc))
+        raise ApiError(status_code=500, code="MULTI_QUERY_FAILED", message="Multi-query retrieval failed")
+
+
+@router.post(
+    "/explain",
+    response_model=ExplainRetrievalResponse,
+    responses={400: ERROR_RESPONSES[400], 401: ERROR_RESPONSES[401], 500: ERROR_RESPONSES[500], 502: ERROR_RESPONSES[500]},
+)
+async def retrieval_explain(
+    request: ExplainRetrievalRequest,
+    service: RetrievalContractService = Depends(get_retrieval_contract_service),
+) -> ExplainRetrievalResponse:
+    tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")
+    normalized_request = request.model_copy(update={"tenant_id": tenant_id})
+    try:
+        return await service.run_explain(normalized_request)
+    except ApiError:
+        raise
+    except Exception as exc:
+        logger.error("retrieval_explain_failed", error=str(exc))
+        raise ApiError(status_code=500, code="RETRIEVAL_EXPLAIN_FAILED", message="Retrieval explain failed")

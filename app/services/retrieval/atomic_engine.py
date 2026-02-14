@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timezone
 from typing import Any, cast
 from uuid import UUID
 
@@ -154,9 +155,20 @@ class AtomicRetrievalEngine:
         scope_context: dict[str, Any] | None = None,
         k: int = 10,
         fetch_k: int = 40,
+        graph_filter_relation_types: list[str] | None = None,
+        graph_filter_node_types: list[str] | None = None,
+        graph_max_hops: int | None = None,
     ) -> list[dict[str, Any]]:
         if not plan.sub_queries:
-            return await self.retrieve_context(query=query, scope_context=scope_context, k=k, fetch_k=fetch_k)
+            return await self.retrieve_context(
+                query=query,
+                scope_context=scope_context,
+                k=k,
+                fetch_k=fetch_k,
+                graph_filter_relation_types=graph_filter_relation_types,
+                graph_filter_node_types=graph_filter_node_types,
+                graph_max_hops=graph_max_hops,
+            )
 
         if plan.execution_mode == "sequential":
             merged: list[dict[str, Any]] = []
@@ -166,9 +178,9 @@ class AtomicRetrievalEngine:
                     scope_context=scope_context,
                     k=max(k, 12),
                     fetch_k=fetch_k,
-                    graph_filter_relation_types=sq.target_relations,
-                    graph_filter_node_types=sq.target_node_types,
-                    graph_max_hops=2 if sq.is_deep else 1,
+                    graph_filter_relation_types=graph_filter_relation_types or sq.target_relations,
+                    graph_filter_node_types=graph_filter_node_types or sq.target_node_types,
+                    graph_max_hops=graph_max_hops if graph_max_hops is not None else (2 if sq.is_deep else 1),
                 )
                 merged.extend(rows)
             safety = await self.retrieve_context(
@@ -176,7 +188,9 @@ class AtomicRetrievalEngine:
                 scope_context=scope_context,
                 k=max(k, 12),
                 fetch_k=fetch_k,
-                graph_max_hops=0,
+                graph_filter_relation_types=graph_filter_relation_types,
+                graph_filter_node_types=graph_filter_node_types,
+                graph_max_hops=0 if graph_max_hops is None else graph_max_hops,
             )
             merged.extend(safety)
             return self._dedupe_by_id(merged)[:k]
@@ -187,9 +201,9 @@ class AtomicRetrievalEngine:
                 scope_context=scope_context,
                 k=max(k, 12),
                 fetch_k=fetch_k,
-                graph_filter_relation_types=sq.target_relations,
-                graph_filter_node_types=sq.target_node_types,
-                graph_max_hops=2 if sq.is_deep else 1,
+                graph_filter_relation_types=graph_filter_relation_types or sq.target_relations,
+                graph_filter_node_types=graph_filter_node_types or sq.target_node_types,
+                graph_max_hops=graph_max_hops if graph_max_hops is not None else (2 if sq.is_deep else 1),
             )
             for sq in plan.sub_queries
         ]
@@ -199,7 +213,9 @@ class AtomicRetrievalEngine:
                 scope_context=scope_context,
                 k=max(k, 12),
                 fetch_k=fetch_k,
-                graph_max_hops=0,
+                graph_filter_relation_types=graph_filter_relation_types,
+                graph_filter_node_types=graph_filter_node_types,
+                graph_max_hops=0 if graph_max_hops is None else graph_max_hops,
             )
         )
         responses = await asyncio.gather(*tasks, return_exceptions=True)
@@ -356,7 +372,9 @@ class AtomicRetrievalEngine:
 
     async def _resolve_source_ids(self, scope_context: dict[str, Any]) -> list[str]:
         client = await self._get_client()
-        query = client.table("source_documents").select("id,institution_id,collection_id,metadata,is_global").limit(
+        query = client.table("source_documents").select(
+            "id,institution_id,collection_id,metadata,is_global,created_at,updated_at"
+        ).limit(
             settings.ATOMIC_MAX_SOURCE_IDS
         )
 
@@ -386,6 +404,17 @@ class AtomicRetrievalEngine:
             source_standards.add(source_standard)
 
         source_ids: list[str] = []
+        nested_filters = scope_context.get("filters") if isinstance(scope_context.get("filters"), dict) else {}
+        metadata_filters = scope_context.get("metadata")
+        if not isinstance(metadata_filters, dict):
+            metadata_filters = nested_filters.get("metadata")
+        if not isinstance(metadata_filters, dict):
+            metadata_filters = {}
+        time_range = scope_context.get("time_range")
+        if not isinstance(time_range, dict):
+            time_range = nested_filters.get("time_range")
+        if not isinstance(time_range, dict):
+            time_range = {}
 
         for row in rows:
             if not isinstance(row, dict):
@@ -414,10 +443,64 @@ class AtomicRetrievalEngine:
                 if row_scope and not any(target in row_scope for target in source_standards):
                     continue
 
+            if metadata_filters and not self._matches_metadata_filters(metadata, metadata_filters):
+                continue
+
+            if time_range and not self._matches_time_range(row, time_range):
+                continue
+
             row_id = row.get("id")
             if row_id:
                 source_ids.append(str(row_id))
         return source_ids
+
+    @staticmethod
+    def _matches_metadata_filters(metadata: dict[str, Any], expected: dict[str, Any]) -> bool:
+        for key, value in expected.items():
+            observed = metadata.get(str(key))
+            if isinstance(value, list):
+                if observed not in value:
+                    return False
+                continue
+            if observed != value:
+                return False
+        return True
+
+    @staticmethod
+    def _parse_iso8601(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @classmethod
+    def _matches_time_range(cls, row: dict[str, Any], time_range: dict[str, Any]) -> bool:
+        field = str(time_range.get("field") or "").strip()
+        if field not in {"created_at", "updated_at"}:
+            return False
+        row_value = row.get(field)
+        if not isinstance(row_value, str) or not row_value.strip():
+            return False
+        try:
+            row_dt = cls._parse_iso8601(row_value)
+            dt_from = cls._parse_iso8601(time_range.get("from"))
+            dt_to = cls._parse_iso8601(time_range.get("to"))
+        except Exception:
+            return False
+        if row_dt is None:
+            return False
+        if dt_from and row_dt < dt_from:
+            return False
+        if dt_to and row_dt > dt_to:
+            return False
+        return True
 
     def _fuse_rrf(self, vector_rows: list[dict[str, Any]], fts_rows: list[dict[str, Any]], k: int) -> list[dict[str, Any]]:
         score_by_id: dict[str, float] = {}

@@ -46,7 +46,7 @@ def test_retrieval_requires_service_auth_in_deployed() -> None:
     try:
         with TestClient(app) as client:
             response = client.post(
-                "/api/v1/retrieval/chunks",
+                "/api/v1/debug/retrieval/chunks",
                 headers={"X-Tenant-ID": "tenant-demo"},
                 json={"query": "q", "tenant_id": "tenant-demo"},
             )
@@ -56,14 +56,14 @@ def test_retrieval_requires_service_auth_in_deployed() -> None:
         _restore(original)
 
 
-def test_knowledge_requires_service_auth_in_deployed() -> None:
+def test_chat_completions_requires_service_auth_in_deployed() -> None:
     original = _set_deployed()
     try:
         with TestClient(app) as client:
             response = client.post(
-                "/api/v1/knowledge/retrieve",
+                "/api/v1/chat/completions",
                 headers={"X-Tenant-ID": "tenant-demo"},
-                json={"query": "q", "tenant_id": "tenant-demo", "role": "socratic_mentor", "task": "explanation"},
+                json={"message": "q", "tenant_id": "tenant-demo"},
             )
         assert response.status_code == 401
         assert response.json()["error"]["code"] == "UNAUTHORIZED"
@@ -96,7 +96,7 @@ def test_auth_bypass_fails_closed_when_env_is_inconsistent() -> None:
     try:
         with TestClient(app) as client:
             response = client.post(
-                "/api/v1/retrieval/chunks",
+                "/api/v1/debug/retrieval/chunks",
                 headers={"X-Tenant-ID": "tenant-demo"},
                 json={"query": "q", "tenant_id": "tenant-demo"},
             )
@@ -116,7 +116,7 @@ def test_auth_bypass_fails_closed_with_default_secret_in_docker_local() -> None:
     try:
         with TestClient(app) as client:
             response = client.post(
-                "/api/v1/retrieval/chunks",
+                "/api/v1/debug/retrieval/chunks",
                 headers={"X-Tenant-ID": "tenant-demo"},
                 json={"query": "q", "tenant_id": "tenant-demo"},
             )
@@ -132,11 +132,45 @@ def test_retrieval_chunks_returns_security_isolation_breach_on_canary_detection(
     try:
         with TestClient(app) as client:
             response = client.post(
-                "/api/v1/retrieval/chunks",
+                "/api/v1/debug/retrieval/chunks",
                 headers={"Authorization": "Bearer topsecret", "X-Tenant-ID": "tenant-demo"},
                 json={"query": "q", "tenant_id": "tenant-demo"},
             )
         assert response.status_code == 500
         assert response.json()["error"]["code"] == "SECURITY_ISOLATION_BREACH"
+    finally:
+        _restore(original)
+
+
+def test_official_retrieval_endpoints_require_service_auth_in_deployed() -> None:
+    original = _set_deployed()
+    try:
+        with TestClient(app) as client:
+            calls = [
+                (
+                    "/api/v1/retrieval/validate-scope",
+                    {"query": "q", "tenant_id": "tenant-demo"},
+                ),
+                (
+                    "/api/v1/retrieval/hybrid",
+                    {"query": "q", "tenant_id": "tenant-demo"},
+                ),
+                (
+                    "/api/v1/retrieval/multi-query",
+                    {
+                        "tenant_id": "tenant-demo",
+                        "queries": [{"id": "q1", "query": "q"}],
+                    },
+                ),
+                (
+                    "/api/v1/retrieval/explain",
+                    {"query": "q", "tenant_id": "tenant-demo"},
+                ),
+            ]
+
+            for path, payload in calls:
+                response = client.post(path, headers={"X-Tenant-ID": "tenant-demo"}, json=payload)
+                assert response.status_code == 401
+                assert response.json()["error"]["code"] == "UNAUTHORIZED"
     finally:
         _restore(original)

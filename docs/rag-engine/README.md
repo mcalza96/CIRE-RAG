@@ -54,15 +54,7 @@ Health check:
 curl http://localhost:8000/health
 ```
 
-## CLI por lotes
-
-En la raiz del repo:
-
-```bash
-./ing.sh
-```
-
-Nota: `ing.sh` en raiz es un wrapper; la implementacion vive en `tools/ingestion-client/ing.sh`.
+## Ingestión por lotes (API)
 
 Flujo por defecto:
 
@@ -74,23 +66,37 @@ Flujo por defecto:
 
 Base URL local: `http://localhost:8000/api/v1`
 
+- `POST /chat/completions`: retrieval grounded para orquestadores (no genera texto final).
+- `POST /chat/feedback`: feedback de respuesta.
 - `POST /documents`: ingesta manual de archivo (`multipart/form-data`).
 - `GET /documents`: lista documentos fuente.
 - `GET /documents/{document_id}/status`: estado de documento.
 - `DELETE /documents/{document_id}`: elimina documento.
-- `POST /chat/completions`: retrieval-only (no genera texto final).
-- `POST /chat/feedback`: feedback de respuesta.
+- `GET /management/tenants`: lista tenants disponibles para caller S2S.
 - `GET /management/collections`: lista colecciones por tenant.
 - `GET /management/queue/status`: estado de cola por tenant.
 - `GET /management/health`: health de API v1.
 - `GET /management/retrieval/metrics`: metricas runtime de uso/fallback del hybrid RPC.
+- `POST /retrieval/hybrid`: retrieval unificado (vector + FTS + graph) con filtros de scope.
+- `POST /retrieval/multi-query`: ejecucion de subconsultas y fusion RRF global con modo fail-soft parcial.
+- `POST /retrieval/explain`: retrieval con explicacion segura de score/path/filtros aplicados.
+- `POST /retrieval/validate-scope`: prevalidacion strict-deny de filtros/scope antes de ejecutar retrieval.
+- `POST /debug/retrieval/chunks`: retrieval de chunks para diagnostico/control fino.
+- `POST /debug/retrieval/summaries`: retrieval de summaries para diagnostico/control fino.
+- `POST /ingestion/batches`: crear batch de ingesta.
+- `POST /ingestion/batches/{batch_id}/files`: subir archivos al batch.
+- `GET /ingestion/batches/{batch_id}/status`: estado del batch.
+- `GET /ingestion/batches/{batch_id}/progress`: progreso proyectado por etapa.
+- `GET /ingestion/batches/{batch_id}/events`: timeline paginado de eventos.
+- `GET /ingestion/batches/{batch_id}/stream`: stream SSE de progreso/eventos.
+- `GET /ingestion/batches/active`: batches activos por tenant.
 
 Auth en entornos desplegados:
 
 - Enviar `Authorization: Bearer <RAG_SERVICE_SECRET>` o `X-Service-Secret: <RAG_SERVICE_SECRET>`.
 - Enviar `X-Tenant-ID` en todas las rutas S2S (excepto `/health`, `/docs`, `/openapi.json`).
 - Si el request trae `tenant_id` en query/body, debe coincidir con `X-Tenant-ID`.
-- Rutas protegidas S2S: `/chat`, `/documents`, `/management`, `/retrieval`, `/knowledge`, `/ingestion` (incluye `/ingestion/embed`).
+- Rutas protegidas S2S: `/chat`, `/documents`, `/management`, `/retrieval`, `/debug/retrieval`, `/ingestion` (incluye `/ingestion/embed`).
 - En entorno local (`APP_ENV=local`) los endpoints permiten desarrollo sin token.
 
 Idempotencia en ingesta:
@@ -110,27 +116,86 @@ Contexto conversacional en chat:
 - Ajuste fino HNSW por consulta: `ATOMIC_HNSW_EF_SEARCH`.
 - Control de latencia de reranking: `RERANK_MAX_CANDIDATES`.
 
-## Mapa de migracion (legacy -> v1)
+## Retrieval avanzado: ejemplos `curl`
 
-- `POST /ingestion/ingest` -> `POST /documents`
-- `GET /ingestion/documents` -> `GET /documents`
-- `POST /knowledge/retrieve` -> `POST /chat/completions`
-- `POST /retrieval/chunks` -> `POST /debug/retrieval/chunks`
-- `POST /retrieval/summaries` -> `POST /debug/retrieval/summaries`
+`POST /api/v1/retrieval/hybrid`
 
-Las rutas legacy siguen disponibles durante la migracion para evitar ruptura de clientes.
+```bash
+curl -s -X POST "http://localhost:8000/api/v1/retrieval/hybrid" \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: <TENANT_ID>" \
+  -d '{
+    "query":"Que exige ISO 9001 sobre control documental?",
+    "tenant_id":"<TENANT_ID>",
+    "k":12,
+    "fetch_k":60,
+    "filters":{
+      "source_standard":"ISO 9001",
+      "time_range":{"field":"updated_at","from":"2024-01-01T00:00:00Z"}
+    }
+  }'
+```
 
-Politica de deprecacion legacy:
+`POST /api/v1/retrieval/multi-query`
 
-- Headers en respuesta: `Deprecation: true` y `Sunset: Wed, 30 Sep 2026 00:00:00 GMT`.
-- Endpoints legacy de retrieval crudo recomendados para debug: `/debug/retrieval/chunks` y `/debug/retrieval/summaries`.
+```bash
+curl -s -X POST "http://localhost:8000/api/v1/retrieval/multi-query" \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: <TENANT_ID>" \
+  -d '{
+    "tenant_id":"<TENANT_ID>",
+    "queries":[
+      {"id":"q1","query":"control documental ISO 9001"},
+      {"id":"q2","query":"retencion de registros ISO 9001"}
+    ],
+    "merge":{"strategy":"rrf","rrf_k":60,"top_k":12}
+  }'
+```
+
+`POST /api/v1/retrieval/explain`
+
+```bash
+curl -s -X POST "http://localhost:8000/api/v1/retrieval/explain" \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: <TENANT_ID>" \
+  -d '{
+    "query":"Que exige ISO 9001 7.5.3?",
+    "tenant_id":"<TENANT_ID>",
+    "top_n":5
+  }'
+```
+
+`POST /api/v1/retrieval/validate-scope`
+
+```bash
+curl -s -X POST "http://localhost:8000/api/v1/retrieval/validate-scope" \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: <TENANT_ID>" \
+  -d '{
+    "query":"Que exige ISO 9001 7.5.3?",
+    "tenant_id":"<TENANT_ID>",
+    "filters":{"source_standard":"ISO 9001"}
+  }'
+```
+
+## Que usar desde ORCH
+
+- Hoy: `POST /api/v1/debug/retrieval/chunks` y `POST /api/v1/debug/retrieval/summaries` siguen disponibles para diagnostico/control fino.
+- Nuevo contrato oficial: `POST /api/v1/retrieval/hybrid` y `POST /api/v1/retrieval/multi-query` para adopcion incremental via feature flag en ORCH.
+- `POST /api/v1/retrieval/explain` y `POST /api/v1/retrieval/validate-scope` son utilitarios de auditoria/seguridad para pipelines industriales.
+
+## Endpoints retirados
+
+- `POST /knowledge/retrieve`
+- `POST /retrieval/chunks` (legacy)
+- `POST /retrieval/summaries` (legacy)
 
 ## Comportamiento de scope en retrieval
 
-- Si el sistema detecta alcance ambiguo, devuelve `requires_scope_clarification` y candidatos de scope en `/knowledge/retrieve`.
+- Si el sistema detecta alcance ambiguo, devuelve `requires_scope_clarification` en `/chat/completions`.
 - Si el scope es valido, responde contexto grounded con `citations` y `mode`.
 
-Ejemplo (aclaracion de scope en `/knowledge/retrieve`):
+Ejemplo (aclaracion de scope en `/chat/completions`):
 
 ```json
 {

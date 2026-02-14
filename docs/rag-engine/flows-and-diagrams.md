@@ -251,7 +251,7 @@ erDiagram
 - API bootstrap: `app/main.py`
 - Routers v1: `app/api/v1/api_router.py`
 - Ingestion router: `app/api/v1/routers/ingestion.py`
-- Knowledge router: `app/api/v1/routers/knowledge.py`
+- Chat router: `app/api/v1/routers/chat.py`
 - Worker: `app/worker.py`
 - PDF parser: `app/services/ingestion/pdf_parser.py`
 - Chunking: `app/services/ingestion/chunking_service.py`

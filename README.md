@@ -77,24 +77,28 @@ Recomendacion de costo cloud:
 
 Base URL local: `http://localhost:8000/api/v1`
 
-- `POST /documents`: sube documento y devuelve `document_id` con estado `accepted`.
-- `GET /documents/{document_id}/status`: estado de procesamiento (`queued|processing|completed|failed`).
-- `DELETE /documents/{document_id}`: elimina documento (opcionalmente chunks).
-- `POST /chat/completions`: retrieval-only (`context_chunks`, `context_map`, `citations`) para orquestadores.
-- `POST /chat/feedback`: feedback de la respuesta.
+- `POST /chat/completions`: retrieval grounded para orquestadores (`context_chunks`, `citations`, `mode`, scope clarification).
+- `POST /chat/feedback`: recepcion de feedback de interaccion.
+- `POST /documents`: subir documento y encolarlo (idempotencia + backpressure).
+- `GET /documents`: listar documentos del tenant.
+- `GET /documents/{document_id}/status`: estado de ingesta por documento.
+- `DELETE /documents/{document_id}`: borrar documento y opcionalmente chunks.
+- `GET /management/tenants`: catalogo de tenants disponibles para caller S2S.
 - `GET /management/collections`: colecciones por tenant.
-- `GET /management/queue/status`: profundidad y ETA de cola.
-- `GET /management/health`: health de API v1.
-- `GET /management/retrieval/metrics`: metricas runtime del backend de retrieval.
+- `GET /management/queue/status`: profundidad/ETA de cola por tenant.
+- `GET /management/health`: health del dominio management.
+- `GET /management/retrieval/metrics`: metricas runtime de retrieval hibrido.
+- `POST /debug/retrieval/chunks`: retrieval de chunks para diagnostico/control fino.
+- `POST /debug/retrieval/summaries`: retrieval de summaries para diagnostico/control fino.
+- `POST /ingestion/batches`, `POST /ingestion/batches/{batch_id}/files`, `GET /ingestion/batches/{batch_id}/status|progress|events|stream`, `GET /ingestion/batches/active`: flujo operativo de batch ingestion/observabilidad.
 
 Auth (entornos desplegados, por ejemplo `APP_ENV=production`): enviar `Authorization: Bearer <RAG_SERVICE_SECRET>` o `X-Service-Secret: <RAG_SERVICE_SECRET>`.
 Contexto multitenant S2S: enviar siempre `X-Tenant-ID` (requerido en todas las rutas S2S excepto `/health`, `/docs`, `/openapi.json`). Si el payload/query incluye `tenant_id`, debe coincidir con `X-Tenant-ID`.
-Cobertura S2S: rutas de negocio en `/chat`, `/documents`, `/management`, `/retrieval`, `/knowledge` y `/ingestion` requieren auth en entorno desplegado (incluyendo `/ingestion/embed`).
+Cobertura S2S: rutas de negocio en `/chat`, `/documents`, `/management`, `/debug/retrieval` y `/ingestion` requieren auth en entorno desplegado (incluyendo `/ingestion/embed`).
 
 Idempotencia en ingesta: `POST /documents` acepta header `Idempotency-Key`; reintentos con la misma llave retornan la misma respuesta (persistida en Redis cuando esta disponible, fallback en memoria).
 
-Rutas legacy siguen activas temporalmente en `/ingestion`, `/knowledge` y `/retrieval`.
-Estas rutas incluyen headers de deprecacion (`Deprecation: true`, `Sunset: Wed, 30 Sep 2026 00:00:00 GMT`).
+Endpoints retirados (ya no montados): `POST /retrieval/chunks`, `POST /retrieval/summaries`, `POST /knowledge/retrieve`.
 
 ## Estructura
 

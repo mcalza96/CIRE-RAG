@@ -28,13 +28,6 @@ app = FastAPI(
     version="2.0.0"
 )
 
-LEGACY_PATH_PREFIXES = (
-    "/api/v1/ingestion",
-    "/api/v1/retrieval",
-    "/api/v1/knowledge",
-)
-LEGACY_SUNSET_DATE = "Wed, 30 Sep 2026 00:00:00 GMT"
-
 
 # Register Middleware (Stack order: Last added runs FIRST)
 
@@ -98,16 +91,6 @@ async def request_validation_exception_handler(request: Request, exc: RequestVal
 @app.exception_handler(ApiError)
 async def api_error_handler(request: Request, exc: ApiError):
     return await api_error_exception_handler(request, exc)
-
-
-@app.middleware("http")
-async def add_legacy_deprecation_headers(request: Request, call_next):
-    response = await call_next(request)
-    if request.url.path.startswith(LEGACY_PATH_PREFIXES):
-        response.headers["Deprecation"] = "true"
-        response.headers["Sunset"] = LEGACY_SUNSET_DATE
-        response.headers["Link"] = '</docs/rag-engine/README.md>; rel="deprecation"'
-    return response
 
 
 # Include Modular Routers

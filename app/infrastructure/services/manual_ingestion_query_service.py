@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -349,7 +350,7 @@ class ManualIngestionQueryService:
         if doc_ids:
             events_res = (
                 await client.table("ingestion_events")
-                .select("source_document_id,message,status,created_at")
+                .select("id,source_document_id,message,status,created_at,metadata")
                 .in_("source_document_id", doc_ids)
                 .order("created_at", desc=True)
                 .execute()
@@ -361,6 +362,161 @@ class ManualIngestionQueryService:
             "documents": docs,
             "events": events,
         }
+
+    @staticmethod
+    def _parse_cursor(cursor: str | None) -> tuple[datetime, str] | None:
+        raw = str(cursor or "").strip()
+        if "|" not in raw:
+            return None
+        ts_raw, event_id = raw.split("|", 1)
+        ts = ts_raw.strip()
+        eid = event_id.strip()
+        if not ts or not eid:
+            return None
+        if ts.endswith("Z"):
+            ts = ts[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(ts)
+        except Exception:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed, eid
+
+    @staticmethod
+    def _event_cursor(created_at: str, event_id: str) -> str:
+        return f"{created_at}|{event_id}"
+
+    async def get_batch_events(
+        self,
+        batch_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        client = await get_async_supabase_client()
+        safe_limit = max(1, min(int(limit or 100), 500))
+
+        batch_res = (
+            await client.table("ingestion_batches")
+            .select("id,tenant_id,status,created_at,updated_at,total_files,completed,failed")
+            .eq("id", str(batch_id))
+            .maybe_single()
+            .execute()
+        )
+        batch = batch_res.data
+        if not isinstance(batch, dict):
+            raise ValueError("BATCH_NOT_FOUND")
+        tenant_ctx = self._tenant_from_context()
+        if tenant_ctx and str(batch.get("tenant_id") or "") != tenant_ctx:
+            raise ValueError("TENANT_MISMATCH:get_batch_events")
+
+        docs_res = (
+            await client.table("source_documents")
+            .select("id,filename,status,created_at,batch_id")
+            .eq("batch_id", str(batch_id))
+            .order("created_at", desc=False)
+            .execute()
+        )
+        docs = docs_res.data or []
+        doc_map: Dict[str, Dict[str, Any]] = {}
+        doc_ids: list[str] = []
+        for row in docs:
+            if not isinstance(row, dict):
+                continue
+            doc_id = str(row.get("id") or "").strip()
+            if not doc_id:
+                continue
+            doc_map[doc_id] = row
+            doc_ids.append(doc_id)
+
+        if not doc_ids:
+            return {
+                "batch": batch,
+                "items": [],
+                "next_cursor": cursor,
+                "has_more": False,
+            }
+
+        parsed_cursor = self._parse_cursor(cursor)
+        query = (
+            client.table("ingestion_events")
+            .select("id,source_document_id,message,status,created_at,metadata")
+            .in_("source_document_id", doc_ids)
+            .order("created_at", desc=False)
+        )
+        if parsed_cursor is not None:
+            query = query.gte("created_at", parsed_cursor[0].isoformat())
+        events_res = await query.limit(safe_limit * 5).execute()
+        rows = events_res.data or []
+
+        def _sort_key(item: Dict[str, Any]) -> tuple[datetime, str]:
+            created_at = str(item.get("created_at") or "")
+            event_id = str(item.get("id") or item.get("event_id") or "")
+            text = created_at[:-1] + "+00:00" if created_at.endswith("Z") else created_at
+            try:
+                dt = datetime.fromisoformat(text)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                dt = datetime.min.replace(tzinfo=timezone.utc)
+            return dt, event_id
+
+        filtered: list[Dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            created_at = str(row.get("created_at") or "").strip()
+            event_id = str(row.get("id") or "").strip()
+            if not created_at or not event_id:
+                continue
+            if parsed_cursor is not None:
+                row_key = _sort_key(row)
+                if row_key <= parsed_cursor:
+                    continue
+            doc_id = str(row.get("source_document_id") or "").strip()
+            doc = doc_map.get(doc_id, {})
+            filtered.append(
+                {
+                    "event_id": event_id,
+                    "created_at": created_at,
+                    "doc_id": doc_id,
+                    "filename": str(doc.get("filename") or ""),
+                    "status": str(row.get("status") or ""),
+                    "message": str(row.get("message") or ""),
+                    "phase_metadata": row.get("metadata") if isinstance(row.get("metadata"), dict) else {},
+                }
+            )
+
+        filtered.sort(key=_sort_key)
+        page = filtered[:safe_limit]
+        has_more = len(filtered) > safe_limit
+        next_cursor = cursor
+        if page:
+            tail = page[-1]
+            next_cursor = self._event_cursor(str(tail.get("created_at") or ""), str(tail.get("event_id") or ""))
+
+        return {
+            "batch": batch,
+            "items": page,
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+        }
+
+    async def list_active_batches(self, tenant_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        tenant_scoped = self._enforce_tenant_match(tenant_id, "list_active_batches")
+        safe_limit = max(1, min(int(limit or 10), 100))
+        client = await get_async_supabase_client()
+        response = (
+            await client.table("ingestion_batches")
+            .select("id,tenant_id,collection_id,total_files,completed,failed,status,created_at,updated_at")
+            .eq("tenant_id", str(tenant_scoped))
+            .in_("status", ["pending", "processing"])
+            .order("updated_at", desc=True)
+            .limit(safe_limit)
+            .execute()
+        )
+        return response.data or []
 
     async def upsert_source_document(
         self,

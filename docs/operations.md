@@ -21,11 +21,16 @@
 - Required environment variables loaded.
 - Ingestion and retrieval smoke tests passing.
 
+## API Lifecycle Checklist
+
+- Contrato soportado: `/api/v1/chat/*`, `/api/v1/documents/*`, `/api/v1/management/*`, `/api/v1/retrieval/*`, `/api/v1/debug/retrieval/*`, `/api/v1/ingestion/*`.
+- Endpoints retirados: `/api/v1/knowledge/retrieve`, `/api/v1/retrieval/chunks` (legacy), `/api/v1/retrieval/summaries` (legacy).
+- Verificar que no existan referencias a rutas retiradas en clientes/scripts.
+
 ## Collection Behavior (Current)
 
-- Collections are treated as overwrite-friendly in CLI workflows.
-- `ing.sh` applies cleanup when reusing an existing collection before starting a new batch (implementation: `tools/ingestion-client/ing.sh`).
-- Batch sealing endpoint remains available, but the default CLI path does not auto-seal collections.
+- Collections are treated as overwrite-friendly in certain client workflows.
+- Batch sealing endpoint remains available, but default ingestion paths may not auto-seal collections.
 
 ## Observability and Reliability
 
