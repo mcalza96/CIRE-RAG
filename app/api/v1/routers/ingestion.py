@@ -1,10 +1,11 @@
 import structlog
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, File, UploadFile, Form, Depends, Header, Response
+from fastapi import APIRouter, File, UploadFile, Form, Depends, Response
 from pydantic import BaseModel
 
+from app.api.v1.auth import require_service_auth
 from app.api.v1.errors import ApiError
-from app.core.settings import settings
+from app.api.v1.tenant_guard import enforce_tenant_match, require_tenant_from_context
 from app.application.use_cases.manual_ingestion_use_case import ManualIngestionUseCase
 from app.application.use_cases.institutional_ingestion_use_case import InstitutionalIngestionUseCase
 from app.workflows.ingestion.dispatcher import IngestionDispatcher
@@ -13,7 +14,7 @@ from app.infrastructure.repositories.supabase_content_repository import Supabase
 
 logger = structlog.get_logger(__name__)
 
-router = APIRouter(prefix="/ingestion", tags=["ingestion"])
+router = APIRouter(prefix="/ingestion", tags=["ingestion"], dependencies=[Depends(require_service_auth)])
 
 # --- SCHEMAS ---
 
@@ -132,19 +133,15 @@ async def ingest_document(
 async def ingest_institutional_document(
     request: InstitutionalIngestionRequest,
     response: Response,
-    x_service_secret: Optional[str] = Header(None, alias="X-Service-Secret"),
     use_case: InstitutionalIngestionUseCase = Depends(get_institutional_use_case)
 ):
     """
     Endpoint for Institutional Ingestion triggered via Webhook.
     """
-    if settings.RAG_SERVICE_SECRET and x_service_secret != settings.RAG_SERVICE_SECRET:
-        logger.warning("unauthorized_access_attempt", service="institutional_ingestion")
-        raise ApiError(status_code=401, code="UNAUTHORIZED", message="Unauthorized: Invalid Service Secret")
-    
     try:
+        tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")
         result = await use_case.execute(
-            tenant_id=request.tenant_id,
+            tenant_id=tenant_id,
             file_path=request.file_path,
             document_id=request.document_id,
             metadata=request.metadata
@@ -177,8 +174,16 @@ async def list_documents(
     List registered source documents from Supabase.
     """
     try:
+        require_tenant_from_context()
         docs = await use_case.get_documents(limit)
         return docs
+    except ApiError:
+        raise
+    except ValueError as e:
+        detail = str(e)
+        if detail == "TENANT_CONTEXT_REQUIRED":
+            raise ApiError(status_code=400, code="TENANT_HEADER_REQUIRED", message="Missing tenant context", details=detail)
+        raise ApiError(status_code=400, code="INVALID_DOCUMENT_LIST_REQUEST", message="Invalid document list request", details=detail)
     except Exception as e:
         logger.error("list_documents_failed", error=str(e))
         raise ApiError(status_code=500, code="DOCUMENT_LIST_FAILED", message="Failed to list documents")
@@ -190,7 +195,15 @@ async def list_collections(
     use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
 ):
     try:
-        return await use_case.list_collections(tenant_id=tenant_id)
+        tenant_ctx = enforce_tenant_match(tenant_id, "query.tenant_id")
+        return await use_case.list_collections(tenant_id=tenant_ctx)
+    except ApiError:
+        raise
+    except ValueError as e:
+        detail = str(e)
+        if "TENANT_MISMATCH" in detail:
+            raise ApiError(status_code=400, code="TENANT_MISMATCH", message="Tenant mismatch", details=detail)
+        raise ApiError(status_code=400, code="INVALID_TENANT_ID", message="Invalid tenant id", details=detail)
     except Exception as e:
         logger.error("list_collections_failed", error=str(e), tenant_id=tenant_id)
         raise ApiError(status_code=500, code="COLLECTION_LIST_FAILED", message="Failed to list collections")
@@ -202,14 +215,19 @@ async def get_ingestion_queue_status(
     use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
 ):
     try:
-        queue = await use_case.get_queue_status(tenant_id=tenant_id)
+        tenant_ctx = enforce_tenant_match(tenant_id, "query.tenant_id")
+        queue = await use_case.get_queue_status(tenant_id=tenant_ctx)
         return {
             "status": "ok",
-            "tenant_id": tenant_id,
+            "tenant_id": tenant_ctx,
             "queue": queue,
         }
+    except ApiError:
+        raise
     except ValueError as e:
         detail = str(e)
+        if "TENANT_MISMATCH" in detail:
+            raise ApiError(status_code=400, code="TENANT_MISMATCH", message="Tenant mismatch", details=detail)
         if detail == "INVALID_TENANT_ID":
             raise ApiError(status_code=400, code="INVALID_TENANT_ID", message="Invalid tenant id", details=detail)
         raise ApiError(status_code=400, code="INVALID_QUEUE_REQUEST", message="Invalid queue status request", details=detail)
@@ -224,12 +242,17 @@ async def cleanup_collection(
     use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
 ):
     try:
+        tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")
         return await use_case.cleanup_collection(
-            tenant_id=request.tenant_id,
+            tenant_id=tenant_id,
             collection_key=request.collection_key,
         )
+    except ApiError:
+        raise
     except ValueError as e:
         detail = str(e)
+        if "TENANT_MISMATCH" in detail:
+            raise ApiError(status_code=400, code="TENANT_MISMATCH", message="Tenant mismatch", details=detail)
         if detail == "COLLECTION_NOT_FOUND":
             raise ApiError(status_code=404, code="COLLECTION_NOT_FOUND", message="Collection not found", details=detail)
         if detail == "COLLECTION_SEALED":
@@ -253,6 +276,7 @@ async def retry_ingestion_endpoint(
     Retry ingestion for an existing document ID.
     """
     try:
+        require_tenant_from_context()
         await use_case.retry_ingestion(doc_id)
         
         # No need to add background task. The UPDATE triggers the worker via Postgres Changes.
@@ -273,8 +297,9 @@ async def create_ingestion_batch(
     use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
 ):
     try:
+        tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")
         result = await use_case.create_batch(
-            tenant_id=request.tenant_id,
+            tenant_id=tenant_id,
             collection_key=request.collection_key,
             total_files=request.total_files,
             auto_seal=request.auto_seal,
@@ -282,8 +307,12 @@ async def create_ingestion_batch(
             metadata=request.metadata,
         )
         return {"status": "accepted", **result}
+    except ApiError:
+        raise
     except ValueError as e:
         detail = str(e)
+        if "TENANT_MISMATCH" in detail:
+            raise ApiError(status_code=400, code="TENANT_MISMATCH", message="Tenant mismatch", details=detail)
         if "COLLECTION_SEALED" in detail:
             raise ApiError(status_code=409, code="COLLECTION_SEALED", message="Collection is sealed", details=detail)
         raise ApiError(status_code=400, code="INVALID_BATCH_REQUEST", message="Invalid batch request", details=detail)
@@ -301,6 +330,7 @@ async def add_file_to_batch(
     use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
 ):
     try:
+        require_tenant_from_context()
         result = await use_case.add_file_to_batch(batch_id=batch_id, file=file, metadata=metadata)
         queue = result.get("queue")
         if isinstance(queue, dict):
@@ -310,8 +340,12 @@ async def add_file_to_batch(
             if max_pending is not None:
                 response.headers["X-Queue-Max-Pending"] = str(int(max_pending))
         return {"status": "accepted", **result}
+    except ApiError:
+        raise
     except ValueError as e:
         detail = str(e)
+        if "TENANT_MISMATCH" in detail:
+            raise ApiError(status_code=400, code="TENANT_MISMATCH", message="Tenant mismatch", details=detail)
         if detail in {"BATCH_NOT_FOUND", "COLLECTION_NOT_FOUND"}:
             raise ApiError(status_code=404, code=detail, message="Batch or collection not found", details=detail)
         if "INGESTION_BACKPRESSURE" in detail:
@@ -333,10 +367,15 @@ async def seal_ingestion_batch(
     use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
 ):
     try:
+        require_tenant_from_context()
         result = await use_case.seal_batch(batch_id=batch_id)
         return {"status": "sealed", **result}
+    except ApiError:
+        raise
     except ValueError as e:
         detail = str(e)
+        if "TENANT_MISMATCH" in detail:
+            raise ApiError(status_code=400, code="TENANT_MISMATCH", message="Tenant mismatch", details=detail)
         if detail == "BATCH_NOT_FOUND":
             raise ApiError(status_code=404, code="BATCH_NOT_FOUND", message="Batch not found", details=detail)
         raise ApiError(status_code=400, code="INVALID_SEAL_BATCH_REQUEST", message="Invalid seal batch request", details=detail)
@@ -351,9 +390,14 @@ async def get_ingestion_batch_status(
     use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
 ):
     try:
+        require_tenant_from_context()
         return await use_case.get_batch_status(batch_id=batch_id)
+    except ApiError:
+        raise
     except ValueError as e:
         detail = str(e)
+        if "TENANT_MISMATCH" in detail:
+            raise ApiError(status_code=400, code="TENANT_MISMATCH", message="Tenant mismatch", details=detail)
         if detail == "BATCH_NOT_FOUND":
             raise ApiError(status_code=404, code="BATCH_NOT_FOUND", message="Batch not found", details=detail)
         raise ApiError(status_code=400, code="INVALID_BATCH_STATUS_REQUEST", message="Invalid batch status request", details=detail)

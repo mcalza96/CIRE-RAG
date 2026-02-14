@@ -4,6 +4,7 @@ import logging
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from app.core.observability.context_vars import get_tenant_id
 from app.infrastructure.supabase.client import get_async_supabase_client
 
 
@@ -11,12 +12,25 @@ logger = logging.getLogger(__name__)
 
 
 class ManualIngestionQueryService:
+    @staticmethod
+    def _tenant_from_context() -> str:
+        return str(get_tenant_id() or "").strip()
+
+    @classmethod
+    def _enforce_tenant_match(cls, tenant_id: str, location: str) -> str:
+        tenant_req = str(tenant_id or "").strip()
+        tenant_ctx = cls._tenant_from_context()
+        if tenant_ctx and tenant_req and tenant_ctx != tenant_req:
+            raise ValueError(f"TENANT_MISMATCH:{location}")
+        return tenant_req or tenant_ctx
+
     async def count_pending_documents(self, tenant_id: str, limit: int, statuses: List[str]) -> int:
+        tenant_scoped = self._enforce_tenant_match(tenant_id, "count_pending_documents")
         client = await get_async_supabase_client()
         response = (
             await client.table("source_documents")
             .select("id")
-            .eq("institution_id", str(tenant_id))
+            .eq("institution_id", str(tenant_scoped))
             .in_("status", statuses)
             .limit(int(limit))
             .execute()
@@ -24,10 +38,14 @@ class ManualIngestionQueryService:
         return len(response.data or [])
 
     async def list_recent_documents(self, limit: int = 20) -> List[Dict[str, Any]]:
+        tenant_ctx = self._tenant_from_context()
+        if not tenant_ctx:
+            raise ValueError("TENANT_CONTEXT_REQUIRED")
         client = await get_async_supabase_client()
         response = (
             await client.table("source_documents")
             .select("*")
+            .eq("institution_id", tenant_ctx)
             .order("created_at", desc=True)
             .limit(int(limit))
             .execute()
@@ -35,18 +53,58 @@ class ManualIngestionQueryService:
         return response.data or []
 
     async def list_collections(self, tenant_id: str) -> List[Dict[str, Any]]:
+        tenant_scoped = self._enforce_tenant_match(tenant_id, "list_collections")
         client = await get_async_supabase_client()
         response = (
             await client.table("collections")
             .select("id,tenant_id,collection_key,name,status,created_at")
-            .eq("tenant_id", str(tenant_id))
+            .eq("tenant_id", str(tenant_scoped))
             .order("created_at", desc=False)
             .execute()
         )
         return response.data or []
 
+    async def list_tenants(self, limit: int = 200) -> List[Dict[str, Any]]:
+        client = await get_async_supabase_client()
+        capped = max(1, min(int(limit or 200), 1000))
+
+        try:
+            response = (
+                await client.table("institutions")
+                .select("id,name,created_at")
+                .order("name", desc=False)
+                .limit(capped)
+                .execute()
+            )
+            rows = response.data or []
+            if rows:
+                return rows
+        except Exception:
+            logger.exception("list_tenants_from_institutions_failed")
+
+        # Fallback for environments without institutions rows.
+        response = (
+            await client.table("source_documents")
+            .select("institution_id,created_at")
+            .order("created_at", desc=True)
+            .limit(capped * 3)
+            .execute()
+        )
+        rows = response.data or []
+        unique: list[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in rows:
+            tenant_id = str((item or {}).get("institution_id") or "").strip()
+            if not tenant_id or tenant_id in seen:
+                continue
+            seen.add(tenant_id)
+            unique.append({"id": tenant_id, "name": tenant_id, "created_at": item.get("created_at")})
+            if len(unique) >= capped:
+                break
+        return unique
+
     async def cleanup_collection(self, tenant_id: str, collection_key: str) -> Dict[str, Any]:
-        tenant = str(tenant_id or "").strip()
+        tenant = self._enforce_tenant_match(tenant_id, "cleanup_collection")
         key = str(collection_key or "").strip().lower()
         if not tenant or not key:
             raise ValueError("INVALID_COLLECTION_SCOPE")
@@ -116,10 +174,11 @@ class ManualIngestionQueryService:
         auto_seal: bool,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        tenant_scoped = self._enforce_tenant_match(tenant_id, "create_batch")
         client = await get_async_supabase_client()
 
         payload = {
-            "tenant_id": str(tenant_id),
+            "tenant_id": str(tenant_scoped),
             "collection_id": str(collection_id),
             "total_files": int(total_files),
             "status": "pending",
@@ -156,6 +215,9 @@ class ManualIngestionQueryService:
         batch = batch_res.data
         if not isinstance(batch, dict):
             raise ValueError("BATCH_NOT_FOUND")
+        tenant_ctx = self._tenant_from_context()
+        if tenant_ctx and str(batch.get("tenant_id") or "") != tenant_ctx:
+            raise ValueError("TENANT_MISMATCH:get_batch_upload_context")
 
         collection_id = batch.get("collection_id")
         if not collection_id:
@@ -217,7 +279,7 @@ class ManualIngestionQueryService:
         client = await get_async_supabase_client()
         batch_res = (
             await client.table("ingestion_batches")
-            .select("id,collection_id,total_files,completed,failed,status")
+            .select("id,tenant_id,collection_id,total_files,completed,failed,status")
             .eq("id", str(batch_id))
             .maybe_single()
             .execute()
@@ -225,6 +287,9 @@ class ManualIngestionQueryService:
         batch = batch_res.data
         if not isinstance(batch, dict):
             raise ValueError("BATCH_NOT_FOUND")
+        tenant_ctx = self._tenant_from_context()
+        if tenant_ctx and str(batch.get("tenant_id") or "") != tenant_ctx:
+            raise ValueError("TENANT_MISMATCH:get_batch_for_seal")
         return batch
 
     async def seal_collection(self, collection_id: str) -> None:
@@ -266,6 +331,9 @@ class ManualIngestionQueryService:
         batch = batch_res.data
         if not isinstance(batch, dict):
             raise ValueError("BATCH_NOT_FOUND")
+        tenant_ctx = self._tenant_from_context()
+        if tenant_ctx and str(batch.get("tenant_id") or "") != tenant_ctx:
+            raise ValueError("TENANT_MISMATCH:get_batch_status_data")
 
         docs_res = (
             await client.table("source_documents")
@@ -303,13 +371,14 @@ class ManualIngestionQueryService:
         collection_id: Optional[str] = None,
         course_id: Optional[str] = None,
     ) -> None:
+        tenant_scoped = self._enforce_tenant_match(tenant_id, "upsert_source_document")
         client = await get_async_supabase_client()
         upsert_payload: Dict[str, Any] = {
             "id": str(document_id),
             "filename": str(filename),
             "status": str(metadata.get("status") or "queued"),
             "metadata": metadata,
-            "institution_id": str(tenant_id),
+            "institution_id": str(tenant_scoped),
         }
         if collection_id:
             upsert_payload["collection_id"] = str(collection_id)

@@ -1,6 +1,7 @@
 from typing import List, Dict, Any
 import structlog
 from app.domain.repositories.content_repository import IContentRepository
+from app.core.observability.context_vars import get_tenant_id
 from app.infrastructure.supabase.client import get_async_supabase_client
 
 logger = structlog.get_logger(__name__)
@@ -10,6 +11,10 @@ class SupabaseContentRepository(IContentRepository):
     Concrete implementation of IContentRepository for Supabase.
     """
     
+    @staticmethod
+    def _tenant_from_context() -> str:
+        return str(get_tenant_id() or "").strip()
+
     def __init__(self):
         self._supabase = None
         
@@ -21,13 +26,17 @@ class SupabaseContentRepository(IContentRepository):
     async def delete_chunks_by_source_id(self, source_id: str) -> None:
         if not source_id:
             return
+        tenant_id = self._tenant_from_context()
         
         client = await self.get_client()
         logger.info(f"Cleaning up legacy chunks for source {source_id} (Batched)...")
         
         try:
             # 1. Fetch all IDs for this source
-            res = await client.table("content_chunks").select("id").eq("source_id", source_id).execute()
+            query = client.table("content_chunks").select("id").eq("source_id", source_id)
+            if tenant_id:
+                query = query.eq("institution_id", tenant_id)
+            res = await query.execute()
             ids = [r['id'] for r in res.data]
             
             if not ids:
@@ -53,6 +62,7 @@ class SupabaseContentRepository(IContentRepository):
     async def save_chunks(self, chunks: List[Any]) -> int:
         if not chunks:
             return 0
+        tenant_id = self._tenant_from_context()
 
         from app.infrastructure.mappers.persistence_mapper import PersistenceMapper
         
@@ -90,7 +100,15 @@ class SupabaseContentRepository(IContentRepository):
         if len(valid_chunks) < len(chunks):
             logger.warning(f"⚠️ Filtered {len(chunks) - len(valid_chunks)} chunks with empty embeddings.")
 
-        normalized_chunks = [PersistenceMapper.map_to_sql(c, "content_chunks") for c in valid_chunks]
+        normalized_chunks = []
+        for chunk in valid_chunks:
+            row = PersistenceMapper.map_to_sql(chunk, "content_chunks")
+            row_tenant = str(row.get("institution_id") or "").strip()
+            if tenant_id and row_tenant and row_tenant != tenant_id:
+                raise ValueError("TENANT_MISMATCH")
+            if not row_tenant and tenant_id:
+                row["institution_id"] = tenant_id
+            normalized_chunks.append(row)
 
         total_chunks = len(normalized_chunks)
         total_batches = (total_chunks + batch_size - 1) // batch_size

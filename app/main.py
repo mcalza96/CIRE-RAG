@@ -9,10 +9,18 @@ from app.api.v1.api_router import v1_router
 from app.core.middleware.business_context import BusinessContextMiddleware
 from app.core.observability.correlation import CorrelationMiddleware, get_correlation_id
 from app.core.observability.logger_config import configure_structlog
+from app.core.settings import settings
 
 # Configure Structlog (JSON Logging)
 configure_structlog()
 logger = structlog.get_logger(__name__)
+logger.info(
+    "auth_runtime_mode",
+    auth_mode="deployed" if settings.is_deployed_environment else "local_bypass",
+    service_secret_configured=bool(str(settings.RAG_SERVICE_SECRET or "").strip() and str(settings.RAG_SERVICE_SECRET).strip() != "development-secret"),
+    app_env=settings.APP_ENV,
+    environment=settings.ENVIRONMENT,
+)
 
 app = FastAPI(
     title="CIRE-RAG Ingestion and Structured Retrieval API",

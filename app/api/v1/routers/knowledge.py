@@ -1,12 +1,14 @@
 import structlog
 from typing import Dict, Any
 from fastapi import APIRouter, Depends
+from app.api.v1.auth import require_service_auth
 from app.api.v1.errors import ApiError
+from app.api.v1.tenant_guard import enforce_tenant_match
 from app.domain.knowledge_schemas import RetrievalIntent
 from app.services.knowledge.knowledge_service import KnowledgeService
 
 logger = structlog.get_logger(__name__)
-router = APIRouter(tags=["knowledge"])
+router = APIRouter(tags=["knowledge"], dependencies=[Depends(require_service_auth)])
 
 @router.post("/retrieve", response_model=Dict[str, Any])
 async def retrieve_knowledge(
@@ -18,9 +20,7 @@ async def retrieve_knowledge(
     Refactored to return raw context chunks (Tricameral logic moved to audit-engine).
     """
     try:
-        if not intent.tenant_id:
-            raise ApiError(status_code=400, code="TENANT_ID_REQUIRED", message="tenant_id is required")
-        tenant_id = str(intent.tenant_id)
+        tenant_id = enforce_tenant_match(str(intent.tenant_id or ""), "body.tenant_id")
         context = await service.get_grounded_context(
             query=intent.query,
             institution_id=tenant_id

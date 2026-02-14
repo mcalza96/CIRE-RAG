@@ -13,7 +13,7 @@ class SummarizationAgent:
     """
     
     def __init__(self, temperature: float = 0.3):
-        self.llm = get_llm(temperature=temperature, capability="CHAT")
+        self.llm = get_llm(temperature=temperature, capability="SUMMARIZATION")
 
     @staticmethod
     def _normalize_inputs(texts: List[str]) -> List[str]:

@@ -25,6 +25,8 @@ def get_llm(
             temperature = AIModelConfig.DEFAULT_TEMPERATURE_ORCHESTRATION
         elif capability == "GENERATION":
             temperature = AIModelConfig.DEFAULT_TEMPERATURE_GENERATION
+        elif capability == "SUMMARIZATION":
+            temperature = AIModelConfig.DEFAULT_TEMPERATURE_SUMMARIZATION
         else:
             temperature = AIModelConfig.DEFAULT_TEMPERATURE_CHAT
 

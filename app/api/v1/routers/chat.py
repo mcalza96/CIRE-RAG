@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.api.v1.auth import require_service_auth
 from app.api.v1.errors import ERROR_RESPONSES, ApiError
+from app.api.v1.tenant_guard import enforce_tenant_match
 from app.services.knowledge.knowledge_service import KnowledgeService
 
 logger = structlog.get_logger(__name__)
@@ -108,7 +109,10 @@ def _build_retrieval_query(message: str, history: List[ChatMessage], max_turns: 
     "/completions",
     operation_id="createChatCompletion",
     summary="Create grounded chat completion",
-    description="Retrieval-only endpoint. Returns grounded evidence payload for external orchestrators.",
+    description=(
+        "Retrieval-only endpoint. Returns grounded evidence payload for external orchestrators. "
+        "Authentication: Bearer token or X-Service-Secret (same shared secret)."
+    ),
     response_model=ChatCompletionResponse,
     responses={
         200: {
@@ -139,10 +143,11 @@ async def create_chat_completion(
     knowledge_service: KnowledgeService = Depends(KnowledgeService),
 ) -> ChatCompletionResponse:
     try:
+        tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")
         retrieval_query = _build_retrieval_query(request.message, request.history)
         context = await knowledge_service.get_grounded_context(
             query=retrieval_query,
-            institution_id=request.tenant_id,
+            institution_id=tenant_id,
         )
 
         requires_scope = bool(context.get("requires_scope_clarification"))
@@ -183,7 +188,7 @@ async def create_chat_completion(
     "/feedback",
     operation_id="submitChatFeedback",
     summary="Submit chat feedback",
-    description="Stores user feedback for a generated chat interaction.",
+    description="Stores user feedback for a generated chat interaction. Requires service auth.",
     responses={
         200: {
             "description": "Feedback accepted",

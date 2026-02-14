@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from app.api.v1.auth import require_service_auth
 from app.api.v1.errors import ERROR_RESPONSES, ApiError
+from app.api.v1.tenant_guard import enforce_tenant_match
 from app.api.v1.routers.ingestion import get_ingestion_use_case
 from app.core.observability.retrieval_metrics import retrieval_metrics_store
 from app.application.use_cases.manual_ingestion_use_case import ManualIngestionUseCase
@@ -15,6 +16,10 @@ router = APIRouter(prefix="/management", tags=["management"], dependencies=[Depe
 
 
 class CollectionsResponse(BaseModel):
+    items: list[Dict[str, Any]]
+
+
+class TenantsResponse(BaseModel):
     items: list[Dict[str, Any]]
 
 
@@ -41,6 +46,43 @@ class RetrievalMetricsResponse(BaseModel):
     hybrid_rpc_fallbacks: int = 0
     hybrid_rpc_disabled: int = 0
     hybrid_rpc_hit_ratio: float = 0.0
+
+
+@router.get(
+    "/tenants",
+    operation_id="listAvailableTenants",
+    summary="List available tenants",
+    description=(
+        "Returns available tenants for authenticated service callers. "
+        "This route does not require X-Tenant-ID header."
+    ),
+    response_model=TenantsResponse,
+    responses={
+        200: {
+            "description": "Available tenants",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "items": [
+                            {"id": "tenant-demo", "name": "Tenant Demo", "created_at": "2026-02-10T12:00:00Z"}
+                        ]
+                    }
+                }
+            },
+        },
+        401: ERROR_RESPONSES[401],
+        500: ERROR_RESPONSES[500],
+    },
+)
+async def list_tenants(
+    limit: int = Query(default=200, ge=1, le=1000),
+    use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
+) -> TenantsResponse:
+    try:
+        return TenantsResponse(items=await use_case.list_tenants(limit=limit))
+    except Exception as e:
+        logger.error("management_list_tenants_failed", error=str(e), limit=limit)
+        raise ApiError(status_code=500, code="TENANT_LIST_FAILED", message="Failed to list tenants")
 
 
 @router.get(
@@ -77,7 +119,15 @@ async def list_collections(
     use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
 ) -> CollectionsResponse:
     try:
-        return CollectionsResponse(items=await use_case.list_collections(tenant_id=tenant_id))
+        tenant_ctx = enforce_tenant_match(tenant_id, "query.tenant_id")
+        return CollectionsResponse(items=await use_case.list_collections(tenant_id=tenant_ctx))
+    except ApiError:
+        raise
+    except ValueError as e:
+        detail = str(e)
+        if "TENANT_MISMATCH" in detail:
+            raise ApiError(status_code=400, code="TENANT_MISMATCH", message="Tenant mismatch", details=detail)
+        raise ApiError(status_code=400, code="INVALID_TENANT_ID", message="Invalid tenant id", details=detail)
     except Exception as e:
         logger.error("management_list_collections_failed", error=str(e), tenant_id=tenant_id)
         raise ApiError(status_code=500, code="COLLECTION_LIST_FAILED", message="Failed to list collections")
@@ -113,18 +163,24 @@ async def get_queue_status(
     use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
 ) -> QueueStatusResponse:
     try:
-        queue = await use_case.get_queue_status(tenant_id=tenant_id)
+        tenant_ctx = enforce_tenant_match(tenant_id, "query.tenant_id")
+        queue = await use_case.get_queue_status(tenant_id=tenant_ctx)
         return QueueStatusResponse(
             status="ok",
-            tenant_id=tenant_id,
+            tenant_id=tenant_ctx,
             queue=QueueSnapshot(
                 queue_depth=int(queue.get("queue_depth") or 0),
                 max_pending=queue.get("max_pending"),
                 estimated_wait_seconds=int(queue.get("estimated_wait_seconds") or 0),
             ),
         )
+    except ApiError:
+        raise
     except ValueError as e:
-        raise ApiError(status_code=400, code="INVALID_TENANT_ID", message="Invalid tenant id", details=str(e))
+        detail = str(e)
+        if "TENANT_MISMATCH" in detail:
+            raise ApiError(status_code=400, code="TENANT_MISMATCH", message="Tenant mismatch", details=detail)
+        raise ApiError(status_code=400, code="INVALID_TENANT_ID", message="Invalid tenant id", details=detail)
     except Exception as e:
         logger.error("management_queue_status_failed", error=str(e), tenant_id=tenant_id)
         raise ApiError(status_code=500, code="QUEUE_STATUS_FAILED", message="Failed to get queue status")

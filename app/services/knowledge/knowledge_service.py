@@ -3,6 +3,8 @@ import re
 from typing import List, Dict, Any
 from uuid import uuid4
 import structlog
+from app.api.v1.errors import ApiError
+from app.core.middleware.security import SecurityViolationError
 from app.core.retrieval_config import retrieval_settings
 from app.core.settings import settings
 from app.core.observability.scope_metrics import scope_metrics_store
@@ -154,9 +156,14 @@ class KnowledgeService:
 
         try:
             LeakCanary.verify_isolation(institution_id, results)
-        except Exception as e:
-            logger.error("Security isolation breach detected (retrieval_router)", error=str(e), institution_id=institution_id)
-            return {"context_chunks": [], "context_map": {}, "citations": [], "mode": output.get("mode")}
+        except SecurityViolationError as e:
+            logger.critical("security_isolation_breach", error=str(e), institution_id=institution_id, mode="retrieval_router")
+            raise ApiError(
+                status_code=500,
+                code="SECURITY_ISOLATION_BREACH",
+                message="Security isolation validation failed",
+                details=str(e),
+            )
 
         context_chunks = [r.get("content", "") for r in results if r.get("content")]
         context_map = {str(r.get("id")): r for r in results if r.get("id")}
@@ -224,9 +231,14 @@ class KnowledgeService:
         # 2. Security Validation (LeakCanary)
         try:
             LeakCanary.verify_isolation(institution_id, results)
-        except Exception as e:
-            logger.error("Security isolation breach detected", error=str(e), institution_id=institution_id)
-            return {"context_chunks": [], "context_map": {}}
+        except SecurityViolationError as e:
+            logger.critical("security_isolation_breach", error=str(e), institution_id=institution_id, mode="vector_only")
+            raise ApiError(
+                status_code=500,
+                code="SECURITY_ISOLATION_BREACH",
+                message="Security isolation validation failed",
+                details=str(e),
+            )
 
         # 3. Process results
         context_chunks = [r["content"] for r in results]

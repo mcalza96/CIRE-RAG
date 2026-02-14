@@ -1,9 +1,14 @@
 from typing import Dict, Any, Optional
 from app.domain.repositories.source_repository import ISourceRepository
+from app.core.observability.context_vars import get_tenant_id
 from app.infrastructure.supabase.client import get_async_supabase_client
 from app.domain.schemas import SourceDocument
 
 class SupabaseSourceRepository(ISourceRepository):
+    @staticmethod
+    def _tenant_from_context() -> str:
+        return str(get_tenant_id() or "").strip()
+
     def __init__(self):
         self._client = None
 
@@ -17,20 +22,31 @@ class SupabaseSourceRepository(ISourceRepository):
         data = {"status": status}
         if error_message is not None:
             data["error_message"] = error_message
-        
-        await client.table("source_documents").update(data).eq("id", doc_id).execute()
+        query = client.table("source_documents").update(data).eq("id", doc_id)
+        tenant_id = self._tenant_from_context()
+        if tenant_id:
+            query = query.eq("institution_id", tenant_id)
+        await query.execute()
 
     async def update_metadata(self, doc_id: str, metadata: Dict[str, Any]) -> None:
         client = await self.get_client()
-        await client.table("source_documents").update({"metadata": metadata}).eq("id", doc_id).execute()
+        query = client.table("source_documents").update({"metadata": metadata}).eq("id", doc_id)
+        tenant_id = self._tenant_from_context()
+        if tenant_id:
+            query = query.eq("institution_id", tenant_id)
+        await query.execute()
 
     async def update_status_and_metadata(self, doc_id: str, status: str, metadata: Dict[str, Any]) -> None:
         """Atomic update of both status and metadata to prevent race conditions."""
         client = await self.get_client()
-        await client.table("source_documents").update({
+        query = client.table("source_documents").update({
             "status": status,
             "metadata": metadata
-        }).eq("id", doc_id).execute()
+        }).eq("id", doc_id)
+        tenant_id = self._tenant_from_context()
+        if tenant_id:
+            query = query.eq("institution_id", tenant_id)
+        await query.execute()
 
     async def log_event(
         self,
@@ -56,14 +72,22 @@ class SupabaseSourceRepository(ISourceRepository):
     async def get_by_id(self, doc_id: str) -> Optional[Dict[str, Any]]:
         client = await self.get_client()
         try:
-            res = await client.table("source_documents").select("*").eq("id", doc_id).maybe_single().execute()
+            query = client.table("source_documents").select("*").eq("id", doc_id)
+            tenant_id = self._tenant_from_context()
+            if tenant_id:
+                query = query.eq("institution_id", tenant_id)
+            res = await query.maybe_single().execute()
             return res.data
         except Exception:
             return None
 
     async def delete_document(self, doc_id: str) -> None:
         client = await self.get_client()
-        await client.table("source_documents").delete().eq("id", doc_id).execute()
+        query = client.table("source_documents").delete().eq("id", doc_id)
+        tenant_id = self._tenant_from_context()
+        if tenant_id:
+            query = query.eq("institution_id", tenant_id)
+        await query.execute()
 
     async def create_source_document(self, doc: SourceDocument) -> SourceDocument:
         client = await self.get_client()

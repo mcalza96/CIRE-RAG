@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, Optional, cast
 
 import structlog
@@ -8,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.api.v1.auth import require_service_auth
 from app.api.v1.errors import ERROR_RESPONSES, ApiError
+from app.api.v1.tenant_guard import require_tenant_from_context
 from app.api.v1.routers.ingestion import get_ingestion_use_case
 from app.core.idempotency_store import get_idempotency_store, reset_idempotency_store_for_tests
 from app.application.use_cases.manual_ingestion_use_case import ManualIngestionUseCase
@@ -132,6 +134,20 @@ async def create_document(
     use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
 ) -> DocumentCreateResponse:
     try:
+        tenant_id = require_tenant_from_context()
+        try:
+            metadata_obj = json.loads(metadata)
+        except Exception:
+            metadata_obj = {}
+        payload_tenant = metadata_obj.get("institution_id") or metadata_obj.get("tenant_id")
+        if payload_tenant and str(payload_tenant).strip() != tenant_id:
+            raise ApiError(
+                status_code=400,
+                code="TENANT_MISMATCH",
+                message="Tenant mismatch",
+                details="Tenant in metadata must match X-Tenant-ID header",
+            )
+
         replayed = await _lookup_idempotent_response(idempotency_key)
         if replayed is not None:
             response.headers["X-Idempotency-Replayed"] = "true"
@@ -161,6 +177,8 @@ async def create_document(
         )
         await _store_idempotent_response(idempotency_key, payload)
         return payload
+    except ApiError:
+        raise
     except ValueError as e:
         detail = str(e)
         if "INGESTION_BACKPRESSURE" in detail:
@@ -205,7 +223,10 @@ async def list_documents(
     use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
 ) -> DocumentListResponse:
     try:
+        require_tenant_from_context()
         return DocumentListResponse(items=await use_case.get_documents(limit=limit))
+    except ApiError:
+        raise
     except Exception as e:
         logger.error("documents_list_failed", error=str(e), limit=limit)
         raise ApiError(status_code=500, code="DOCUMENT_LIST_FAILED", message="Failed to list documents")
@@ -239,6 +260,7 @@ async def list_documents(
 async def get_document_status(document_id: str) -> DocumentStatusResponse:
     source_repo = SupabaseSourceRepository()
     try:
+        require_tenant_from_context()
         doc = await source_repo.get_by_id(document_id)
         if not doc:
             raise ApiError(status_code=404, code="DOCUMENT_NOT_FOUND", message="Document not found", details={"document_id": document_id})
@@ -284,6 +306,7 @@ async def delete_document(document_id: str, purge_chunks: Optional[bool] = True)
     source_repo = SupabaseSourceRepository()
     content_repo = SupabaseContentRepository()
     try:
+        require_tenant_from_context()
         doc = await source_repo.get_by_id(document_id)
         if not doc:
             raise ApiError(status_code=404, code="DOCUMENT_NOT_FOUND", message="Document not found", details={"document_id": document_id})

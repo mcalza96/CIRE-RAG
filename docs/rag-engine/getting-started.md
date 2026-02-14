@@ -21,6 +21,7 @@ venv/bin/python run_worker.py
 ```bash
 curl -s -X POST "http://localhost:8000/api/v1/knowledge/retrieve" \
   -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: <TENANT_ID>" \
   -d '{"tenant_id":"<TENANT_ID>","query":"Que exige ISO sobre registro y evidencias?"}'
 ```
 
@@ -37,6 +38,7 @@ Chunks:
 ```bash
 curl -s -X POST "http://localhost:8000/api/v1/retrieval/chunks" \
   -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: <TENANT_ID>" \
   -d '{"tenant_id":"<TENANT_ID>","query":"Que exige ISO 9001 sobre registro y evidencias?","chunk_k":8,"fetch_k":40}'
 ```
 
@@ -45,6 +47,7 @@ Summaries:
 ```bash
 curl -s -X POST "http://localhost:8000/api/v1/retrieval/summaries" \
   -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: <TENANT_ID>" \
   -d '{"tenant_id":"<TENANT_ID>","query":"Que exige ISO 9001 sobre registro y evidencias?","summary_k":5}'
 ```
 

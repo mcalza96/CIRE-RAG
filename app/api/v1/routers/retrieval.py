@@ -1,14 +1,17 @@
 from typing import Any, Dict, Optional
 
 import structlog
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from app.api.v1.auth import require_service_auth
 from app.api.v1.errors import ApiError
+from app.api.v1.tenant_guard import enforce_tenant_match
+from app.core.middleware.security import LeakCanary, SecurityViolationError
 from app.infrastructure.container import CognitiveContainer
 
 logger = structlog.get_logger(__name__)
-router = APIRouter(prefix="/retrieval", tags=["retrieval"])
+router = APIRouter(prefix="/retrieval", tags=["retrieval"], dependencies=[Depends(require_service_auth)])
 
 
 class RetrievalRequest(BaseModel):
@@ -29,10 +32,9 @@ class SummaryRequest(BaseModel):
 @router.post("/chunks", response_model=Dict[str, Any])
 async def retrieve_chunks(request: RetrievalRequest):
     try:
-        if not request.tenant_id:
-            raise ApiError(status_code=400, code="TENANT_ID_REQUIRED", message="tenant_id is required")
+        tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")
 
-        scope_context: Dict[str, Any] = {"type": "institutional", "tenant_id": request.tenant_id}
+        scope_context: Dict[str, Any] = {"type": "institutional", "tenant_id": tenant_id}
         if request.collection_id:
             scope_context["filters"] = {"collection_id": request.collection_id}
 
@@ -44,6 +46,7 @@ async def retrieve_chunks(request: RetrievalRequest):
             fetch_k=max(1, int(request.fetch_k)),
             enable_reranking=True,
         )
+        LeakCanary.verify_isolation(tenant_id, rows)
 
         items = [
             {
@@ -56,6 +59,14 @@ async def retrieve_chunks(request: RetrievalRequest):
             if row.get("content")
         ]
         return {"items": items}
+    except SecurityViolationError as exc:
+        logger.critical("security_isolation_breach", endpoint="/retrieval/chunks", tenant_id=request.tenant_id, error=str(exc))
+        raise ApiError(
+            status_code=500,
+            code="SECURITY_ISOLATION_BREACH",
+            message="Security isolation validation failed",
+            details=str(exc),
+        )
     except ApiError:
         raise
     except Exception as exc:
@@ -66,16 +77,16 @@ async def retrieve_chunks(request: RetrievalRequest):
 @router.post("/summaries", response_model=Dict[str, Any])
 async def retrieve_summaries(request: SummaryRequest):
     try:
-        if not request.tenant_id:
-            raise ApiError(status_code=400, code="TENANT_ID_REQUIRED", message="tenant_id is required")
+        tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")
 
         container = CognitiveContainer.get_instance()
         rows = await container.retrieval_tools.retrieve_summaries(
             query=request.query,
-            tenant_id=request.tenant_id,
+            tenant_id=tenant_id,
             k=max(1, int(request.summary_k)),
             collection_id=request.collection_id,
         )
+        LeakCanary.verify_isolation(tenant_id, rows)
 
         items = [
             {
@@ -88,6 +99,14 @@ async def retrieve_summaries(request: SummaryRequest):
             if row.get("content")
         ]
         return {"items": items}
+    except SecurityViolationError as exc:
+        logger.critical("security_isolation_breach", endpoint="/retrieval/summaries", tenant_id=request.tenant_id, error=str(exc))
+        raise ApiError(
+            status_code=500,
+            code="SECURITY_ISOLATION_BREACH",
+            message="Security isolation validation failed",
+            details=str(exc),
+        )
     except ApiError:
         raise
     except Exception as exc:

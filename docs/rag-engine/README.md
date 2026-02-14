@@ -88,6 +88,9 @@ Base URL local: `http://localhost:8000/api/v1`
 Auth en entornos desplegados:
 
 - Enviar `Authorization: Bearer <RAG_SERVICE_SECRET>` o `X-Service-Secret: <RAG_SERVICE_SECRET>`.
+- Enviar `X-Tenant-ID` en todas las rutas S2S (excepto `/health`, `/docs`, `/openapi.json`).
+- Si el request trae `tenant_id` en query/body, debe coincidir con `X-Tenant-ID`.
+- Rutas protegidas S2S: `/chat`, `/documents`, `/management`, `/retrieval`, `/knowledge`, `/ingestion` (incluye `/ingestion/embed`).
 - En entorno local (`APP_ENV=local`) los endpoints permiten desarrollo sin token.
 
 Idempotencia en ingesta:

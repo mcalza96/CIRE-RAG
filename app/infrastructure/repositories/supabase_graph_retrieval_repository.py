@@ -189,25 +189,6 @@ class SupabaseGraphRetrievalRepository:
         except Exception as exc:
             logger.info("search_graph_nav_unavailable_fallback", error=str(exc))
 
-        try:
-            response = await client.rpc(
-                "search_graph_nav",
-                {
-                    "query_embedding": query_vector,
-                    "match_threshold": match_threshold,
-                    "limit_count": limit_count,
-                    "max_hops": max_hops,
-                    "decay_factor": decay_factor,
-                    "filter_entity_types": filter_node_types,
-                    "filter_relation_types": filter_relation_types,
-                },
-            ).execute()
-            nav_rows = self._rows(response.data)
-            if nav_rows:
-                return _normalize_nav_rows(nav_rows)
-        except Exception as exc:
-            logger.info("search_graph_nav_alt_signature_unavailable", error=str(exc))
-
         response = await client.rpc(
             "hybrid_multi_hop_search",
             {

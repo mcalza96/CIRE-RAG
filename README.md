@@ -88,6 +88,8 @@ Base URL local: `http://localhost:8000/api/v1`
 - `GET /management/retrieval/metrics`: metricas runtime del backend de retrieval.
 
 Auth (entornos desplegados, por ejemplo `APP_ENV=production`): enviar `Authorization: Bearer <RAG_SERVICE_SECRET>` o `X-Service-Secret: <RAG_SERVICE_SECRET>`.
+Contexto multitenant S2S: enviar siempre `X-Tenant-ID` (requerido en todas las rutas S2S excepto `/health`, `/docs`, `/openapi.json`). Si el payload/query incluye `tenant_id`, debe coincidir con `X-Tenant-ID`.
+Cobertura S2S: rutas de negocio en `/chat`, `/documents`, `/management`, `/retrieval`, `/knowledge` y `/ingestion` requieren auth en entorno desplegado (incluyendo `/ingestion/embed`).
 
 Idempotencia en ingesta: `POST /documents` acepta header `Idempotency-Key`; reintentos con la misma llave retornan la misma respuesta (persistida en Redis cuando esta disponible, fallback en memoria).
 

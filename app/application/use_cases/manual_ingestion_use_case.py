@@ -100,6 +100,9 @@ class ManualIngestionUseCase:
     async def list_collections(self, tenant_id: str) -> List[Dict[str, Any]]:
         return await self.query_service.list_collections(tenant_id=str(tenant_id))
 
+    async def list_tenants(self, limit: int = 200) -> List[Dict[str, Any]]:
+        return await self.query_service.list_tenants(limit=int(limit))
+
     async def cleanup_collection(self, tenant_id: str, collection_key: str) -> Dict[str, Any]:
         return await self.query_service.cleanup_collection(
             tenant_id=str(tenant_id),
