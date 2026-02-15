@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from datetime import datetime, timezone
 from typing import Any, cast
 from uuid import UUID
@@ -10,8 +9,12 @@ import structlog
 
 from app.application.services.query_decomposer import QueryPlan
 from app.core.observability.retrieval_metrics import retrieval_metrics_store
+from app.core.observability.timing import elapsed_ms, perf_now
 from app.core.settings import settings
-from app.infrastructure.repositories.supabase_graph_retrieval_repository import SupabaseGraphRetrievalRepository
+from app.domain.schemas.retrieval_payloads import RetrievalRow
+from app.infrastructure.repositories.supabase_graph_retrieval_repository import (
+    SupabaseGraphRetrievalRepository,
+)
 from app.infrastructure.supabase.client import get_async_supabase_client
 from app.services.embedding_service import JinaEmbeddingService
 
@@ -21,7 +24,11 @@ logger = structlog.get_logger(__name__)
 class AtomicRetrievalEngine:
     """Retrieval engine that composes atomic SQL primitives in Python."""
 
-    def __init__(self, embedding_service: JinaEmbeddingService | None = None, supabase_client: Any | None = None):
+    def __init__(
+        self,
+        embedding_service: JinaEmbeddingService | None = None,
+        supabase_client: Any | None = None,
+    ):
         self._embedding_service = embedding_service or JinaEmbeddingService.get_instance()
         self._supabase_client = supabase_client
         self._graph_repo = SupabaseGraphRetrievalRepository(supabase_client=supabase_client)
@@ -35,11 +42,11 @@ class AtomicRetrievalEngine:
         graph_filter_relation_types: list[str] | None = None,
         graph_filter_node_types: list[str] | None = None,
         graph_max_hops: int | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[RetrievalRow]:
         if not query.strip():
             return []
 
-        start = time.perf_counter()
+        start = perf_now()
         query_vector = await self._embed_query(query)
         source_ids = await self._resolve_source_ids(scope_context or {})
         if not source_ids:
@@ -47,12 +54,13 @@ class AtomicRetrievalEngine:
         tenant_id = str((scope_context or {}).get("tenant_id") or "").strip()
         allowed_source_ids = set(str(sid) for sid in source_ids if str(sid).strip())
 
-        vector_start = time.perf_counter()
-        vector_rows: list[dict[str, Any]] = []
-        fts_rows: list[dict[str, Any]] = []
-        fused: list[dict[str, Any]] = []
+        vector_start = perf_now()
+        vector_rows: list[RetrievalRow] = []
+        fused: list[RetrievalRow] = []
         vector_ms = 0.0
         fts_ms = 0.0
+        hybrid_rpc_used = False
+
         if settings.ATOMIC_USE_HYBRID_RPC:
             try:
                 fused = await self._search_hybrid_rpc(
@@ -61,7 +69,8 @@ class AtomicRetrievalEngine:
                     source_ids=source_ids,
                     fetch_k=fetch_k,
                 )
-                vector_ms = round((time.perf_counter() - vector_start) * 1000, 2)
+                hybrid_rpc_used = True
+                vector_ms = elapsed_ms(vector_start)
                 retrieval_metrics_store.record_hybrid_rpc_hit()
                 logger.info("atomic_hybrid_rpc_used", rows=len(fused), source_count=len(source_ids))
             except Exception as hybrid_exc:
@@ -70,16 +79,14 @@ class AtomicRetrievalEngine:
         else:
             retrieval_metrics_store.record_hybrid_rpc_disabled()
 
-        if not fused:
-            vector_rows = await self._search_vectors(query_vector=query_vector, source_ids=source_ids, fetch_k=fetch_k)
-            vector_ms = round((time.perf_counter() - vector_start) * 1000, 2)
-
-            if settings.ATOMIC_ENABLE_FTS:
-                fts_start = time.perf_counter()
-                fts_rows = await self._search_fts(query_text=query, source_ids=source_ids, fetch_k=fetch_k)
-                fts_ms = round((time.perf_counter() - fts_start) * 1000, 2)
-
-            fused = self._fuse_rrf(vector_rows=vector_rows, fts_rows=fts_rows, k=max(fetch_k, k))
+        # DB-first: if hybrid RPC is disabled or fails, we fall back to vector-only.
+        # We intentionally avoid Python-side fusion (RRF) to keep ranking logic inside Postgres.
+        if not hybrid_rpc_used:
+            vector_rows = await self._search_vectors(
+                query_vector=query_vector, source_ids=source_ids, fetch_k=fetch_k
+            )
+            vector_ms = elapsed_ms(vector_start)
+            fused = vector_rows
         graph_rows = await self._graph_hop(
             query_vector=query_vector,
             scope_context=scope_context or {},
@@ -90,26 +97,30 @@ class AtomicRetrievalEngine:
         )
 
         merged = self._dedupe_by_id(fused + graph_rows)
-        self._stamp_tenant_context(rows=merged, tenant_id=tenant_id, allowed_source_ids=allowed_source_ids)
+        self._stamp_tenant_context(
+            rows=merged, tenant_id=tenant_id, allowed_source_ids=allowed_source_ids
+        )
         logger.info(
             "retrieval_pipeline_timing",
             stage="atomic_engine_total",
-            duration_ms=round((time.perf_counter() - start) * 1000, 2),
+            duration_ms=elapsed_ms(start),
             vector_duration_ms=vector_ms,
             fts_duration_ms=fts_ms,
             source_count=len(source_ids),
             vector_rows=len(vector_rows),
-            fts_rows=len(fts_rows),
+            fts_rows=0,
             graph_rows=len(graph_rows),
             merged_rows=len(merged),
             hybrid_rpc_enabled=bool(settings.ATOMIC_USE_HYBRID_RPC),
-            hybrid_rpc_used=bool(settings.ATOMIC_USE_HYBRID_RPC and not vector_rows and not fts_rows),
+            hybrid_rpc_used=bool(hybrid_rpc_used),
             query_preview=query[:50],
         )
         return merged[:k]
 
     @staticmethod
-    def _stamp_tenant_context(*, rows: list[dict[str, Any]], tenant_id: str, allowed_source_ids: set[str]) -> None:
+    def _stamp_tenant_context(
+        *, rows: list[RetrievalRow], tenant_id: str, allowed_source_ids: set[str]
+    ) -> None:
         """Attach tenant ownership metadata for rows derived from tenant-filtered source_ids.
 
         We do NOT blindly stamp every row, because that would mask cross-tenant leaks if a bug
@@ -131,7 +142,11 @@ class AtomicRetrievalEngine:
             source_layer = str(row.get("source_layer") or "").strip().lower()
             source_id = str(metadata.get("source_id") or "").strip()
             safe_to_stamp = False
-            if source_layer in {"vector", "fts", "hybrid"} and source_id and source_id in allowed_source_ids:
+            if (
+                source_layer in {"vector", "fts", "hybrid"}
+                and source_id
+                and source_id in allowed_source_ids
+            ):
                 safe_to_stamp = True
             if source_layer == "graph":
                 safe_to_stamp = True
@@ -152,17 +167,19 @@ class AtomicRetrievalEngine:
         fetch_k: int,
     ) -> list[dict[str, Any]]:
         client = await self._get_client()
+        effective_query_text = query_text if settings.ATOMIC_ENABLE_FTS else ""
+        effective_fts_weight = settings.ATOMIC_RRF_FTS_WEIGHT if settings.ATOMIC_ENABLE_FTS else 0.0
         response = await client.rpc(
             "retrieve_hybrid_optimized",
             {
                 "query_embedding": query_vector,
-                "query_text": query_text,
+                "query_text": effective_query_text,
                 "source_ids": source_ids,
                 "match_threshold": settings.ATOMIC_MATCH_THRESHOLD,
                 "match_count": max(fetch_k, 1),
                 "rrf_k": settings.ATOMIC_RRF_K,
                 "vector_weight": settings.ATOMIC_RRF_VECTOR_WEIGHT,
-                "fts_weight": settings.ATOMIC_RRF_FTS_WEIGHT,
+                "fts_weight": effective_fts_weight,
                 "hnsw_ef_search": max(10, int(settings.ATOMIC_HNSW_EF_SEARCH or 80)),
             },
         ).execute()
@@ -172,7 +189,9 @@ class AtomicRetrievalEngine:
             if not isinstance(row, dict):
                 continue
             raw_metadata = row.get("metadata")
-            metadata: dict[str, Any] = cast(dict[str, Any], raw_metadata) if isinstance(raw_metadata, dict) else {}
+            metadata: dict[str, Any] = (
+                cast(dict[str, Any], raw_metadata) if isinstance(raw_metadata, dict) else {}
+            )
             normalized.append(
                 {
                     "id": str(row.get("id") or ""),
@@ -219,7 +238,9 @@ class AtomicRetrievalEngine:
                     fetch_k=fetch_k,
                     graph_filter_relation_types=graph_filter_relation_types or sq.target_relations,
                     graph_filter_node_types=graph_filter_node_types or sq.target_node_types,
-                    graph_max_hops=graph_max_hops if graph_max_hops is not None else (2 if sq.is_deep else 1),
+                    graph_max_hops=graph_max_hops
+                    if graph_max_hops is not None
+                    else (2 if sq.is_deep else 1),
                 )
                 merged.extend(rows)
             safety = await self.retrieve_context(
@@ -242,7 +263,9 @@ class AtomicRetrievalEngine:
                 fetch_k=fetch_k,
                 graph_filter_relation_types=graph_filter_relation_types or sq.target_relations,
                 graph_filter_node_types=graph_filter_node_types or sq.target_node_types,
-                graph_max_hops=graph_max_hops if graph_max_hops is not None else (2 if sq.is_deep else 1),
+                graph_max_hops=graph_max_hops
+                if graph_max_hops is not None
+                else (2 if sq.is_deep else 1),
             )
             for sq in plan.sub_queries
         ]
@@ -267,7 +290,9 @@ class AtomicRetrievalEngine:
                 merged.extend(item for item in payload if isinstance(item, dict))
         return self._dedupe_by_id(merged)[:k]
 
-    async def _search_vectors(self, query_vector: list[float], source_ids: list[str], fetch_k: int) -> list[dict[str, Any]]:
+    async def _search_vectors(
+        self, query_vector: list[float], source_ids: list[str], fetch_k: int
+    ) -> list[dict[str, Any]]:
         client = await self._get_client()
         response = await client.rpc(
             "search_vectors_only",
@@ -284,7 +309,9 @@ class AtomicRetrievalEngine:
             if not isinstance(row, dict):
                 continue
             raw_metadata = row.get("metadata")
-            metadata: dict[str, Any] = cast(dict[str, Any], raw_metadata) if isinstance(raw_metadata, dict) else {}
+            metadata: dict[str, Any] = (
+                cast(dict[str, Any], raw_metadata) if isinstance(raw_metadata, dict) else {}
+            )
             normalized.append(
                 {
                     "id": str(row.get("id") or ""),
@@ -299,7 +326,9 @@ class AtomicRetrievalEngine:
             )
         return normalized
 
-    async def _search_fts(self, query_text: str, source_ids: list[str], fetch_k: int) -> list[dict[str, Any]]:
+    async def _search_fts(
+        self, query_text: str, source_ids: list[str], fetch_k: int
+    ) -> list[dict[str, Any]]:
         client = await self._get_client()
         response = await client.rpc(
             "search_fts_only",
@@ -315,7 +344,9 @@ class AtomicRetrievalEngine:
             if not isinstance(row, dict):
                 continue
             raw_metadata = row.get("metadata")
-            metadata: dict[str, Any] = cast(dict[str, Any], raw_metadata) if isinstance(raw_metadata, dict) else {}
+            metadata: dict[str, Any] = (
+                cast(dict[str, Any], raw_metadata) if isinstance(raw_metadata, dict) else {}
+            )
             normalized.append(
                 {
                     "id": str(row.get("id") or ""),
@@ -353,7 +384,9 @@ class AtomicRetrievalEngine:
 
         try:
             node_types = graph_filter_node_types or scope_context.get("graph_filter_node_types")
-            relation_types = graph_filter_relation_types or scope_context.get("graph_filter_relation_types")
+            relation_types = graph_filter_relation_types or scope_context.get(
+                "graph_filter_relation_types"
+            )
             if not isinstance(node_types, list):
                 node_types = None
             if not isinstance(relation_types, list):
@@ -411,10 +444,10 @@ class AtomicRetrievalEngine:
 
     async def _resolve_source_ids(self, scope_context: dict[str, Any]) -> list[str]:
         client = await self._get_client()
-        query = client.table("source_documents").select(
-            "id,institution_id,collection_id,metadata,is_global,created_at,updated_at"
-        ).limit(
-            settings.ATOMIC_MAX_SOURCE_IDS
+        query = (
+            client.table("source_documents")
+            .select("id,institution_id,collection_id,metadata,is_global,created_at,updated_at")
+            .limit(settings.ATOMIC_MAX_SOURCE_IDS)
         )
 
         tenant_id = scope_context.get("tenant_id")
@@ -443,7 +476,10 @@ class AtomicRetrievalEngine:
             source_standards.add(source_standard)
 
         source_ids: list[str] = []
-        nested_filters = scope_context.get("filters") if isinstance(scope_context.get("filters"), dict) else {}
+        nested_filters_raw = scope_context.get("filters")
+        nested_filters: dict[str, Any] = (
+            nested_filters_raw if isinstance(nested_filters_raw, dict) else {}
+        )
         metadata_filters = scope_context.get("metadata")
         if not isinstance(metadata_filters, dict):
             metadata_filters = nested_filters.get("metadata")
@@ -459,7 +495,9 @@ class AtomicRetrievalEngine:
             if not isinstance(row, dict):
                 continue
             raw_metadata = row.get("metadata")
-            metadata: dict[str, Any] = cast(dict[str, Any], raw_metadata) if isinstance(raw_metadata, dict) else {}
+            metadata: dict[str, Any] = (
+                cast(dict[str, Any], raw_metadata) if isinstance(raw_metadata, dict) else {}
+            )
             if collection_name:
                 row_name = str((metadata or {}).get("collection_name") or "").strip().lower()
                 if row_name and row_name != collection_name:
@@ -540,31 +578,6 @@ class AtomicRetrievalEngine:
         if dt_to and row_dt > dt_to:
             return False
         return True
-
-    def _fuse_rrf(self, vector_rows: list[dict[str, Any]], fts_rows: list[dict[str, Any]], k: int) -> list[dict[str, Any]]:
-        score_by_id: dict[str, float] = {}
-        doc_by_id: dict[str, dict[str, Any]] = {}
-
-        def add(rows: list[dict[str, Any]], weight: float) -> None:
-            for rank, row in enumerate(rows, start=1):
-                row_id = str(row.get("id") or "")
-                if not row_id:
-                    continue
-                score_by_id[row_id] = score_by_id.get(row_id, 0.0) + (weight / (settings.ATOMIC_RRF_K + rank))
-                if row_id not in doc_by_id:
-                    doc_by_id[row_id] = dict(row)
-
-        add(vector_rows, settings.ATOMIC_RRF_VECTOR_WEIGHT)
-        add(fts_rows, settings.ATOMIC_RRF_FTS_WEIGHT)
-
-        ranked_ids = sorted(score_by_id.keys(), key=lambda rid: score_by_id[rid], reverse=True)
-        fused: list[dict[str, Any]] = []
-        for rid in ranked_ids[:k]:
-            item = dict(doc_by_id[rid])
-            item["score"] = float(score_by_id[rid])
-            item["similarity"] = float(max(item.get("similarity") or 0.0, item.get("score") or 0.0))
-            fused.append(item)
-        return fused
 
     @staticmethod
     def _dedupe_by_id(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -24,10 +24,13 @@ class CireRagApiError(Exception):
 def _build_auth_headers(
     api_key: Optional[str],
     default_headers: Optional[Dict[str, str]],
+    tenant_id: Optional[str] = None,
 ) -> Dict[str, str]:
     headers = dict(default_headers or {})
     if api_key and "Authorization" not in headers:
         headers["Authorization"] = f"Bearer {api_key}"
+    if tenant_id and "X-Tenant-ID" not in headers:
+        headers["X-Tenant-ID"] = tenant_id
     return headers
 
 
@@ -68,22 +71,33 @@ class CireRagClient:
     def close(self) -> None:
         self.session.close()
 
-    def create_document(self, file_path: str | Path, metadata: Dict[str, Any] | str) -> Dict[str, Any]:
+    def create_document(
+        self,
+        file_path: str | Path,
+        metadata: Dict[str, Any] | str,
+        *,
+        tenant_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         path = Path(file_path)
         metadata_json = metadata if isinstance(metadata, str) else json.dumps(metadata)
         with path.open("rb") as fp:
             files = {"file": (path.name, fp)}
             data = {"metadata": metadata_json}
-            return self._request("POST", "/documents", files=files, data=data)
+            return self._request("POST", "/documents", files=files, data=data, tenant_id=tenant_id)
 
-    def list_documents(self, limit: int = 20) -> Dict[str, Any]:
-        return self._request("GET", "/documents", params={"limit": limit})
+    def list_documents(self, limit: int = 20, *, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        return self._request("GET", "/documents", params={"limit": limit}, tenant_id=tenant_id)
 
-    def get_document_status(self, document_id: str) -> Dict[str, Any]:
-        return self._request("GET", f"/documents/{document_id}/status")
+    def get_document_status(self, document_id: str, *, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        return self._request("GET", f"/documents/{document_id}/status", tenant_id=tenant_id)
 
-    def delete_document(self, document_id: str, purge_chunks: bool = True) -> Dict[str, Any]:
-        return self._request("DELETE", f"/documents/{document_id}", params={"purge_chunks": str(purge_chunks).lower()})
+    def delete_document(self, document_id: str, purge_chunks: bool = True, *, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        return self._request(
+            "DELETE",
+            f"/documents/{document_id}",
+            params={"purge_chunks": str(purge_chunks).lower()},
+            tenant_id=tenant_id,
+        )
 
     def create_chat_completion(
         self,
@@ -98,22 +112,105 @@ class CireRagClient:
             "history": history or [],
             "max_context_chunks": max_context_chunks,
         }
-        return self._request("POST", "/chat/completions", json_body=payload)
+        return self._request("POST", "/chat/completions", json_body=payload, tenant_id=tenant_id)
 
     def submit_chat_feedback(self, interaction_id: str, rating: str, comment: Optional[str] = None) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"interaction_id": interaction_id, "rating": rating}
         if comment:
             payload["comment"] = comment
-        return self._request("POST", "/chat/feedback", json_body=payload)
+        return self._request("POST", "/chat/feedback", json_body=payload, tenant_id=None)
 
     def list_tenant_collections(self, tenant_id: str) -> Dict[str, Any]:
-        return self._request("GET", "/management/collections", params={"tenant_id": tenant_id})
+        return self._request("GET", "/management/collections", params={"tenant_id": tenant_id}, tenant_id=tenant_id)
 
     def get_tenant_queue_status(self, tenant_id: str) -> Dict[str, Any]:
-        return self._request("GET", "/management/queue/status", params={"tenant_id": tenant_id})
+        return self._request("GET", "/management/queue/status", params={"tenant_id": tenant_id}, tenant_id=tenant_id)
 
-    def get_management_health(self) -> Dict[str, Any]:
-        return self._request("GET", "/management/health")
+    def get_management_health(self, *, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        return self._request("GET", "/management/health", tenant_id=tenant_id)
+
+    def validate_scope(
+        self,
+        *,
+        query: str,
+        tenant_id: str,
+        collection_id: Optional[str] = None,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"query": query, "tenant_id": tenant_id}
+        if collection_id:
+            payload["collection_id"] = collection_id
+        if filters is not None:
+            payload["filters"] = filters
+        return self._request("POST", "/retrieval/validate-scope", json_body=payload, tenant_id=tenant_id)
+
+    def retrieval_hybrid(
+        self,
+        *,
+        query: str,
+        tenant_id: str,
+        collection_id: Optional[str] = None,
+        k: int = 12,
+        fetch_k: int = 60,
+        filters: Optional[Dict[str, Any]] = None,
+        rerank: Optional[Dict[str, Any]] = None,
+        graph: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"query": query, "tenant_id": tenant_id, "k": k, "fetch_k": fetch_k}
+        if collection_id:
+            payload["collection_id"] = collection_id
+        if filters is not None:
+            payload["filters"] = filters
+        if rerank is not None:
+            payload["rerank"] = rerank
+        if graph is not None:
+            payload["graph"] = graph
+        return self._request("POST", "/retrieval/hybrid", json_body=payload, tenant_id=tenant_id)
+
+    def retrieval_multi_query(
+        self,
+        *,
+        tenant_id: str,
+        queries: List[Dict[str, Any]],
+        collection_id: Optional[str] = None,
+        merge: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"tenant_id": tenant_id, "queries": queries}
+        if collection_id:
+            payload["collection_id"] = collection_id
+        if merge is not None:
+            payload["merge"] = merge
+        return self._request("POST", "/retrieval/multi-query", json_body=payload, tenant_id=tenant_id)
+
+    def retrieval_explain(
+        self,
+        *,
+        query: str,
+        tenant_id: str,
+        collection_id: Optional[str] = None,
+        k: int = 12,
+        fetch_k: int = 60,
+        top_n: int = 10,
+        filters: Optional[Dict[str, Any]] = None,
+        rerank: Optional[Dict[str, Any]] = None,
+        graph: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "query": query,
+            "tenant_id": tenant_id,
+            "k": k,
+            "fetch_k": fetch_k,
+            "top_n": top_n,
+        }
+        if collection_id:
+            payload["collection_id"] = collection_id
+        if filters is not None:
+            payload["filters"] = filters
+        if rerank is not None:
+            payload["rerank"] = rerank
+        if graph is not None:
+            payload["graph"] = graph
+        return self._request("POST", "/retrieval/explain", json_body=payload, tenant_id=tenant_id)
 
     def _request(
         self,
@@ -124,9 +221,10 @@ class CireRagClient:
         json_body: Optional[Dict[str, Any]] = None,
         data: Optional[Dict[str, Any]] = None,
         files: Optional[Dict[str, Any]] = None,
+        tenant_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         url = f"{self.base_url}/api/v1{path}"
-        headers = _build_auth_headers(self.api_key, self.default_headers)
+        headers = _build_auth_headers(self.api_key, self.default_headers, tenant_id=tenant_id)
         response = self.session.request(
             method=method,
             url=url,
@@ -174,22 +272,39 @@ class AsyncCireRagClient:
         if self._managed_client:
             await self.client.aclose()
 
-    async def create_document(self, file_path: str | Path, metadata: Dict[str, Any] | str) -> Dict[str, Any]:
+    async def create_document(
+        self,
+        file_path: str | Path,
+        metadata: Dict[str, Any] | str,
+        *,
+        tenant_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         path = Path(file_path)
         metadata_json = metadata if isinstance(metadata, str) else json.dumps(metadata)
         file_bytes = path.read_bytes()
         files = {"file": (path.name, file_bytes)}
         data = {"metadata": metadata_json}
-        return await self._request("POST", "/documents", files=files, data=data)
+        return await self._request("POST", "/documents", files=files, data=data, tenant_id=tenant_id)
 
-    async def list_documents(self, limit: int = 20) -> Dict[str, Any]:
-        return await self._request("GET", "/documents", params={"limit": limit})
+    async def list_documents(self, limit: int = 20, *, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        return await self._request("GET", "/documents", params={"limit": limit}, tenant_id=tenant_id)
 
-    async def get_document_status(self, document_id: str) -> Dict[str, Any]:
-        return await self._request("GET", f"/documents/{document_id}/status")
+    async def get_document_status(self, document_id: str, *, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        return await self._request("GET", f"/documents/{document_id}/status", tenant_id=tenant_id)
 
-    async def delete_document(self, document_id: str, purge_chunks: bool = True) -> Dict[str, Any]:
-        return await self._request("DELETE", f"/documents/{document_id}", params={"purge_chunks": str(purge_chunks).lower()})
+    async def delete_document(
+        self,
+        document_id: str,
+        purge_chunks: bool = True,
+        *,
+        tenant_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return await self._request(
+            "DELETE",
+            f"/documents/{document_id}",
+            params={"purge_chunks": str(purge_chunks).lower()},
+            tenant_id=tenant_id,
+        )
 
     async def create_chat_completion(
         self,
@@ -204,22 +319,105 @@ class AsyncCireRagClient:
             "history": history or [],
             "max_context_chunks": max_context_chunks,
         }
-        return await self._request("POST", "/chat/completions", json_body=payload)
+        return await self._request("POST", "/chat/completions", json_body=payload, tenant_id=tenant_id)
 
     async def submit_chat_feedback(self, interaction_id: str, rating: str, comment: Optional[str] = None) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"interaction_id": interaction_id, "rating": rating}
         if comment:
             payload["comment"] = comment
-        return await self._request("POST", "/chat/feedback", json_body=payload)
+        return await self._request("POST", "/chat/feedback", json_body=payload, tenant_id=None)
 
     async def list_tenant_collections(self, tenant_id: str) -> Dict[str, Any]:
-        return await self._request("GET", "/management/collections", params={"tenant_id": tenant_id})
+        return await self._request("GET", "/management/collections", params={"tenant_id": tenant_id}, tenant_id=tenant_id)
 
     async def get_tenant_queue_status(self, tenant_id: str) -> Dict[str, Any]:
-        return await self._request("GET", "/management/queue/status", params={"tenant_id": tenant_id})
+        return await self._request("GET", "/management/queue/status", params={"tenant_id": tenant_id}, tenant_id=tenant_id)
 
-    async def get_management_health(self) -> Dict[str, Any]:
-        return await self._request("GET", "/management/health")
+    async def get_management_health(self, *, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        return await self._request("GET", "/management/health", tenant_id=tenant_id)
+
+    async def validate_scope(
+        self,
+        *,
+        query: str,
+        tenant_id: str,
+        collection_id: Optional[str] = None,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"query": query, "tenant_id": tenant_id}
+        if collection_id:
+            payload["collection_id"] = collection_id
+        if filters is not None:
+            payload["filters"] = filters
+        return await self._request("POST", "/retrieval/validate-scope", json_body=payload, tenant_id=tenant_id)
+
+    async def retrieval_hybrid(
+        self,
+        *,
+        query: str,
+        tenant_id: str,
+        collection_id: Optional[str] = None,
+        k: int = 12,
+        fetch_k: int = 60,
+        filters: Optional[Dict[str, Any]] = None,
+        rerank: Optional[Dict[str, Any]] = None,
+        graph: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"query": query, "tenant_id": tenant_id, "k": k, "fetch_k": fetch_k}
+        if collection_id:
+            payload["collection_id"] = collection_id
+        if filters is not None:
+            payload["filters"] = filters
+        if rerank is not None:
+            payload["rerank"] = rerank
+        if graph is not None:
+            payload["graph"] = graph
+        return await self._request("POST", "/retrieval/hybrid", json_body=payload, tenant_id=tenant_id)
+
+    async def retrieval_multi_query(
+        self,
+        *,
+        tenant_id: str,
+        queries: List[Dict[str, Any]],
+        collection_id: Optional[str] = None,
+        merge: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"tenant_id": tenant_id, "queries": queries}
+        if collection_id:
+            payload["collection_id"] = collection_id
+        if merge is not None:
+            payload["merge"] = merge
+        return await self._request("POST", "/retrieval/multi-query", json_body=payload, tenant_id=tenant_id)
+
+    async def retrieval_explain(
+        self,
+        *,
+        query: str,
+        tenant_id: str,
+        collection_id: Optional[str] = None,
+        k: int = 12,
+        fetch_k: int = 60,
+        top_n: int = 10,
+        filters: Optional[Dict[str, Any]] = None,
+        rerank: Optional[Dict[str, Any]] = None,
+        graph: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "query": query,
+            "tenant_id": tenant_id,
+            "k": k,
+            "fetch_k": fetch_k,
+            "top_n": top_n,
+        }
+        if collection_id:
+            payload["collection_id"] = collection_id
+        if filters is not None:
+            payload["filters"] = filters
+        if rerank is not None:
+            payload["rerank"] = rerank
+        if graph is not None:
+            payload["graph"] = graph
+        return await self._request("POST", "/retrieval/explain", json_body=payload, tenant_id=tenant_id)
 
     async def _request(
         self,
@@ -230,9 +428,10 @@ class AsyncCireRagClient:
         json_body: Optional[Dict[str, Any]] = None,
         data: Optional[Dict[str, Any]] = None,
         files: Optional[Dict[str, Any]] = None,
+        tenant_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         url = f"{self.base_url}/api/v1{path}"
-        headers = _build_auth_headers(self.api_key, self.default_headers)
+        headers = _build_auth_headers(self.api_key, self.default_headers, tenant_id=tenant_id)
         response = await self.client.request(
             method=method,
             url=url,

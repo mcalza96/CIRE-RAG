@@ -13,6 +13,10 @@ Base API client for product endpoints under `/api/v1`.
 - `listTenantCollections` -> `GET /management/collections`
 - `getTenantQueueStatus` -> `GET /management/queue/status`
 - `getManagementHealth` -> `GET /management/health`
+- `validateScope` -> `POST /retrieval/validate-scope`
+- `retrievalHybrid` -> `POST /retrieval/hybrid`
+- `retrievalMultiQuery` -> `POST /retrieval/multi-query`
+- `retrievalExplain` -> `POST /retrieval/explain`
 
 ## Usage
 

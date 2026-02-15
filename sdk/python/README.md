@@ -58,5 +58,9 @@ asyncio.run(main())
 - `list_tenant_collections`
 - `get_tenant_queue_status`
 - `get_management_health`
+- `validate_scope`
+- `retrieval_hybrid`
+- `retrieval_multi_query`
+- `retrieval_explain`
 
 Sync and async clients expose the same method names.

@@ -1,4 +1,3 @@
-import time
 import re
 from typing import List, Dict, Any
 from uuid import uuid4
@@ -8,10 +7,13 @@ from app.core.middleware.security import SecurityViolationError
 from app.core.retrieval_config import retrieval_settings
 from app.core.settings import settings
 from app.core.observability.scope_metrics import scope_metrics_store
+from app.core.observability.timing import elapsed_ms, perf_now
 from app.application.services.retrieval_router import RetrievalRouter
 from app.domain.knowledge_schemas import RetrievalIntent, AgentRole, TaskType
+from app.domain.schemas.retrieval_payloads import GroundedContext
 
 logger = structlog.get_logger(__name__)
+
 
 class KnowledgeService:
     """
@@ -20,16 +22,13 @@ class KnowledgeService:
     """
 
     async def get_grounded_context(
-        self, 
-        query: str, 
-        institution_id: str, 
-        k: int = retrieval_settings.TOP_K
-    ) -> Dict[str, Any]:
+        self, query: str, institution_id: str, k: int = retrieval_settings.TOP_K
+    ) -> GroundedContext:
         """
         Retrieves context via vector search.
         """
         retrieval_request_id = str(uuid4())
-        start = time.perf_counter()
+        start = perf_now()
         selected_mode = "retrieval_router" if self._use_retrieval_router() else "vector_only"
         scope_metrics_store.record_request(institution_id)
         scope_resolution = self._resolve_scope(query)
@@ -71,8 +70,9 @@ class KnowledgeService:
             mode=selected_mode,
             retrieval_request_id=retrieval_request_id,
         )
-        
+
         from app.infrastructure.container import CognitiveContainer
+
         container = CognitiveContainer.get_instance()
 
         if self._use_retrieval_router():
@@ -94,14 +94,14 @@ class KnowledgeService:
                 requested_standards=scope_resolution["requested_standards"],
             )
 
-        elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+        pipeline_ms = elapsed_ms(start)
         logger.info(
             "retrieval_pipeline_timing",
             stage="pipeline_total",
             mode=selected_mode,
             retrieval_request_id=retrieval_request_id,
             tenant_id=institution_id,
-            duration_ms=elapsed_ms,
+            duration_ms=pipeline_ms,
             result_chunks=len(result.get("context_chunks", []) or []),
         )
         return result
@@ -118,7 +118,7 @@ class KnowledgeService:
         container: Any,
         retrieval_request_id: str,
         requested_standards: tuple[str, ...] = (),
-    ) -> Dict[str, Any]:
+    ) -> GroundedContext:
         from app.core.middleware.security import LeakCanary
 
         orchestrator = RetrievalRouter(
@@ -157,7 +157,12 @@ class KnowledgeService:
         try:
             LeakCanary.verify_isolation(institution_id, results)
         except SecurityViolationError as e:
-            logger.critical("security_isolation_breach", error=str(e), institution_id=institution_id, mode="retrieval_router")
+            logger.critical(
+                "security_isolation_breach",
+                error=str(e),
+                institution_id=institution_id,
+                mode="retrieval_router",
+            )
             raise ApiError(
                 status_code=500,
                 code="SECURITY_ISOLATION_BREACH",
@@ -185,7 +190,7 @@ class KnowledgeService:
         container: Any,
         retrieval_request_id: str,
         requested_standards: tuple[str, ...] = (),
-    ) -> Dict[str, Any]:
+    ) -> GroundedContext:
         """Vector-only retrieval path."""
         retrieval_tools = container.retrieval_tools
         from app.core.middleware.security import LeakCanary
@@ -197,12 +202,8 @@ class KnowledgeService:
                 "source_standards": list(requested_standards),
                 "source_standard": requested_standards[0],
             }
-        retrieve_start = time.perf_counter()
-        results = await retrieval_tools.retrieve(
-            query=query,
-            scope_context=scope,
-            k=k
-        )
+        retrieve_start = perf_now()
+        results = await retrieval_tools.retrieve(query=query, scope_context=scope, k=k)
         filtered_results = self._filter_results_by_scope(results, requested_standards)
         scope_mismatch = bool(requested_standards and results and not filtered_results)
         if filtered_results:
@@ -224,15 +225,20 @@ class KnowledgeService:
             stage="vector_only_retrieve",
             retrieval_request_id=retrieval_request_id,
             tenant_id=institution_id,
-            duration_ms=round((time.perf_counter() - retrieve_start) * 1000, 2),
+            duration_ms=elapsed_ms(retrieve_start),
             result_count=len(results or []),
         )
-        
+
         # 2. Security Validation (LeakCanary)
         try:
             LeakCanary.verify_isolation(institution_id, results)
         except SecurityViolationError as e:
-            logger.critical("security_isolation_breach", error=str(e), institution_id=institution_id, mode="vector_only")
+            logger.critical(
+                "security_isolation_breach",
+                error=str(e),
+                institution_id=institution_id,
+                mode="vector_only",
+            )
             raise ApiError(
                 status_code=500,
                 code="SECURITY_ISOLATION_BREACH",
@@ -245,7 +251,7 @@ class KnowledgeService:
         context_map = {str(r.get("id")): r for r in results}
 
         return {
-            "context_chunks": context_chunks, 
+            "context_chunks": context_chunks,
             "context_map": context_map,
             "citations": [str(r.get("id")) for r in results if r.get("id")],
             "mode": "VECTOR_ONLY",
@@ -311,7 +317,9 @@ class KnowledgeService:
                 return token
         return ""
 
-    def _filter_results_by_scope(self, results: List[Dict[str, Any]], requested_standards: tuple[str, ...]) -> List[Dict[str, Any]]:
+    def _filter_results_by_scope(
+        self, results: List[Dict[str, Any]], requested_standards: tuple[str, ...]
+    ) -> List[Dict[str, Any]]:
         if not requested_standards:
             return results
 
@@ -325,21 +333,22 @@ class KnowledgeService:
                 filtered.append(item)
         return filtered
 
-    def optimize_context_for_prompt(self, context_chunks: List[str], context_map: Dict[str, Any]) -> str:
+    def optimize_context_for_prompt(
+        self, context_chunks: List[str], context_map: Dict[str, Any]
+    ) -> str:
         """
         Optimizes context by injecting global summaries if available.
         """
         global_summary = None
         if context_map:
             first_chunk = next(iter(context_map.values()), {})
-            global_summary = (
-                first_chunk.get("metadata", {}).get("global_summary") or 
-                first_chunk.get("source_metadata", {}).get("global_summary")
-            )
+            global_summary = first_chunk.get("metadata", {}).get(
+                "global_summary"
+            ) or first_chunk.get("source_metadata", {}).get("global_summary")
 
         context_text = "\n\n".join(context_chunks) if context_chunks else "General Knowledge"
-        
+
         if global_summary:
             context_text = f"CONTEXTO DOCUMENTO: {global_summary}\n\n{context_text}"
-            
+
         return context_text
