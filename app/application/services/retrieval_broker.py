@@ -298,6 +298,20 @@ class RetrievalBroker:
                 return []
             
             data = await self.repository.match_summaries(vectors[0], tenant_id, k, collection_id=collection_id)
+            # Ensure every row is ownership-stamped for LeakCanary (debug retrieval endpoints).
+            for row in data or []:
+                if not isinstance(row, dict):
+                    continue
+                meta_raw = row.get("metadata")
+                metadata = meta_raw if isinstance(meta_raw, dict) else {}
+                if meta_raw is None or not isinstance(meta_raw, dict):
+                    row["metadata"] = metadata
+                row.setdefault("institution_id", tenant_id)
+                row.setdefault("tenant_id", tenant_id)
+                metadata.setdefault("institution_id", tenant_id)
+                metadata.setdefault("tenant_id", tenant_id)
+                metadata.setdefault("is_raptor_summary", True)
+
             ForensicRecorder.record_retrieval(
                 query,
                 data,

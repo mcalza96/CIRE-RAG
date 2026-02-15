@@ -44,6 +44,8 @@ class AtomicRetrievalEngine:
         source_ids = await self._resolve_source_ids(scope_context or {})
         if not source_ids:
             return []
+        tenant_id = str((scope_context or {}).get("tenant_id") or "").strip()
+        allowed_source_ids = set(str(sid) for sid in source_ids if str(sid).strip())
 
         vector_start = time.perf_counter()
         vector_rows: list[dict[str, Any]] = []
@@ -88,6 +90,7 @@ class AtomicRetrievalEngine:
         )
 
         merged = self._dedupe_by_id(fused + graph_rows)
+        self._stamp_tenant_context(rows=merged, tenant_id=tenant_id, allowed_source_ids=allowed_source_ids)
         logger.info(
             "retrieval_pipeline_timing",
             stage="atomic_engine_total",
@@ -104,6 +107,42 @@ class AtomicRetrievalEngine:
             query_preview=query[:50],
         )
         return merged[:k]
+
+    @staticmethod
+    def _stamp_tenant_context(*, rows: list[dict[str, Any]], tenant_id: str, allowed_source_ids: set[str]) -> None:
+        """Attach tenant ownership metadata for rows derived from tenant-filtered source_ids.
+
+        We do NOT blindly stamp every row, because that would mask cross-tenant leaks if a bug
+        ever returns foreign content. We only stamp rows that we can tie back to the tenant's
+        allowed source_ids, plus graph-derived rows (already tenant-scoped at query time).
+        """
+
+        if not tenant_id:
+            return
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            meta_raw = row.get("metadata")
+            metadata: dict[str, Any] = meta_raw if isinstance(meta_raw, dict) else {}
+            if meta_raw is None or not isinstance(meta_raw, dict):
+                row["metadata"] = metadata
+
+            source_layer = str(row.get("source_layer") or "").strip().lower()
+            source_id = str(metadata.get("source_id") or "").strip()
+            safe_to_stamp = False
+            if source_layer in {"vector", "fts", "hybrid"} and source_id and source_id in allowed_source_ids:
+                safe_to_stamp = True
+            if source_layer == "graph":
+                safe_to_stamp = True
+
+            if not safe_to_stamp:
+                continue
+
+            row.setdefault("institution_id", tenant_id)
+            row.setdefault("tenant_id", tenant_id)
+            metadata.setdefault("institution_id", tenant_id)
+            metadata.setdefault("tenant_id", tenant_id)
 
     async def _search_hybrid_rpc(
         self,
