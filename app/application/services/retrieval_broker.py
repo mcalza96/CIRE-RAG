@@ -1,6 +1,7 @@
 import structlog
 import time
 import re
+import math
 from typing import List, Dict, Any, Optional
 from app.application.services.query_decomposer import QueryDecomposer, QueryPlan
 from app.core.settings import settings
@@ -12,17 +13,29 @@ from app.core.observability.forensic import ForensicRecorder
 from app.core.observability.scope_metrics import scope_metrics_store
 from app.domain.knowledge_schemas import RAGSearchResult, RetrievalIntent, AgentRole, TaskType
 from app.domain.interfaces.retrieval_interface import IRetrievalRepository
-from app.services.knowledge.retrieval_strategies import DirectRetrievalStrategy, IterativeRetrievalStrategy
+from app.services.knowledge.retrieval_strategies import (
+    DirectRetrievalStrategy,
+    IterativeRetrievalStrategy,
+)
 from app.services.retrieval.atomic_engine import AtomicRetrievalEngine
 
 logger = structlog.get_logger(__name__)
+
+
+def _safe_float(value: Any, *, default: float = 0.0) -> float:
+    try:
+        f = float(value)
+    except Exception:
+        return float(default)
+    return f if math.isfinite(f) else float(default)
+
 
 class RetrievalBroker:
     """
     Central orchestrator for knowledge retrieval.
     Decouples DSPy tools from business logic and infrastructure.
     """
-    
+
     def __init__(self, repository: IRetrievalRepository):
         self.repository = repository
         self.reranker = GravityReranker()
@@ -81,7 +94,9 @@ class RetrievalBroker:
         if not isinstance(scope_context, dict):
             return ()
 
-        nested = scope_context.get("filters") if isinstance(scope_context.get("filters"), dict) else {}
+        nested = (
+            scope_context.get("filters") if isinstance(scope_context.get("filters"), dict) else {}
+        )
         raw_list = scope_context.get("source_standards")
         if not raw_list and nested:
             raw_list = nested.get("source_standards")
@@ -90,7 +105,9 @@ class RetrievalBroker:
         if isinstance(raw_list, list):
             values.extend(str(v).strip() for v in raw_list if isinstance(v, str) and str(v).strip())
 
-        single = scope_context.get("source_standard") or (nested.get("source_standard") if nested else None)
+        single = scope_context.get("source_standard") or (
+            nested.get("source_standard") if nested else None
+        )
         if isinstance(single, str) and single.strip():
             values.append(single.strip())
 
@@ -98,7 +115,9 @@ class RetrievalBroker:
             return ()
         return tuple(dict.fromkeys(values))
 
-    def _apply_scope_penalty(self, results: List[Dict[str, Any]], requested_scopes: tuple[str, ...]) -> List[Dict[str, Any]]:
+    def _apply_scope_penalty(
+        self, results: List[Dict[str, Any]], requested_scopes: tuple[str, ...]
+    ) -> List[Dict[str, Any]]:
         if not requested_scopes:
             return results
 
@@ -115,7 +134,12 @@ class RetrievalBroker:
                 continue
 
             adjusted = dict(row)
-            base_similarity = float(adjusted.get("jina_relevance_score", adjusted.get("similarity", adjusted.get("score", 0.0))) or 0.0)
+            base_similarity = float(
+                adjusted.get(
+                    "jina_relevance_score", adjusted.get("similarity", adjusted.get("score", 0.0))
+                )
+                or 0.0
+            )
             penalized = max(base_similarity * 0.25, 0.0)
             adjusted["scope_penalized"] = True
             adjusted["scope_penalty"] = 0.75
@@ -131,15 +155,15 @@ class RetrievalBroker:
         return sum(1 for item in results if bool(item.get("scope_penalized")))
 
     async def retrieve(
-        self, 
-        query: str, 
-        scope_context: Dict[str, Any], 
+        self,
+        query: str,
+        scope_context: Dict[str, Any],
         k: int = 20,
         fetch_k: int = 50,
         enable_reranking: bool = True,
         iterative: bool = False,
         return_trace: bool = False,
-        **strategy_kwargs
+        **strategy_kwargs,
     ) -> List[Dict[str, Any]] | Dict[str, Any]:
         """
         Main entry point for retrieval orchestration.
@@ -158,7 +182,7 @@ class RetrievalBroker:
             "timings_ms": {},
         }
         total_started = time.perf_counter()
-        
+
         try:
             retrieval_started = time.perf_counter()
             # 2. Strategy Selection & Execution
@@ -166,7 +190,11 @@ class RetrievalBroker:
                 engine = JinaEmbeddingService.get_instance()
                 vectors = await engine.embed_texts([query], task="retrieval.query")
                 if not vectors or not vectors[0]:
-                    return {"items": [], "trace": {"timings_ms": {"total": 0.0}}} if return_trace else []
+                    return (
+                        {"items": [], "trace": {"timings_ms": {"total": 0.0}}}
+                        if return_trace
+                        else []
+                    )
                 vector = vectors[0]
 
                 strategy = self.iterative_strategy
@@ -188,7 +216,9 @@ class RetrievalBroker:
                 )
             else:
                 mode = self._engine_mode()
-                planner_used = bool(settings.QUERY_DECOMPOSER_ENABLED and mode in {"atomic", "hybrid"})
+                planner_used = bool(
+                    settings.QUERY_DECOMPOSER_ENABLED and mode in {"atomic", "hybrid"}
+                )
                 if planner_used:
                     plan = await self.query_decomposer.decompose(query)
                 else:
@@ -216,7 +246,9 @@ class RetrievalBroker:
                             scope_context=filter_conditions,
                             k=k,
                             fetch_k=fetch_k,
-                            graph_filter_relation_types=strategy_kwargs.get("graph_filter_relation_types"),
+                            graph_filter_relation_types=strategy_kwargs.get(
+                                "graph_filter_relation_types"
+                            ),
                             graph_filter_node_types=strategy_kwargs.get("graph_filter_node_types"),
                             graph_max_hops=strategy_kwargs.get("graph_max_hops"),
                         )
@@ -226,7 +258,9 @@ class RetrievalBroker:
                             scope_context=filter_conditions,
                             k=k,
                             fetch_k=fetch_k,
-                            graph_filter_relation_types=strategy_kwargs.get("graph_filter_relation_types"),
+                            graph_filter_relation_types=strategy_kwargs.get(
+                                "graph_filter_relation_types"
+                            ),
                             graph_filter_node_types=strategy_kwargs.get("graph_filter_node_types"),
                             graph_max_hops=strategy_kwargs.get("graph_max_hops"),
                         )
@@ -255,13 +289,23 @@ class RetrievalBroker:
                             **strategy_kwargs,
                         )
 
-            trace_payload["timings_ms"]["retrieval"] = round((time.perf_counter() - retrieval_started) * 1000, 2)
+            trace_payload["timings_ms"]["retrieval"] = round(
+                (time.perf_counter() - retrieval_started) * 1000, 2
+            )
             if not raw_results:
-                ForensicRecorder.record_retrieval(query, [], {"scope": scope_context.get("type"), "filters": filter_conditions})
-                trace_payload["timings_ms"]["total"] = round((time.perf_counter() - total_started) * 1000, 2)
+                ForensicRecorder.record_retrieval(
+                    query, [], {"scope": scope_context.get("type"), "filters": filter_conditions}
+                )
+                trace_payload["timings_ms"]["total"] = round(
+                    (time.perf_counter() - total_started) * 1000, 2
+                )
                 return {"items": [], "trace": trace_payload} if return_trace else []
 
-            ForensicRecorder.record_retrieval(query, raw_results, {"scope": scope_context.get("type"), "filters": filter_conditions})
+            ForensicRecorder.record_retrieval(
+                query,
+                raw_results,
+                {"scope": scope_context.get("type"), "filters": filter_conditions},
+            )
 
             # 4. Reranking Phase
             rerank_started = time.perf_counter()
@@ -270,8 +314,12 @@ class RetrievalBroker:
             else:
                 ranked = raw_results[:k]
 
-            trace_payload["timings_ms"]["rerank"] = round((time.perf_counter() - rerank_started) * 1000, 2)
-            trace_payload["timings_ms"]["total"] = round((time.perf_counter() - total_started) * 1000, 2)
+            trace_payload["timings_ms"]["rerank"] = round(
+                (time.perf_counter() - rerank_started) * 1000, 2
+            )
+            trace_payload["timings_ms"]["total"] = round(
+                (time.perf_counter() - total_started) * 1000, 2
+            )
             if return_trace:
                 return {"items": ranked, "trace": trace_payload}
             return ranked
@@ -296,8 +344,10 @@ class RetrievalBroker:
             vectors = await engine.embed_texts([query], task="retrieval.query")
             if not vectors or not vectors[0]:
                 return []
-            
-            data = await self.repository.match_summaries(vectors[0], tenant_id, k, collection_id=collection_id)
+
+            data = await self.repository.match_summaries(
+                vectors[0], tenant_id, k, collection_id=collection_id
+            )
             # Ensure every row is ownership-stamped for LeakCanary (debug retrieval endpoints).
             for row in data or []:
                 if not isinstance(row, dict):
@@ -315,7 +365,11 @@ class RetrievalBroker:
             ForensicRecorder.record_retrieval(
                 query,
                 data,
-                {"scope": "raptor_summaries", "tenant_id": tenant_id, "collection_id": collection_id},
+                {
+                    "scope": "raptor_summaries",
+                    "tenant_id": tenant_id,
+                    "collection_id": collection_id,
+                },
             )
             return data
         except Exception as e:
@@ -333,7 +387,7 @@ class RetrievalBroker:
             filters["tenant_id"] = tenant_id
         elif scope_type == "global":
             filters["is_global"] = True
-        
+
         # Query Enrichment
         _, query_filters = enrich_metadata(query, {})
         if query_filters:
@@ -360,10 +414,12 @@ class RetrievalBroker:
             if context_scopes:
                 filters["source_standards"] = list(context_scopes)
                 filters["source_standard"] = context_scopes[0]
-              
+
         return filters
 
-    async def _apply_reranking(self, query: str, results: List[Dict], scope_context: Dict, k: int) -> List[Dict]:
+    async def _apply_reranking(
+        self, query: str, results: List[Dict], scope_context: Dict, k: int
+    ) -> List[Dict]:
         try:
             rerank_mode = self._rerank_mode()
             semantic_ranked = results
@@ -374,7 +430,7 @@ class RetrievalBroker:
 
             if use_jina and self.jina_reranker.is_enabled() and results:
                 max_candidates = max(1, int(settings.RERANK_MAX_CANDIDATES or 10))
-                rerank_candidates = results[: max_candidates]
+                rerank_candidates = results[:max_candidates]
                 docs = [str(item.get("content") or "") for item in rerank_candidates]
                 rows = await self.jina_reranker.rerank_documents(
                     query=query,
@@ -388,7 +444,9 @@ class RetrievalBroker:
                         if not isinstance(idx, int) or idx < 0 or idx >= len(rerank_candidates):
                             continue
                         source = dict(rerank_candidates[idx])
-                        source["jina_relevance_score"] = float(row.get("relevance_score") or 0.0)
+                        source["jina_relevance_score"] = _safe_float(
+                            row.get("relevance_score"), default=0.0
+                        )
                         reordered.append(source)
                     if reordered:
                         remainder = results[len(rerank_candidates) :]
@@ -406,7 +464,9 @@ class RetrievalBroker:
             )
 
             if requested_scopes and settings.SCOPE_STRICT_FILTERING:
-                strict_filtered = [item for item in semantic_ranked if not bool(item.get("scope_penalized"))]
+                strict_filtered = [
+                    item for item in semantic_ranked if not bool(item.get("scope_penalized"))
+                ]
                 if strict_filtered:
                     semantic_ranked = strict_filtered
 
@@ -437,17 +497,24 @@ class RetrievalBroker:
                     id=str(item.get("id", "")),
                     content=item.get("content", ""),
                     metadata=item.get("metadata", {}),
-                    similarity=float(item.get("jina_relevance_score", item.get("similarity", 0.0)) or 0.0),
-                    score=float(item.get("jina_relevance_score", item.get("similarity", 0.0)) or 0.0),
+                    similarity=_safe_float(
+                        item.get("jina_relevance_score", item.get("similarity", 0.0)),
+                        default=0.0,
+                    ),
+                    score=_safe_float(
+                        item.get("jina_relevance_score", item.get("similarity", 0.0)),
+                        default=0.0,
+                    ),
                     source_layer="knowledge",
-                    source_id=item.get("source_id")
-                ) for item in semantic_ranked
+                    source_id=item.get("source_id"),
+                )
+                for item in semantic_ranked
             ]
 
             intent = RetrievalIntent(
                 query=query,
                 role=AgentRole(scope_context.get("role", "socratic_mentor").lower()),
-                task=TaskType.EXPLANATION
+                task=TaskType.EXPLANATION,
             )
 
             ranked = self.reranker.rerank(candidates, intent)

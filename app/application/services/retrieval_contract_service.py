@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 import time
 from datetime import datetime, timezone
@@ -41,6 +42,26 @@ logger = structlog.get_logger(__name__)
 _ALLOWED_FILTER_KEYS = {"metadata", "time_range", "source_standard", "source_standards"}
 _RESERVED_METADATA_KEYS = {"tenant_id", "institution_id"}
 _SCALAR_TYPES = (str, int, float, bool)
+
+
+def _safe_float(value: Any, *, default: float = 0.0) -> float:
+    """Return a JSON-safe finite float (no NaN/Inf)."""
+
+    try:
+        f = float(value)
+    except Exception:
+        return float(default)
+    return f if math.isfinite(f) else float(default)
+
+
+def _finite_or_none(value: Any) -> float | None:
+    """Return float(value) if finite; otherwise None."""
+
+    try:
+        f = float(value)
+    except Exception:
+        return None
+    return f if math.isfinite(f) else None
 
 
 def _coerce_iso8601(value: str | None) -> datetime | None:
@@ -85,7 +106,11 @@ class RetrievalContractService:
             return {}, violations
         if not isinstance(metadata, dict):
             violations.append(
-                ScopeIssue(code="INVALID_SCOPE_FILTER", field="filters.metadata", message="metadata must be an object")
+                ScopeIssue(
+                    code="INVALID_SCOPE_FILTER",
+                    field="filters.metadata",
+                    message="metadata must be an object",
+                )
             )
             return {}, violations
 
@@ -94,7 +119,11 @@ class RetrievalContractService:
             key_str = str(key).strip()
             if not key_str:
                 violations.append(
-                    ScopeIssue(code="INVALID_SCOPE_FILTER", field="filters.metadata", message="metadata keys must be non-empty")
+                    ScopeIssue(
+                        code="INVALID_SCOPE_FILTER",
+                        field="filters.metadata",
+                        message="metadata keys must be non-empty",
+                    )
                 )
                 continue
             if key_str in _RESERVED_METADATA_KEYS:
@@ -128,7 +157,11 @@ class RetrievalContractService:
             return None, violations
         if not isinstance(time_range, dict):
             violations.append(
-                ScopeIssue(code="INVALID_SCOPE_FILTER", field="filters.time_range", message="time_range must be an object")
+                ScopeIssue(
+                    code="INVALID_SCOPE_FILTER",
+                    field="filters.time_range",
+                    message="time_range must be an object",
+                )
             )
             return None, violations
 
@@ -177,10 +210,20 @@ class RetrievalContractService:
         if violations:
             return None, violations
 
-        return {"field": field, "from": dt_from.isoformat() if dt_from else None, "to": dt_to.isoformat() if dt_to else None}, []
+        return {
+            "field": field,
+            "from": dt_from.isoformat() if dt_from else None,
+            "to": dt_to.isoformat() if dt_to else None,
+        }, []
 
-    def validate_scope(self, request: ValidateScopeRequest | HybridRetrievalRequest | ExplainRetrievalRequest) -> ValidateScopeResponse:
-        raw_filters = request.filters.model_dump(mode="python", by_alias=True, exclude_none=True) if request.filters else {}
+    def validate_scope(
+        self, request: ValidateScopeRequest | HybridRetrievalRequest | ExplainRetrievalRequest
+    ) -> ValidateScopeResponse:
+        raw_filters = (
+            request.filters.model_dump(mode="python", by_alias=True, exclude_none=True)
+            if request.filters
+            else {}
+        )
         violations: list[ScopeIssue] = []
         warnings: list[ScopeIssue] = []
         unknown_keys = sorted(set(raw_filters.keys()) - _ALLOWED_FILTER_KEYS)
@@ -193,9 +236,13 @@ class RetrievalContractService:
                 )
             )
 
-        metadata_norm, metadata_violations = self._validate_metadata_values(raw_filters.get("metadata"))
+        metadata_norm, metadata_violations = self._validate_metadata_values(
+            raw_filters.get("metadata")
+        )
         violations.extend(metadata_violations)
-        time_range_norm, time_range_violations = self._validate_time_range(raw_filters.get("time_range"))
+        time_range_norm, time_range_violations = self._validate_time_range(
+            raw_filters.get("time_range")
+        )
         violations.extend(time_range_violations)
 
         source_standard = str(raw_filters.get("source_standard") or "").strip() or None
@@ -264,8 +311,14 @@ class RetrievalContractService:
         )
 
     @staticmethod
-    def _build_scope_context(validated: ValidateScopeResponse, *, collection_id: str | None) -> dict[str, Any]:
-        normalized_filters = validated.normalized_scope.get("filters") if isinstance(validated.normalized_scope, dict) else {}
+    def _build_scope_context(
+        validated: ValidateScopeResponse, *, collection_id: str | None
+    ) -> dict[str, Any]:
+        normalized_filters = (
+            validated.normalized_scope.get("filters")
+            if isinstance(validated.normalized_scope, dict)
+            else {}
+        )
         filters = normalized_filters if isinstance(normalized_filters, dict) else {}
         scope_context: dict[str, Any] = {
             "type": "institutional",
@@ -309,7 +362,9 @@ class RetrievalContractService:
                 RetrievalItem(
                     source=str(row.get("source") or f"C{idx + 1}"),
                     content=content,
-                    score=float(row.get("similarity") or row.get("score") or 0.0),
+                    score=_safe_float(
+                        row.get("similarity"), default=_safe_float(row.get("score"), default=0.0)
+                    ),
                     metadata={"row": row},
                 )
             )
@@ -362,7 +417,9 @@ class RetrievalContractService:
         try:
             LeakCanary.verify_isolation(request.tenant_id, rows)
         except SecurityViolationError as exc:
-            logger.critical("security_isolation_breach", error=str(exc), tenant_id=request.tenant_id)
+            logger.critical(
+                "security_isolation_breach", error=str(exc), tenant_id=request.tenant_id
+            )
             raise ApiError(
                 status_code=500,
                 code="SECURITY_ISOLATION_BREACH",
@@ -374,11 +431,16 @@ class RetrievalContractService:
             items=items,
             trace=HybridTrace(
                 filters_applied=dict(trace_payload.get("filters_applied") or {}),
-                engine_mode=str(trace_payload.get("engine_mode") or settings.RETRIEVAL_ENGINE_MODE or "hybrid"),
+                engine_mode=str(
+                    trace_payload.get("engine_mode") or settings.RETRIEVAL_ENGINE_MODE or "hybrid"
+                ),
                 planner_used=bool(trace_payload.get("planner_used", False)),
                 planner_multihop=bool(trace_payload.get("planner_multihop", False)),
                 fallback_used=bool(trace_payload.get("fallback_used", False)),
-                timings_ms=dict(trace_payload.get("timings_ms") or {"total": round((time.perf_counter() - started) * 1000, 2)}),
+                timings_ms=dict(
+                    trace_payload.get("timings_ms")
+                    or {"total": round((time.perf_counter() - started) * 1000, 2)}
+                ),
                 warnings=[str(item.message) for item in validated.warnings],
             ),
         )
@@ -416,7 +478,9 @@ class RetrievalContractService:
             )
         return merged
 
-    async def run_multi_query(self, request: MultiQueryRetrievalRequest) -> MultiQueryRetrievalResponse:
+    async def run_multi_query(
+        self, request: MultiQueryRetrievalRequest
+    ) -> MultiQueryRetrievalResponse:
         started = time.perf_counter()
 
         async def _execute_subquery(item: Any) -> tuple[SubQueryExecution, list[RetrievalItem]]:
@@ -494,7 +558,9 @@ class RetrievalContractService:
         try:
             LeakCanary.verify_isolation(request.tenant_id, self._rows_from_items(merged))
         except SecurityViolationError as exc:
-            logger.critical("security_isolation_breach", error=str(exc), tenant_id=request.tenant_id)
+            logger.critical(
+                "security_isolation_breach", error=str(exc), tenant_id=request.tenant_id
+            )
             raise ApiError(
                 status_code=500,
                 code="SECURITY_ISOLATION_BREACH",
@@ -538,7 +604,9 @@ class RetrievalContractService:
         return True
 
     @staticmethod
-    def _metadata_keys_matched(row: dict[str, Any], metadata_filter: dict[str, Any] | None) -> list[str]:
+    def _metadata_keys_matched(
+        row: dict[str, Any], metadata_filter: dict[str, Any] | None
+    ) -> list[str]:
         if not metadata_filter:
             return []
         raw_metadata = row.get("metadata")
@@ -570,24 +638,34 @@ class RetrievalContractService:
         items = hybrid.items[: max(1, int(request.top_n))]
         explain_items: list[ExplainedRetrievalItem] = []
         metadata_filter = request.filters.metadata if request.filters else None
-        time_range = request.filters.time_range.model_dump(mode="python", by_alias=True) if request.filters and request.filters.time_range else None
+        time_range = (
+            request.filters.time_range.model_dump(mode="python", by_alias=True)
+            if request.filters and request.filters.time_range
+            else None
+        )
         for item in items:
             row = _extract_row(item)
             base_similarity = float(row.get("similarity") or row.get("score") or item.score or 0.0)
             jina_score = row.get("jina_relevance_score")
+            scope_penalty = row.get("scope_penalty")
             explain_items.append(
                 ExplainedRetrievalItem(
                     source=item.source,
                     content=item.content,
-                    score=item.score,
+                    score=_safe_float(item.score, default=0.0),
                     metadata=item.metadata,
                     explain=ExplainedItemDetails(
                         score_components=ScoreComponents(
-                            base_similarity=base_similarity,
-                            jina_relevance_score=float(jina_score) if isinstance(jina_score, (int, float)) else None,
-                            final_score=float(item.score),
+                            base_similarity=_safe_float(base_similarity, default=0.0),
+                            jina_relevance_score=(
+                                _safe_float(jina_score, default=0.0)
+                                if isinstance(jina_score, (int, float))
+                                and math.isfinite(float(jina_score))
+                                else None
+                            ),
+                            final_score=_safe_float(item.score, default=0.0),
                             scope_penalized=bool(row.get("scope_penalized", False)),
-                            scope_penalty_ratio=float(row.get("scope_penalty")) if isinstance(row.get("scope_penalty"), (int, float)) else None,
+                            scope_penalty_ratio=_finite_or_none(scope_penalty),
                         ),
                         retrieval_path=RetrievalPath(
                             source_layer=str(row.get("source_layer") or ""),
@@ -597,7 +675,12 @@ class RetrievalContractService:
                             collection_id_match=(
                                 None
                                 if not request.collection_id
-                                else str(row.get("collection_id") or (row.get("metadata") or {}).get("collection_id") or "") == request.collection_id
+                                else str(
+                                    row.get("collection_id")
+                                    or (row.get("metadata") or {}).get("collection_id")
+                                    or ""
+                                )
+                                == request.collection_id
                             ),
                             time_range_match=self._matches_time_range(row, time_range),
                             metadata_keys_matched=self._metadata_keys_matched(row, metadata_filter),

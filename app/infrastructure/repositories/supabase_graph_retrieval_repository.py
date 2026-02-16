@@ -27,7 +27,9 @@ class SupabaseGraphRetrievalRepository:
             return []
         return [row for row in payload if isinstance(row, dict)]
 
-    async def match_exact_entities(self, tenant_id: UUID, entity_name: str, limit: int = 6) -> list[dict[str, Any]]:
+    async def match_exact_entities(
+        self, tenant_id: UUID, entity_name: str, limit: int = 6
+    ) -> list[dict[str, Any]]:
         client = await self._get_client()
         response = (
             await client.table("knowledge_entities")
@@ -68,7 +70,9 @@ class SupabaseGraphRetrievalRepository:
         )
         return self._rows(response.data)
 
-    async def fetch_one_hop_relations(self, tenant_id: UUID, anchor_ids: list[str]) -> list[dict[str, Any]]:
+    async def fetch_one_hop_relations(
+        self, tenant_id: UUID, anchor_ids: list[str]
+    ) -> list[dict[str, Any]]:
         if not anchor_ids:
             return []
         client = await self._get_client()
@@ -179,7 +183,8 @@ class SupabaseGraphRetrievalRepository:
                     "limit_count": limit_count,
                     "max_hops": max_hops,
                     "decay_factor": decay_factor,
-                    "filter_node_types": filter_node_types,
+                    # NOTE: RPC expects `filter_entity_types` (legacy caller used `filter_node_types`).
+                    "filter_entity_types": filter_node_types,
                     "filter_relation_types": filter_relation_types,
                 },
             ).execute()
