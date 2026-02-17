@@ -3,7 +3,11 @@ import time
 import re
 import math
 from typing import List, Dict, Any, Optional
-from app.application.services.query_decomposer import QueryDecomposer, QueryPlan
+from app.application.services.query_decomposer import (
+    QueryDecomposer,
+    QueryPlan,
+    is_simple_single_hop_query,
+)
 from app.core.settings import settings
 from app.services.embedding_service import JinaEmbeddingService
 from app.services.knowledge.gravity_reranker import GravityReranker
@@ -219,6 +223,10 @@ class RetrievalBroker:
                 planner_used = bool(
                     settings.QUERY_DECOMPOSER_ENABLED and mode in {"atomic", "hybrid"}
                 )
+                if planner_used and bool(settings.QUERY_DECOMPOSER_SKIP_SIMPLE_QUERIES):
+                    if is_simple_single_hop_query(query):
+                        planner_used = False
+                        trace_payload["planner_skipped_reason"] = "simple_single_hop_query"
                 if planner_used:
                     plan = await self.query_decomposer.decompose(query)
                 else:
@@ -226,6 +234,10 @@ class RetrievalBroker:
                 trace_payload["engine_mode"] = mode
                 trace_payload["planner_used"] = planner_used
                 trace_payload["planner_multihop"] = bool(plan.is_multihop)
+                trace_payload["planner_subquery_count"] = len(plan.sub_queries)
+                planner_skipped_reason = trace_payload.get("planner_skipped_reason")
+                if plan.fallback_reason:
+                    trace_payload["planner_fallback_reason"] = str(plan.fallback_reason)
 
                 logger.info(
                     "retrieval_strategy_execution",
@@ -235,6 +247,9 @@ class RetrievalBroker:
                     retrieval_engine_mode=mode,
                     planner_used=planner_used,
                     planner_multihop=plan.is_multihop,
+                    planner_subquery_count=len(plan.sub_queries),
+                    planner_fallback_reason=plan.fallback_reason,
+                    planner_skipped_reason=planner_skipped_reason,
                 )
 
                 raw_results = []
@@ -284,22 +299,32 @@ class RetrievalBroker:
                         else []
                     )
                     if warnings:
-                        prior = (
-                            trace_payload.get("warnings")
-                            if isinstance(trace_payload.get("warnings"), list)
+                        prior_raw = trace_payload.get("warnings")
+                        prior: list[str] = (
+                            [str(item) for item in prior_raw if str(item).strip()]
+                            if isinstance(prior_raw, list)
                             else []
                         )
                         trace_payload["warnings"] = list(dict.fromkeys([*prior, *warnings]))
                     warning_codes_raw = atomic_trace.get("warning_codes")
                     warning_codes = (
-                        [str(item).strip().upper() for item in warning_codes_raw if str(item).strip()]
+                        [
+                            str(item).strip().upper()
+                            for item in warning_codes_raw
+                            if str(item).strip()
+                        ]
                         if isinstance(warning_codes_raw, list)
                         else []
                     )
                     if warning_codes:
-                        prior_codes = (
-                            trace_payload.get("warning_codes")
-                            if isinstance(trace_payload.get("warning_codes"), list)
+                        prior_codes_raw = trace_payload.get("warning_codes")
+                        prior_codes: list[str] = (
+                            [
+                                str(item).strip().upper()
+                                for item in prior_codes_raw
+                                if str(item).strip()
+                            ]
+                            if isinstance(prior_codes_raw, list)
                             else []
                         )
                         merged_codes = [
@@ -338,6 +363,46 @@ class RetrievalBroker:
                             fetch_k=fetch_k,
                             **strategy_kwargs,
                         )
+
+                # Literal clause fallback: if strict clause_id produced no rows, retry with broader
+                # scope-only filters to recover subsection evidence (e.g., query 9.3 vs chunks 9.3.1).
+                metadata_raw = filter_conditions.get("metadata")
+                metadata_filter = metadata_raw if isinstance(metadata_raw, dict) else {}
+                clause_id = str(metadata_filter.get("clause_id") or "").strip()
+                if not raw_results and clause_id:
+                    fallback_filters = dict(filter_conditions)
+                    fallback_filters.pop("metadata", None)
+                    nested_filters_raw = fallback_filters.get("filters")
+                    if isinstance(nested_filters_raw, dict):
+                        nested = {
+                            str(k2): v2
+                            for k2, v2 in nested_filters_raw.items()
+                            if str(k2) not in {"clause_id", "clause_refs"}
+                        }
+                        if nested:
+                            fallback_filters["filters"] = nested
+                        else:
+                            fallback_filters.pop("filters", None)
+                    logger.info(
+                        "retrieval_strategy_literal_clause_fallback",
+                        clause_id=clause_id,
+                        strategy="AtomicRetrievalEngine",
+                    )
+                    trace_payload["literal_clause_fallback"] = {
+                        "applied": True,
+                        "clause_id": clause_id,
+                    }
+                    raw_results = await self.atomic_engine.retrieve_context(
+                        query=query,
+                        scope_context=fallback_filters,
+                        k=k,
+                        fetch_k=fetch_k,
+                        graph_filter_relation_types=strategy_kwargs.get(
+                            "graph_filter_relation_types"
+                        ),
+                        graph_filter_node_types=strategy_kwargs.get("graph_filter_node_types"),
+                        graph_max_hops=strategy_kwargs.get("graph_max_hops"),
+                    )
 
             trace_payload["timings_ms"]["retrieval"] = round(
                 (time.perf_counter() - retrieval_started) * 1000, 2
@@ -450,15 +515,23 @@ class RetrievalBroker:
         # Query enrichment contributes metadata hints but cannot override validated scope standards.
         _, query_filters = enrich_metadata(query, {})
         if isinstance(query_filters, dict) and query_filters:
+            metadata_raw = filters.get("metadata")
+            metadata_filter = metadata_raw if isinstance(metadata_raw, dict) else {}
+            metadata_clause = str(metadata_filter.get("clause_id") or "").strip()
             safe_query_filters: Dict[str, Any] = {}
             for key, value in query_filters.items():
                 key_str = str(key).strip()
                 if not key_str or key_str in {"source_standard", "scope"}:
                     continue
+                if key_str == "clause_refs":
+                    continue
+                if key_str == "clause_id" and metadata_clause:
+                    continue
                 safe_query_filters[key_str] = value
             if safe_query_filters:
-                nested_existing = (
-                    filters.get("filters") if isinstance(filters.get("filters"), dict) else {}
+                nested_existing_raw = filters.get("filters")
+                nested_existing: Dict[str, Any] = (
+                    nested_existing_raw if isinstance(nested_existing_raw, dict) else {}
                 )
                 nested_merged = dict(nested_existing)
                 nested_merged.update(safe_query_filters)

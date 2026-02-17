@@ -48,7 +48,7 @@ async def require_service_auth(
         or bool(settings.ENVIRONMENT in {"staging", "production", "prod"})
     )
     if not settings.is_deployed_environment:
-        logger.info(
+        logger.debug(
             "service_auth_bypass",
             auth_mode="local_bypass",
             service_secret_configured=bool(expected and expected != "development-secret"),
@@ -83,7 +83,7 @@ async def require_service_auth(
     candidate = bearer or header_secret
     caller_auth_mode = "bearer" if bearer else ("x_service_secret" if header_secret else "missing")
 
-    logger.info("service_auth_attempt", caller_auth_mode=caller_auth_mode)
+    logger.debug("service_auth_attempt", caller_auth_mode=caller_auth_mode)
 
     if candidate != expected:
         logger.warning("service_auth_failed", caller_auth_mode=caller_auth_mode)
@@ -94,4 +94,4 @@ async def require_service_auth(
             details="Missing or invalid service token",
         )
 
-    logger.info("service_auth_ok", caller_auth_mode=caller_auth_mode)
+    logger.debug("service_auth_ok", caller_auth_mode=caller_auth_mode)

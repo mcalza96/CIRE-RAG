@@ -16,11 +16,13 @@ ROOT_ENV_LOCAL = PROJECT_ROOT / ".env.local"
 SERVICE_ENV = PROJECT_ROOT / ".env"
 SERVICE_ENV_LOCAL = PROJECT_ROOT / ".env.local"
 
+
 class Settings(BaseSettings):
     """
     CIRE-RAG - Global Configuration Registry
     Centralizes all environment variables using Pydantic Settings.
     """
+
     model_config = SettingsConfigDict(
         env_file=(
             str(ROOT_ENV),
@@ -28,24 +30,26 @@ class Settings(BaseSettings):
             str(SERVICE_ENV),
             str(SERVICE_ENV_LOCAL),
         ),
-        env_file_encoding="utf-8", 
-        extra="ignore"
+        env_file_encoding="utf-8",
+        extra="ignore",
     )
 
     # Infrastructure
     DATABASE_URL: Optional[str] = None
     SUPABASE_DB_URL: Optional[str] = None
-    SUPABASE_URL: Optional[str] = Field(None, validation_alias=AliasChoices("SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL"))
+    SUPABASE_URL: Optional[str] = Field(
+        None, validation_alias=AliasChoices("SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL")
+    )
     SUPABASE_SERVICE_KEY: Optional[str] = Field(None, alias="SUPABASE_SERVICE_ROLE_KEY")
     NEXT_PUBLIC_SUPABASE_URL: Optional[str] = None
     REDIS_URL: str = "redis://localhost:6379/0"
     RAG_SERVICE_URL: str = "http://localhost:8000"
     RAG_ENGINE_URL: Optional[str] = None
-    
+
     # Security
     RAG_SERVICE_SECRET: str = "development-secret"
     SYSTEM_TENANT_ID: str = "00000000-0000-0000-0000-000000000000"
-    
+
     # AI Models & Services
     OPENAI_API_KEY: Optional[str] = None
     GROQ_API_KEY: Optional[str] = None
@@ -59,7 +63,7 @@ class Settings(BaseSettings):
     JINA_EMBEDDING_DIMENSIONS: int = 1024
     JINA_RERANK_URL: str = "https://api.jina.ai/v1/rerank"
     JINA_RERANK_MODEL: str = "jina-reranker-v2-base-multilingual"
-    
+
     # API Config
     API_PORT: int = 8000
     LOG_LEVEL: str = "INFO"
@@ -73,6 +77,9 @@ class Settings(BaseSettings):
     WORKER_PER_TENANT_CONCURRENCY: int = 5
     WORKER_POLL_INTERVAL_SECONDS: int = 2
     EMBEDDING_CONCURRENCY: int = 5
+    JINA_EMBED_RETRY_MAX_ATTEMPTS: int = 3
+    JINA_EMBED_RETRY_BASE_DELAY_SECONDS: float = 0.4
+    JINA_EMBED_RETRY_MAX_DELAY_SECONDS: float = 2.5
     WORKER_TENANT_QUEUE_SAMPLE_LIMIT: int = 1000
     WORKER_TENANT_QUEUE_DEPTH_ALERT: int = 200
     WORKER_TENANT_QUEUE_WAIT_ALERT_SECONDS: int = 300
@@ -95,6 +102,7 @@ class Settings(BaseSettings):
     DAILY_VLM_LIMIT: Optional[int] = None
     QUERY_DECOMPOSER_ENABLED: bool = True
     QUERY_DECOMPOSER_TIMEOUT_MS: int = 800
+    QUERY_DECOMPOSER_SKIP_SIMPLE_QUERIES: bool = True
     RETRIEVAL_ENGINE_MODE: str = "atomic"  # unified | atomic | hybrid
     SCOPE_STRICT_FILTERING: bool = False
     ATOMIC_ENABLE_FTS: bool = True
@@ -154,5 +162,6 @@ class Settings(BaseSettings):
             )
             self.JINA_MODE = "CLOUD"
         return self
+
 
 settings = Settings()  # type: ignore[call-arg]

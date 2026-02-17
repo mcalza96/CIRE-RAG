@@ -8,7 +8,11 @@ from uuid import UUID
 import structlog
 from langchain_core.language_models.chat_models import BaseChatModel
 
-from app.application.services.query_decomposer import QueryDecomposer, QueryPlan
+from app.application.services.query_decomposer import (
+    QueryDecomposer,
+    QueryPlan,
+    is_simple_single_hop_query,
+)
 from app.core.llm import get_llm
 from app.core.settings import settings
 from app.core.observability.scope_metrics import scope_metrics_store
@@ -94,7 +98,9 @@ class RetrievalRouter:
 
         if not values:
             seen: set[str] = set()
-            for match in re.findall(r"\biso\s*[-:]?\s*(\d{4,5})\b", intent.query or "", flags=re.IGNORECASE):
+            for match in re.findall(
+                r"\biso\s*[-:]?\s*(\d{4,5})\b", intent.query or "", flags=re.IGNORECASE
+            ):
                 item = f"ISO {match}"
                 if item in seen:
                     continue
@@ -119,7 +125,9 @@ class RetrievalRouter:
                 return value.strip().upper()
         return ""
 
-    def _apply_scope_penalty(self, items: list[dict[str, Any]], requested_scopes: tuple[str, ...]) -> list[dict[str, Any]]:
+    def _apply_scope_penalty(
+        self, items: list[dict[str, Any]], requested_scopes: tuple[str, ...]
+    ) -> list[dict[str, Any]]:
         if not requested_scopes:
             return items
 
@@ -169,7 +177,14 @@ class RetrievalRouter:
             return QueryMode.GENERAL
 
         broad_markers = {
-            "overall", "general", "global", "common", "all", "tendencias", "patrones", "riesgos"
+            "overall",
+            "general",
+            "global",
+            "common",
+            "all",
+            "tendencias",
+            "patrones",
+            "riesgos",
         }
         lowered = query.lower()
         broad_hit = any(token in lowered for token in broad_markers)
@@ -219,7 +234,9 @@ class RetrievalRouter:
             logger.warning("legacy_constraint_search_failed", error=str(exc))
             return []
 
-    async def _retrieve_raptor(self, intent: RetrievalIntent, limit: int = 8) -> list[dict[str, Any]]:
+    async def _retrieve_raptor(
+        self, intent: RetrievalIntent, limit: int = 8
+    ) -> list[dict[str, Any]]:
         if not intent.tenant_id:
             return []
 
@@ -231,7 +248,9 @@ class RetrievalRouter:
 
         if self.raptor_service and hasattr(self.raptor_service, "search_summaries"):
             try:
-                results = await self.raptor_service.search_summaries(intent.query, intent.tenant_id, limit=limit)
+                results = await self.raptor_service.search_summaries(
+                    intent.query, intent.tenant_id, limit=limit
+                )
                 if isinstance(results, list):
                     return [r.model_dump() if hasattr(r, "model_dump") else r for r in results]
             except Exception as exc:
@@ -331,6 +350,11 @@ class RetrievalRouter:
         scope_context = self._scope_from_intent(intent)
         planner_start = time.perf_counter()
         planner_used = bool(settings.QUERY_DECOMPOSER_ENABLED)
+        planner_skipped_reason: str | None = None
+        if planner_used and bool(settings.QUERY_DECOMPOSER_SKIP_SIMPLE_QUERIES):
+            if is_simple_single_hop_query(intent.query):
+                planner_used = False
+                planner_skipped_reason = "simple_single_hop_query"
         if planner_used:
             plan = await self._query_decomposer.decompose(intent.query)
         else:
@@ -356,6 +380,7 @@ class RetrievalRouter:
             planner_multihop=plan.is_multihop,
             planner_execution_mode=plan.execution_mode,
             planner_fallback_reason=plan.fallback_reason,
+            planner_skipped_reason=planner_skipped_reason,
         )
 
         tasks: list = []
@@ -368,10 +393,16 @@ class RetrievalRouter:
         tenant_uuid = self._tenant_uuid(intent.tenant_id)
 
         if should_vector and plan.is_multihop:
-            tasks.append(self._retrieve_from_query_plan(plan=plan, scope_context=scope_context, k=max(k, 15)))
+            tasks.append(
+                self._retrieve_from_query_plan(plan=plan, scope_context=scope_context, k=max(k, 15))
+            )
             labels.append("vector")
         elif should_vector:
-            tasks.append(self.vector_tools.retrieve(query=intent.query, scope_context=scope_context, k=max(k, 15)))
+            tasks.append(
+                self.vector_tools.retrieve(
+                    query=intent.query, scope_context=scope_context, k=max(k, 15)
+                )
+            )
             labels.append("vector")
 
         if should_local and tenant_uuid:
@@ -379,7 +410,9 @@ class RetrievalRouter:
             labels.append("local")
 
         if should_global and tenant_uuid:
-            tasks.append(self.global_graph.search(query=intent.query, tenant_id=tenant_uuid, top_k=5))
+            tasks.append(
+                self.global_graph.search(query=intent.query, tenant_id=tenant_uuid, top_k=5)
+            )
             labels.append("global")
 
         if should_raptor:
@@ -432,7 +465,9 @@ class RetrievalRouter:
 
         if fallback_triggered and not vector_results:
             logger.info("local_graph_empty_fallback_to_vector", query=intent.query)
-            vector_results = await self.vector_tools.retrieve(query=intent.query, scope_context=scope_context, k=max(k, 15))
+            vector_results = await self.vector_tools.retrieve(
+                query=intent.query, scope_context=scope_context, k=max(k, 15)
+            )
 
         merged = self._dedupe_results(vector_results + graph_context_results + raptor_results)
         if requested_scopes:

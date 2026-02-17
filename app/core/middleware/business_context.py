@@ -15,12 +15,13 @@ TENANT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{1,127}$")
 
 logger = structlog.get_logger(__name__)
 
+
 class BusinessContextMiddleware(BaseHTTPMiddleware):
     """
     Extracts business context (Tenant, User) from headers
     and makes them available via ContextVars and structlog context.
     """
-    
+
     @staticmethod
     def _error(status_code: int, code: str, message: str, details: str) -> JSONResponse:
         return JSONResponse(
@@ -63,10 +64,12 @@ class BusinessContextMiddleware(BaseHTTPMiddleware):
         # 1. Bind for structlog only after strict validation
         bind_context(tenant_id=tenant_norm, user_id=user_id)
 
-        logger.info(
+        logger.debug(
             "business_context_bound",
             tenant_id_header=tenant_norm,
             user_id=user_id,
+            request_path=path,
+            request_method=request.method,
         )
 
         # 2. Set for ContextVars (Logic compatibility)
@@ -77,7 +80,7 @@ class BusinessContextMiddleware(BaseHTTPMiddleware):
             tenant_token = tenant_id_ctx.set(tenant_norm)
         if user_id:
             user_token = user_id_ctx.set(user_id)
-            
+
         try:
             return await call_next(request)
         finally:

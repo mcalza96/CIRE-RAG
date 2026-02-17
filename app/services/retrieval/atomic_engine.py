@@ -25,6 +25,11 @@ HYBRID_RPC_SIGNATURE_MISMATCH_HNSW = "HYBRID_RPC_SIGNATURE_MISMATCH_HNSW"
 class AtomicRetrievalEngine:
     """Retrieval engine that composes atomic SQL primitives in Python."""
 
+    _global_hybrid_rpc_contract_checked: bool = False
+    _global_hybrid_rpc_contract_status: str = "unknown"
+    _global_runtime_disable_hybrid_rpc: bool = False
+    _global_contract_probe_error: str | None = None
+
     def __init__(
         self,
         embedding_service: JinaEmbeddingService | None = None,
@@ -34,10 +39,10 @@ class AtomicRetrievalEngine:
         self._supabase_client = supabase_client
         self._graph_repo = SupabaseGraphRetrievalRepository(supabase_client=supabase_client)
         self.last_trace: dict[str, Any] = {}
-        self._hybrid_rpc_contract_checked: bool = False
-        self._hybrid_rpc_contract_status: str = "unknown"
-        self._runtime_disable_hybrid_rpc: bool = False
-        self._contract_probe_error: str | None = None
+        self._hybrid_rpc_contract_checked: bool = type(self)._global_hybrid_rpc_contract_checked
+        self._hybrid_rpc_contract_status: str = type(self)._global_hybrid_rpc_contract_status
+        self._runtime_disable_hybrid_rpc: bool = type(self)._global_runtime_disable_hybrid_rpc
+        self._contract_probe_error: str | None = type(self)._global_contract_probe_error
 
     async def retrieve_context(
         self,
@@ -89,19 +94,27 @@ class AtomicRetrievalEngine:
         hybrid_rpc_used = False
 
         if settings.ATOMIC_USE_HYBRID_RPC and not self._runtime_disable_hybrid_rpc:
+            include_hnsw_ef_search = (
+                self._hybrid_rpc_contract_status != "compat_without_hnsw_ef_search"
+            )
             try:
                 fused = await self._search_hybrid_rpc(
                     query_text=query,
                     query_vector=query_vector,
                     source_ids=source_ids,
                     fetch_k=fetch_k,
-                    include_hnsw_ef_search=True,
+                    include_hnsw_ef_search=include_hnsw_ef_search,
                 )
                 hybrid_rpc_used = True
                 self.last_trace["hybrid_rpc_used"] = True
                 vector_ms = elapsed_ms(vector_start)
                 retrieval_metrics_store.record_hybrid_rpc_hit()
-                logger.info("atomic_hybrid_rpc_used", rows=len(fused), source_count=len(source_ids))
+                logger.info(
+                    "atomic_hybrid_rpc_used",
+                    rows=len(fused),
+                    source_count=len(source_ids),
+                    include_hnsw_ef_search=include_hnsw_ef_search,
+                )
             except Exception as hybrid_exc:
                 if self._is_hnsw_signature_mismatch(hybrid_exc):
                     warning = (
@@ -199,6 +212,14 @@ class AtomicRetrievalEngine:
             retrieval_metrics_store.set_rpc_contract_status(self._hybrid_rpc_contract_status)
             return
 
+        if type(self)._global_hybrid_rpc_contract_checked:
+            self._hybrid_rpc_contract_checked = True
+            self._hybrid_rpc_contract_status = type(self)._global_hybrid_rpc_contract_status
+            self._runtime_disable_hybrid_rpc = type(self)._global_runtime_disable_hybrid_rpc
+            self._contract_probe_error = type(self)._global_contract_probe_error
+            retrieval_metrics_store.set_rpc_contract_status(self._hybrid_rpc_contract_status)
+            return
+
         self._hybrid_rpc_contract_checked = True
         dims = max(8, int(settings.JINA_EMBEDDING_DIMENSIONS or 1024))
         zero_vector = [0.0] * dims
@@ -211,25 +232,48 @@ class AtomicRetrievalEngine:
                 include_hnsw_ef_search=True,
             )
             self._hybrid_rpc_contract_status = "ok"
+            self._runtime_disable_hybrid_rpc = False
             self._contract_probe_error = None
         except Exception as exc:
             self._contract_probe_error = str(exc)
             if self._is_hnsw_signature_mismatch(exc):
-                self._hybrid_rpc_contract_status = "mismatch"
-                self._runtime_disable_hybrid_rpc = True
                 retrieval_metrics_store.record_rpc_contract_mismatch()
                 logger.warning(
-                    "atomic_hybrid_rpc_contract_mismatch_runtime_disabled",
+                    "atomic_hybrid_rpc_contract_mismatch_retry_compat",
                     error=str(exc),
                 )
+                try:
+                    await self._search_hybrid_rpc(
+                        query_text="",
+                        query_vector=zero_vector,
+                        source_ids=[],
+                        fetch_k=1,
+                        include_hnsw_ef_search=False,
+                    )
+                    self._hybrid_rpc_contract_status = "compat_without_hnsw_ef_search"
+                    self._runtime_disable_hybrid_rpc = False
+                    self._contract_probe_error = None
+                except Exception as compat_exc:
+                    self._hybrid_rpc_contract_status = "mismatch"
+                    self._runtime_disable_hybrid_rpc = True
+                    self._contract_probe_error = str(compat_exc)
+                    logger.warning(
+                        "atomic_hybrid_rpc_contract_mismatch_runtime_disabled",
+                        error=str(compat_exc),
+                    )
             else:
                 self._hybrid_rpc_contract_status = "unknown"
+                self._runtime_disable_hybrid_rpc = False
                 logger.warning(
                     "atomic_hybrid_rpc_contract_probe_failed",
                     error=str(exc),
                 )
 
         retrieval_metrics_store.set_rpc_contract_status(self._hybrid_rpc_contract_status)
+        type(self)._global_hybrid_rpc_contract_checked = self._hybrid_rpc_contract_checked
+        type(self)._global_hybrid_rpc_contract_status = self._hybrid_rpc_contract_status
+        type(self)._global_runtime_disable_hybrid_rpc = self._runtime_disable_hybrid_rpc
+        type(self)._global_contract_probe_error = self._contract_probe_error
 
     async def preflight_hybrid_rpc_contract(self) -> dict[str, Any]:
         await self._ensure_hybrid_rpc_contract()
@@ -241,7 +285,11 @@ class AtomicRetrievalEngine:
             "rpc_compat_mode": (
                 "runtime_disabled_on_contract_mismatch"
                 if self._runtime_disable_hybrid_rpc
-                else ""
+                else (
+                    "without_hnsw_ef_search"
+                    if self._hybrid_rpc_contract_status == "compat_without_hnsw_ef_search"
+                    else ""
+                )
             ),
             "warning_codes": (
                 [HYBRID_RPC_SIGNATURE_MISMATCH_HNSW]
@@ -255,9 +303,7 @@ class AtomicRetrievalEngine:
     def _is_hnsw_signature_mismatch(exc: Exception) -> bool:
         text = str(exc or "").lower()
         return (
-            "pgrst202" in text
-            and "retrieve_hybrid_optimized" in text
-            and "hnsw_ef_search" in text
+            "pgrst202" in text and "retrieve_hybrid_optimized" in text and "hnsw_ef_search" in text
         )
 
     def _append_warning(self, value: str) -> None:

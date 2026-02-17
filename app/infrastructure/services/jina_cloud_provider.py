@@ -1,18 +1,22 @@
 import structlog
 import aiohttp
+import asyncio
 import textwrap
 import numpy as np
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, cast
 from app.domain.interfaces.embedding_provider import IEmbeddingProvider
 from app.core.ai_models import AIModelConfig
+from app.core.settings import settings
 
 logger = structlog.get_logger(__name__)
+
 
 class JinaCloudProvider(IEmbeddingProvider):
     """
     Implementation of Jina embeddings using the Cloud API.
     Uses a shared aiohttp.ClientSession for connection reuse.
     """
+
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.base_url = AIModelConfig.JINA_BASE_URL
@@ -55,22 +59,24 @@ class JinaCloudProvider(IEmbeddingProvider):
 
     def _safe_split_text(self, text: str, max_chars: int = 15000) -> List[str]:
         """
-        Divide textos gigantes en partes seguras (aprox < 4000 tokens) 
+        Divide textos gigantes en partes seguras (aprox < 4000 tokens)
         asegurando que NINGUNA parte exceda el límite físico.
         """
         if len(text) <= max_chars:
             return [text]
-        
+
         # Primero intentamos por párrafos o espacios
-        chunks = textwrap.wrap(text, width=max_chars, break_long_words=False, replace_whitespace=False)
-        
+        chunks = textwrap.wrap(
+            text, width=max_chars, break_long_words=False, replace_whitespace=False
+        )
+
         # Verificación de seguridad: si alguna parte sigue siendo muy grande (sin espacios), forzamos corte
         final_chunks = []
         for c in chunks:
-            if len(c) > max_chars + 1000: # Margen pequeño
+            if len(c) > max_chars + 1000:  # Margen pequeño
                 # Corte por fuerza bruta de caracteres
                 for i in range(0, len(c), max_chars):
-                    final_chunks.append(c[i:i + max_chars])
+                    final_chunks.append(c[i : i + max_chars])
             else:
                 final_chunks.append(c)
         return final_chunks
@@ -81,8 +87,8 @@ class JinaCloudProvider(IEmbeddingProvider):
 
         # 1. Pre-procesamiento para detectar Jumbos ilegales
         processed_texts = []
-        indices_map = [] # Para reconstruir el orden si se divide un texto
-        
+        indices_map = []  # Para reconstruir el orden si se divide un texto
+
         for idx, text in enumerate(texts):
             # Si el texto es > ~30k caracteres, Jina va a fallar (8192 tokens)
             splits = self._safe_split_text(text)
@@ -95,44 +101,41 @@ class JinaCloudProvider(IEmbeddingProvider):
         all_embeddings = []
 
         session = await self._get_session()
-        
+
         for i in range(0, len(processed_texts), batch_size):
-            batch = processed_texts[i:i+batch_size]
-            
+            batch = processed_texts[i : i + batch_size]
+
             # Payload optimizado para Jina v3
             data = {
                 "model": self.model_name,
                 "task": task,
                 "dimensions": self.dimensions,
-                "late_chunking": True, # ACTIVAR LATE CHUNKING
+                "late_chunking": True,  # ACTIVAR LATE CHUNKING
                 "embedding_type": "float",
-                "truncate": True, # Seguridad extra: truncar si algo se escapa
-                "input": batch
+                "truncate": True,  # Seguridad extra: truncar si algo se escapa
+                "input": batch,
             }
 
-            async with session.post(self.base_url, json=data) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    # Ordenar por índice devuelto por Jina para asegurar consistencia
-                    sorted_data = sorted(result["data"], key=lambda x: x["index"])
-                    all_embeddings.extend([item["embedding"] for item in sorted_data])
-                else:
-                    text_resp = await response.text()
-                    logger.error(f"Jina API Error {response.status}: {text_resp}")
-                    # Estrategia Fail-open o Raise según prefieras
-                    raise Exception(f"Jina API Error: {text_resp}")
+            result = await self._post_with_retry(session=session, data=data)
+            data_raw = result.get("data") if isinstance(result, dict) else []
+            data_list = data_raw if isinstance(data_raw, list) else []
+            entries: List[Dict[str, Any]] = [
+                cast(Dict[str, Any], row) for row in data_list if isinstance(row, dict)
+            ]
+            sorted_data = sorted(entries, key=lambda x: int(x.get("index", 0)))
+            all_embeddings.extend([item["embedding"] for item in sorted_data])
 
         # 3. Reconstrucción (Mean Pooling para textos divididos)
         # Si tuviste que dividir un texto gigante, promedias sus vectores
         final_embeddings = []
-        
+
         # Agrupar embeddings por su índice original
         temp_map = {}
         for original_idx, emb in zip(indices_map, all_embeddings):
             if original_idx not in temp_map:
                 temp_map[original_idx] = []
             temp_map[original_idx].append(emb)
-            
+
         # Reordenar y promediar
         for i in range(len(texts)):
             vectors = temp_map.get(i, [])
@@ -154,7 +157,7 @@ class JinaCloudProvider(IEmbeddingProvider):
         Sends full text and receives chunked embeddings.
         If late chunking fails, falls back to simple splitting.
         """
-        chunks = self._split_text_simple(text, limit=1000) # Pre-split locally to allow array input
+        chunks = self._split_text_simple(text, limit=1000)  # Pre-split locally to allow array input
         data = {
             "model": self.model_name,
             "input": chunks,
@@ -163,7 +166,7 @@ class JinaCloudProvider(IEmbeddingProvider):
         }
 
         session = await self._get_session()
-        
+
         try:
             async with session.post(self.base_url, json=data) as resp:
                 if resp.status == 200:
@@ -173,11 +176,18 @@ class JinaCloudProvider(IEmbeddingProvider):
                         # Late chunking returns one embedding per chunk
                         # Late chunking with array input returns one embedding per input chunk,
                         # but informed by the global context of the array.
-                        sorted_d = sorted(embeddings_data, key=lambda x: x["index"])
+                        entries: List[Dict[str, Any]] = [
+                            cast(Dict[str, Any], row)
+                            for row in embeddings_data
+                            if isinstance(row, dict)
+                        ]
+                        sorted_d = sorted(entries, key=lambda x: int(x.get("index", 0)))
                         return self._map_late_chunks(chunks, sorted_d)
-                
+
                 # Fallback to simple splitting if late chunking doesn't return expected format
-                logger.warning("late_chunking_cloud_fallback", status=resp.status if resp else "no_response")
+                logger.warning(
+                    "late_chunking_cloud_fallback", status=resp.status if resp else "no_response"
+                )
         except Exception as e:
             logger.warning("late_chunking_cloud_error_fallback", error=str(e))
 
@@ -190,66 +200,118 @@ class JinaCloudProvider(IEmbeddingProvider):
         """
         results = []
         offset = 0
-        
+
         # Jina returns 'index' matching the input array order
         for i, content in enumerate(chunks):
             # Find corresponding embedding by index
             # If Jina combined/split (unlikely with array input + late_chunking), we safe-guard
             emb_item = next((x for x in embeddings_data if x["index"] == i), None)
             embedding = emb_item["embedding"] if emb_item else [0.0] * self.dimensions
-            
-            results.append({
-                "content": content,
-                "embedding": embedding,
-                "char_start": offset,
-                "char_end": offset + len(content),
-            })
+
+            results.append(
+                {
+                    "content": content,
+                    "embedding": embedding,
+                    "char_start": offset,
+                    "char_end": offset + len(content),
+                }
+            )
             offset += len(content)
         return results
 
-    async def _fallback_chunk_and_encode(self, text: str, session: aiohttp.ClientSession) -> List[Dict[str, Any]]:
+    async def _fallback_chunk_and_encode(
+        self, text: str, session: aiohttp.ClientSession
+    ) -> List[Dict[str, Any]]:
         """Fallback: simple split + batch embed using shared session."""
         chunks = self._split_text_simple(text)
         embeddings = []
-        
+
         batch_size = 32
         for i in range(0, len(chunks), batch_size):
-            batch = chunks[i:i+batch_size]
-            async with session.post(self.base_url, json={
-                "model": self.model_name, 
-                "input": batch,
-                "dimensions": self.dimensions
-            }) as resp:
-                if resp.status == 200:
-                    data = (await resp.json())["data"]
-                    sorted_d = sorted(data, key=lambda x: x["index"])
-                    embeddings.extend([x["embedding"] for x in sorted_d])
-                else:
-                    err_text = await resp.text()
-                    logger.error(f"Cloud embedding failed: {err_text}")
-                    embeddings.extend([[0.0] * self.dimensions] * len(batch))
-        
+            batch = chunks[i : i + batch_size]
+            try:
+                payload = await self._post_with_retry(
+                    session=session,
+                    data={
+                        "model": self.model_name,
+                        "input": batch,
+                        "dimensions": self.dimensions,
+                    },
+                )
+                data_raw = payload.get("data") if isinstance(payload, dict) else []
+                data_list = data_raw if isinstance(data_raw, list) else []
+                entries: List[Dict[str, Any]] = [
+                    cast(Dict[str, Any], row) for row in data_list if isinstance(row, dict)
+                ]
+                sorted_d = sorted(entries, key=lambda x: int(x.get("index", 0)))
+                embeddings.extend([x["embedding"] for x in sorted_d])
+            except Exception as exc:
+                logger.error("cloud_embedding_fallback_failed", error=str(exc))
+                embeddings.extend([[0.0] * self.dimensions] * len(batch))
+
         results = []
         offset = 0
         for c, emb in zip(chunks, embeddings):
-            results.append({
-                "content": c,
-                "embedding": emb,
-                "char_start": offset,
-                "char_end": offset + len(c)
-            })
+            results.append(
+                {"content": c, "embedding": emb, "char_start": offset, "char_end": offset + len(c)}
+            )
             offset += len(c)
-        
+
         return results
+
+    async def _post_with_retry(
+        self,
+        *,
+        session: aiohttp.ClientSession,
+        data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        attempts = max(1, int(settings.JINA_EMBED_RETRY_MAX_ATTEMPTS or 3))
+        base_delay = float(settings.JINA_EMBED_RETRY_BASE_DELAY_SECONDS or 0.4)
+        max_delay = float(settings.JINA_EMBED_RETRY_MAX_DELAY_SECONDS or 2.5)
+
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                async with session.post(self.base_url, json=data) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        if isinstance(result, dict):
+                            return result
+                        raise Exception("Jina API Error: malformed JSON response")
+
+                    text_resp = await response.text()
+                    retryable = response.status in {429, 500, 502, 503, 504}
+                    if not retryable or attempt >= attempts:
+                        logger.error(f"Jina API Error {response.status}: {text_resp}")
+                        raise Exception(f"Jina API Error: {text_resp}")
+
+                    delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
+                    logger.warning(
+                        "jina_embed_retry",
+                        status=response.status,
+                        attempt=attempt,
+                        delay_seconds=delay,
+                    )
+                    await asyncio.sleep(delay)
+            except Exception as exc:
+                last_error = exc
+                if attempt >= attempts:
+                    break
+                delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
+                await asyncio.sleep(delay)
+
+        if last_error is not None:
+            raise last_error
+        raise Exception("Jina API Error: retry exhausted")
 
     def _split_text_simple(self, text: str, limit: int = 1000) -> List[str]:
         parts = []
         while len(text) > limit:
             split_at = text.rfind("\n", 0, limit)
-            if split_at == -1: 
+            if split_at == -1:
                 split_at = limit
             parts.append(text[:split_at])
             text = text[split_at:].strip()
-        if text: 
+        if text:
             parts.append(text)
         return parts

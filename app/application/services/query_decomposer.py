@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +13,70 @@ from app.core.llm import get_llm
 from app.core.settings import settings
 
 logger = structlog.get_logger(__name__)
+
+
+_MULTIHOP_CUES_RE = re.compile(
+    r"\b("
+    r"compara(?:r|cion)?|diferenc(?:ia|ias)|versus|vs\.?|"
+    r"contrasta|relaciona|impacto|causa|efecto|"
+    r"resume\s+y\s+compara|"
+    r"adem[aá]s|junto con|por otro lado|"
+    r"y\s+qu[eé]|y\s+cu[aá]l|y\s+c[oó]mo"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+
+
+def is_simple_single_hop_query(query: str) -> bool:
+    text = str(query or "").strip()
+    if not text:
+        return False
+    if len(text) > 220 or "\n" in text:
+        return False
+    if any(sep in text for sep in (";", "|")):
+        return False
+    if text.count(",") >= 2:
+        return False
+    if _MULTIHOP_CUES_RE.search(text):
+        return False
+
+    standards = re.findall(r"\b(?:ISO|IEC)\s*\d{3,5}\b", text, flags=re.IGNORECASE)
+    if len({s.upper().replace(" ", "") for s in standards}) > 1:
+        return False
+
+    lowered = text.lower()
+    direct_intent = any(
+        cue in lowered
+        for cue in (
+            "que dice",
+            "qué dice",
+            "que exige",
+            "qué exige",
+            "exige textualmente",
+            "texto literal",
+            "enumera",
+            "lista de",
+            "listado de",
+            "entradas requeridas",
+            "salidas esperadas",
+            "que establece",
+            "qué establece",
+            "que indica",
+            "qué indica",
+            "introduccion",
+            "introducción",
+            "clausula",
+            "cláusula",
+            "resumen de",
+            "explica",
+        )
+    )
+    if not direct_intent:
+        return False
+
+    # If the query is scoped to a single standard and has no multihop cues,
+    # skip decomposition to save latency.
+    return True
 
 
 @dataclass
@@ -36,7 +101,9 @@ class QueryDecomposer:
     """Single-shot low-latency query planner for multi-hop retrieval."""
 
     def __init__(self, llm_provider: BaseChatModel | None = None, timeout_ms: int | None = None):
-        self._llm = llm_provider or get_llm(temperature=0.0, capability="ORCHESTRATION", prefer_provider="groq")
+        self._llm = llm_provider or get_llm(
+            temperature=0.0, capability="ORCHESTRATION", prefer_provider="groq"
+        )
         self._timeout_ms = int(timeout_ms or settings.QUERY_DECOMPOSER_TIMEOUT_MS)
 
     async def decompose(self, query: str) -> QueryPlan:
@@ -53,7 +120,8 @@ class QueryDecomposer:
                 ),
                 timeout=max(self._timeout_ms, 100) / 1000.0,
             )
-            payload = self._parse_payload(str(response.content))
+            response_text = self._response_to_text(response)
+            payload = self._parse_payload(response_text)
             return self._normalize_plan(payload=payload, original_query=query)
         except asyncio.TimeoutError:
             logger.info("query_decomposer_timeout", timeout_ms=self._timeout_ms)
@@ -64,7 +132,10 @@ class QueryDecomposer:
                 fallback_reason="timeout",
             )
         except Exception as exc:
-            logger.warning("query_decomposer_failed", error=str(exc))
+            logger.warning(
+                "query_decomposer_failed",
+                error=str(exc),
+            )
             return QueryPlan(
                 is_multihop=False,
                 execution_mode="parallel",
@@ -73,15 +144,36 @@ class QueryDecomposer:
             )
 
     @staticmethod
+    def _response_to_text(response: Any) -> str:
+        content = getattr(response, "content", response)
+        if isinstance(content, str):
+            return content
+        if isinstance(content, dict):
+            text = content.get("text") or content.get("content")
+            return str(text or "")
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                    continue
+                if isinstance(item, dict):
+                    text = item.get("text") or item.get("content")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text)
+            return "\n".join(part for part in parts if part).strip()
+        return str(content or "")
+
+    @staticmethod
     def _system_prompt() -> str:
         return (
             "You are a retrieval planner. Return strict JSON only. "
             "Do not answer the user query. "
             "If query requires dependencies between facts, set is_multihop=true. "
             "Output schema: "
-            "{\"is_multihop\": boolean, \"execution_mode\": \"parallel\"|\"sequential\", "
-            "\"sub_queries\": [{\"id\": int, \"query\": string, \"dependency_id\": int|null, "
-            "\"target_relations\": string[]|null, \"target_node_types\": string[]|null, \"is_deep\": boolean}]}. "
+            '{"is_multihop": boolean, "execution_mode": "parallel"|"sequential", '
+            '"sub_queries": [{"id": int, "query": string, "dependency_id": int|null, '
+            '"target_relations": string[]|null, "target_node_types": string[]|null, "is_deep": boolean}]}. '
             "Use target_relations when relation traversal is explicit (e.g., prerequisite, misconception_of, remedies). "
             "Use target_node_types when node type is explicit (e.g., competency, misconception, bridge). "
             "Keep sub_queries concise and optimized for retrieval."
@@ -93,24 +185,42 @@ class QueryDecomposer:
         if not raw:
             raise ValueError("empty planner output")
 
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            pass
+        candidates: list[str] = [raw]
+        for match in re.finditer(r"```(?:json)?\s*([\s\S]*?)\s*```", raw, flags=re.IGNORECASE):
+            inner = (match.group(1) or "").strip()
+            if inner:
+                candidates.append(inner)
 
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start >= 0 and end > start:
-            parsed = json.loads(raw[start : end + 1])
-            if isinstance(parsed, dict):
-                return parsed
+        if raw.lower().startswith("json"):
+            stripped = raw[4:].strip()
+            if stripped:
+                candidates.append(stripped)
+
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                continue
+
+            start = candidate.find("{")
+            end = candidate.rfind("}")
+            if start >= 0 and end > start:
+                try:
+                    parsed = json.loads(candidate[start : end + 1])
+                    if isinstance(parsed, dict):
+                        return parsed
+                except Exception:
+                    continue
+
         raise ValueError("planner output is not valid JSON object")
 
     @staticmethod
     def _normalize_plan(payload: dict[str, Any], original_query: str) -> QueryPlan:
-        def infer_graph_controls(query_text: str) -> tuple[list[str] | None, list[str] | None, bool]:
+        def infer_graph_controls(
+            query_text: str,
+        ) -> tuple[list[str] | None, list[str] | None, bool]:
             text = (query_text or "").strip().lower()
 
             relation_map: dict[str, tuple[str, ...]] = {
@@ -192,7 +302,9 @@ class QueryDecomposer:
                     ] or None
 
                 is_deep = bool(item.get("is_deep", False))
-                inferred_relations, inferred_node_types, inferred_deep = infer_graph_controls(raw_query)
+                inferred_relations, inferred_node_types, inferred_deep = infer_graph_controls(
+                    raw_query
+                )
                 if target_relations is None:
                     target_relations = inferred_relations
                 if target_node_types is None:
@@ -212,7 +324,9 @@ class QueryDecomposer:
                 )
 
         if not sub_queries:
-            fallback_relations, fallback_node_types, fallback_deep = infer_graph_controls(original_query)
+            fallback_relations, fallback_node_types, fallback_deep = infer_graph_controls(
+                original_query
+            )
             sub_queries = [
                 PlannedSubQuery(
                     id=1,

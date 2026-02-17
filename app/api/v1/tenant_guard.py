@@ -25,20 +25,27 @@ def enforce_tenant_match(tenant_from_payload: str | None, location: str) -> str:
     tenant_payload = str(tenant_from_payload or "").strip() or None
 
     mismatch = bool(tenant_payload and tenant_payload != tenant_header)
-    logger.info(
-        "tenant_guard_check",
-        tenant_id_header=tenant_header,
-        tenant_id_payload=tenant_payload,
-        tenant_mismatch=mismatch,
-        tenant_source=location,
-    )
-
     if mismatch:
+        logger.warning(
+            "tenant_guard_check",
+            tenant_id_header=tenant_header,
+            tenant_id_payload=tenant_payload,
+            tenant_mismatch=True,
+            tenant_source=location,
+        )
         raise ApiError(
             status_code=400,
             code="TENANT_MISMATCH",
             message="Tenant mismatch",
             details=f"Tenant in {location} must match X-Tenant-ID header",
         )
+
+    logger.debug(
+        "tenant_guard_check",
+        tenant_id_header=tenant_header,
+        tenant_id_payload=tenant_payload,
+        tenant_mismatch=False,
+        tenant_source=location,
+    )
 
     return tenant_header
