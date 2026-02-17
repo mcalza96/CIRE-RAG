@@ -427,6 +427,26 @@ class RetrievalContractService:
                 details=str(exc),
             ) from exc
         items = self._to_retrieval_items(rows)
+        trace_warnings = (
+            [str(item) for item in trace_payload.get("warnings") if str(item).strip()]
+            if isinstance(trace_payload.get("warnings"), list)
+            else []
+        )
+        trace_warning_codes = (
+            [str(item).strip().upper() for item in trace_payload.get("warning_codes") if str(item).strip()]
+            if isinstance(trace_payload.get("warning_codes"), list)
+            else []
+        )
+        if not trace_warning_codes and any(
+            "signature_mismatch" in warning.lower() and "hnsw" in warning.lower()
+            for warning in trace_warnings
+        ):
+            trace_warning_codes.append("HYBRID_RPC_SIGNATURE_MISMATCH_HNSW")
+        validation_warnings = [str(item.message) for item in validated.warnings]
+        merged_warnings = list(dict.fromkeys([*validation_warnings, *trace_warnings]))
+        rpc_compat_mode = str(
+            trace_payload.get("rpc_compat_mode") or trace_payload.get("hybrid_rpc_compat_mode") or ""
+        ).strip()
         return HybridRetrievalResponse(
             items=items,
             trace=HybridTrace(
@@ -437,11 +457,13 @@ class RetrievalContractService:
                 planner_used=bool(trace_payload.get("planner_used", False)),
                 planner_multihop=bool(trace_payload.get("planner_multihop", False)),
                 fallback_used=bool(trace_payload.get("fallback_used", False)),
+                rpc_compat_mode=rpc_compat_mode or None,
                 timings_ms=dict(
                     trace_payload.get("timings_ms")
                     or {"total": round((time.perf_counter() - started) * 1000, 2)}
                 ),
-                warnings=[str(item.message) for item in validated.warnings],
+                warnings=merged_warnings,
+                warning_codes=list(dict.fromkeys(trace_warning_codes)),
             ),
         )
 

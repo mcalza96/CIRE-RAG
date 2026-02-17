@@ -92,8 +92,10 @@ class HybridTrace(BaseModel):
     planner_used: bool = False
     planner_multihop: bool = False
     fallback_used: bool = False
+    rpc_compat_mode: str | None = None
     timings_ms: dict[str, float] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
+    warning_codes: list[str] = Field(default_factory=list)
 
 
 class HybridRetrievalResponse(BaseModel):
@@ -180,4 +182,3 @@ class ValidateScopeResponse(BaseModel):
     violations: list[ScopeIssue] = Field(default_factory=list)
     warnings: list[ScopeIssue] = Field(default_factory=list)
     query_scope: QueryScopeSummary
-

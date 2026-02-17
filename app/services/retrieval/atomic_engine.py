@@ -19,6 +19,7 @@ from app.infrastructure.supabase.client import get_async_supabase_client
 from app.services.embedding_service import JinaEmbeddingService
 
 logger = structlog.get_logger(__name__)
+HYBRID_RPC_SIGNATURE_MISMATCH_HNSW = "HYBRID_RPC_SIGNATURE_MISMATCH_HNSW"
 
 
 class AtomicRetrievalEngine:
@@ -32,6 +33,7 @@ class AtomicRetrievalEngine:
         self._embedding_service = embedding_service or JinaEmbeddingService.get_instance()
         self._supabase_client = supabase_client
         self._graph_repo = SupabaseGraphRetrievalRepository(supabase_client=supabase_client)
+        self.last_trace: dict[str, Any] = {}
 
     async def retrieve_context(
         self,
@@ -47,6 +49,14 @@ class AtomicRetrievalEngine:
             return []
 
         start = perf_now()
+        self.last_trace = {
+            "hybrid_rpc_enabled": bool(settings.ATOMIC_USE_HYBRID_RPC),
+            "hybrid_rpc_used": False,
+            "hybrid_rpc_compat_mode": None,
+            "rpc_compat_mode": None,
+            "warnings": [],
+            "warning_codes": [],
+        }
         query_vector = await self._embed_query(query)
         source_ids = await self._resolve_source_ids(scope_context or {})
         if not source_ids:
@@ -68,14 +78,50 @@ class AtomicRetrievalEngine:
                     query_vector=query_vector,
                     source_ids=source_ids,
                     fetch_k=fetch_k,
+                    include_hnsw_ef_search=True,
                 )
                 hybrid_rpc_used = True
+                self.last_trace["hybrid_rpc_used"] = True
                 vector_ms = elapsed_ms(vector_start)
                 retrieval_metrics_store.record_hybrid_rpc_hit()
                 logger.info("atomic_hybrid_rpc_used", rows=len(fused), source_count=len(source_ids))
             except Exception as hybrid_exc:
-                retrieval_metrics_store.record_hybrid_rpc_fallback()
-                logger.warning("atomic_hybrid_rpc_failed_fallback", error=str(hybrid_exc))
+                if self._is_hnsw_signature_mismatch(hybrid_exc):
+                    warning = (
+                        "hybrid_rpc_signature_mismatch_hnsw_ef_search;"
+                        "retrying_without_hnsw_ef_search"
+                    )
+                    self._append_warning(warning)
+                    self._append_warning_code(HYBRID_RPC_SIGNATURE_MISMATCH_HNSW)
+                    logger.warning("atomic_hybrid_rpc_signature_retry", warning=warning)
+                    try:
+                        fused = await self._search_hybrid_rpc(
+                            query_text=query,
+                            query_vector=query_vector,
+                            source_ids=source_ids,
+                            fetch_k=fetch_k,
+                            include_hnsw_ef_search=False,
+                        )
+                        hybrid_rpc_used = True
+                        self.last_trace["hybrid_rpc_used"] = True
+                        self.last_trace["hybrid_rpc_compat_mode"] = "without_hnsw_ef_search"
+                        self.last_trace["rpc_compat_mode"] = "without_hnsw_ef_search"
+                        vector_ms = elapsed_ms(vector_start)
+                        retrieval_metrics_store.record_hybrid_rpc_hit()
+                        logger.info(
+                            "atomic_hybrid_rpc_used_compat",
+                            rows=len(fused),
+                            source_count=len(source_ids),
+                            compat_mode="without_hnsw_ef_search",
+                        )
+                    except Exception as compat_exc:
+                        retrieval_metrics_store.record_hybrid_rpc_fallback()
+                        self._append_warning(f"hybrid_rpc_fallback:{compat_exc}")
+                        logger.warning("atomic_hybrid_rpc_failed_fallback", error=str(compat_exc))
+                else:
+                    retrieval_metrics_store.record_hybrid_rpc_fallback()
+                    self._append_warning(f"hybrid_rpc_fallback:{hybrid_exc}")
+                    logger.warning("atomic_hybrid_rpc_failed_fallback", error=str(hybrid_exc))
         else:
             retrieval_metrics_store.record_hybrid_rpc_disabled()
 
@@ -115,7 +161,44 @@ class AtomicRetrievalEngine:
             hybrid_rpc_used=bool(hybrid_rpc_used),
             query_preview=query[:50],
         )
+        self.last_trace["hybrid_rpc_used"] = bool(hybrid_rpc_used)
+        self.last_trace["timings_ms"] = {
+            "total": round(elapsed_ms(start), 2),
+            "vector": round(vector_ms, 2),
+            "fts": round(fts_ms, 2),
+        }
         return merged[:k]
+
+    @staticmethod
+    def _is_hnsw_signature_mismatch(exc: Exception) -> bool:
+        text = str(exc or "").lower()
+        return (
+            "pgrst202" in text
+            and "retrieve_hybrid_optimized" in text
+            and "hnsw_ef_search" in text
+        )
+
+    def _append_warning(self, value: str) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        current = self.last_trace.get("warnings")
+        if not isinstance(current, list):
+            self.last_trace["warnings"] = [text]
+            return
+        if text not in current:
+            current.append(text)
+
+    def _append_warning_code(self, value: str) -> None:
+        text = str(value or "").strip().upper()
+        if not text:
+            return
+        current = self.last_trace.get("warning_codes")
+        if not isinstance(current, list):
+            self.last_trace["warning_codes"] = [text]
+            return
+        if text not in current:
+            current.append(text)
 
     @staticmethod
     def _stamp_tenant_context(
@@ -165,23 +248,27 @@ class AtomicRetrievalEngine:
         query_vector: list[float],
         source_ids: list[str],
         fetch_k: int,
+        *,
+        include_hnsw_ef_search: bool = True,
     ) -> list[dict[str, Any]]:
         client = await self._get_client()
         effective_query_text = query_text if settings.ATOMIC_ENABLE_FTS else ""
         effective_fts_weight = settings.ATOMIC_RRF_FTS_WEIGHT if settings.ATOMIC_ENABLE_FTS else 0.0
+        rpc_payload: dict[str, Any] = {
+            "query_embedding": query_vector,
+            "query_text": effective_query_text,
+            "source_ids": source_ids,
+            "match_threshold": settings.ATOMIC_MATCH_THRESHOLD,
+            "match_count": max(fetch_k, 1),
+            "rrf_k": settings.ATOMIC_RRF_K,
+            "vector_weight": settings.ATOMIC_RRF_VECTOR_WEIGHT,
+            "fts_weight": effective_fts_weight,
+        }
+        if include_hnsw_ef_search:
+            rpc_payload["hnsw_ef_search"] = max(10, int(settings.ATOMIC_HNSW_EF_SEARCH or 80))
         response = await client.rpc(
             "retrieve_hybrid_optimized",
-            {
-                "query_embedding": query_vector,
-                "query_text": effective_query_text,
-                "source_ids": source_ids,
-                "match_threshold": settings.ATOMIC_MATCH_THRESHOLD,
-                "match_count": max(fetch_k, 1),
-                "rrf_k": settings.ATOMIC_RRF_K,
-                "vector_weight": settings.ATOMIC_RRF_VECTOR_WEIGHT,
-                "fts_weight": effective_fts_weight,
-                "hnsw_ef_search": max(10, int(settings.ATOMIC_HNSW_EF_SEARCH or 80)),
-            },
+            rpc_payload,
         ).execute()
         rows = response.data if isinstance(response.data, list) else []
         normalized: list[dict[str, Any]] = []

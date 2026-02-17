@@ -238,6 +238,7 @@ class RetrievalBroker:
                 )
 
                 raw_results = []
+                atomic_trace: Dict[str, Any] = {}
                 try:
                     if plan.is_multihop:
                         raw_results = await self.atomic_engine.retrieve_context_from_plan(
@@ -264,10 +265,56 @@ class RetrievalBroker:
                             graph_filter_node_types=strategy_kwargs.get("graph_filter_node_types"),
                             graph_max_hops=strategy_kwargs.get("graph_max_hops"),
                         )
+                    last_trace = getattr(self.atomic_engine, "last_trace", {})
+                    if isinstance(last_trace, dict):
+                        atomic_trace = dict(last_trace)
                 except Exception as atomic_exc:
                     logger.warning("atomic_engine_failed", error=str(atomic_exc), mode=mode)
                     if mode == "atomic":
                         raise atomic_exc
+
+                if atomic_trace:
+                    warnings_raw = atomic_trace.get("warnings")
+                    warnings = (
+                        [str(item) for item in warnings_raw if str(item).strip()]
+                        if isinstance(warnings_raw, list)
+                        else []
+                    )
+                    if warnings:
+                        prior = (
+                            trace_payload.get("warnings")
+                            if isinstance(trace_payload.get("warnings"), list)
+                            else []
+                        )
+                        trace_payload["warnings"] = list(dict.fromkeys([*prior, *warnings]))
+                    warning_codes_raw = atomic_trace.get("warning_codes")
+                    warning_codes = (
+                        [str(item).strip().upper() for item in warning_codes_raw if str(item).strip()]
+                        if isinstance(warning_codes_raw, list)
+                        else []
+                    )
+                    if warning_codes:
+                        prior_codes = (
+                            trace_payload.get("warning_codes")
+                            if isinstance(trace_payload.get("warning_codes"), list)
+                            else []
+                        )
+                        merged_codes = [
+                            str(item).strip().upper()
+                            for item in [*prior_codes, *warning_codes]
+                            if str(item).strip()
+                        ]
+                        trace_payload["warning_codes"] = list(dict.fromkeys(merged_codes))
+                    compat_mode = str(
+                        atomic_trace.get("rpc_compat_mode")
+                        or atomic_trace.get("hybrid_rpc_compat_mode")
+                        or ""
+                    ).strip()
+                    if compat_mode:
+                        trace_payload["rpc_compat_mode"] = compat_mode
+                        trace_payload["hybrid_rpc_compat_mode"] = compat_mode
+                    if "hybrid_rpc_used" in atomic_trace:
+                        trace_payload["hybrid_rpc_used"] = bool(atomic_trace.get("hybrid_rpc_used"))
 
                 if not raw_results and mode == "hybrid":
                     engine = JinaEmbeddingService.get_instance()
@@ -378,7 +425,7 @@ class RetrievalBroker:
 
     def _resolve_filters(self, query: str, scope_context: Dict[str, Any]) -> Dict[str, Any]:
         scope_type = scope_context.get("type", "institutional")
-        filters = {}
+        filters: Dict[str, Any] = {}
 
         if scope_type == "institutional":
             tenant_id = scope_context.get("tenant_id")
@@ -388,32 +435,61 @@ class RetrievalBroker:
         elif scope_type == "global":
             filters["is_global"] = True
 
-        # Query Enrichment
-        _, query_filters = enrich_metadata(query, {})
-        if query_filters:
-            filters["filters"] = query_filters
-
         # Merge extra filters
         extra = scope_context.get("filters", {})
-        if extra:
+        if isinstance(extra, dict) and extra:
             filters.update(extra)
 
         scope_collection = scope_context.get("collection_id")
         if scope_collection and not filters.get("collection_id"):
             filters["collection_id"] = scope_collection
 
-        requested_standards = self._extract_requested_standards(query)
-        if requested_standards:
-            if not filters.get("source_standards"):
-                filters["source_standards"] = list(requested_standards)
-            if not filters.get("source_standard"):
-                filters["source_standard"] = requested_standards[0]
+        # Query enrichment contributes metadata hints but cannot override validated scope standards.
+        _, query_filters = enrich_metadata(query, {})
+        if isinstance(query_filters, dict) and query_filters:
+            safe_query_filters: Dict[str, Any] = {}
+            for key, value in query_filters.items():
+                key_str = str(key).strip()
+                if not key_str or key_str in {"source_standard", "scope"}:
+                    continue
+                safe_query_filters[key_str] = value
+            if safe_query_filters:
+                nested_existing = (
+                    filters.get("filters") if isinstance(filters.get("filters"), dict) else {}
+                )
+                nested_merged = dict(nested_existing)
+                nested_merged.update(safe_query_filters)
+                filters["filters"] = nested_merged
 
-        if not filters.get("source_standards"):
-            context_scopes = self._requested_scopes_from_context(scope_context)
-            if context_scopes:
-                filters["source_standards"] = list(context_scopes)
-                filters["source_standard"] = context_scopes[0]
+        context_scopes = self._requested_scopes_from_context(scope_context)
+        query_scopes = self._extract_requested_standards(query)
+        effective_scopes = context_scopes if context_scopes else query_scopes
+
+        if effective_scopes:
+            standards = [str(scope).strip() for scope in effective_scopes if str(scope).strip()]
+            standards = list(dict.fromkeys(standards))
+            if standards:
+                filters["source_standards"] = standards
+                filters["source_standard"] = standards[0]
+        else:
+            # Normalize any standard leftovers from merged filters.
+            raw_list = filters.get("source_standards")
+            normalized: list[str] = []
+            if isinstance(raw_list, list):
+                normalized = [
+                    str(item).strip()
+                    for item in raw_list
+                    if isinstance(item, str) and str(item).strip()
+                ]
+            single = str(filters.get("source_standard") or "").strip()
+            if single and single not in normalized:
+                normalized.insert(0, single)
+            if normalized:
+                filters["source_standards"] = list(dict.fromkeys(normalized))
+                filters["source_standard"] = filters["source_standards"][0]
+            else:
+                filters.pop("source_standards", None)
+                filters.pop("source_standard", None)
 
         return filters
 
