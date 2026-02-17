@@ -10,6 +10,8 @@ class _RetrievalBackendMetrics:
     hybrid_rpc_hits: int = 0
     hybrid_rpc_fallbacks: int = 0
     hybrid_rpc_disabled: int = 0
+    rpc_contract_status: str = "unknown"
+    rpc_contract_mismatch_events: int = 0
 
 
 class RetrievalMetricsStore:
@@ -29,6 +31,15 @@ class RetrievalMetricsStore:
         with self._lock:
             self._metrics.hybrid_rpc_disabled += 1
 
+    def set_rpc_contract_status(self, status: str) -> None:
+        normalized = str(status or "").strip().lower() or "unknown"
+        with self._lock:
+            self._metrics.rpc_contract_status = normalized
+
+    def record_rpc_contract_mismatch(self) -> None:
+        with self._lock:
+            self._metrics.rpc_contract_mismatch_events += 1
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             total = self._metrics.hybrid_rpc_hits + self._metrics.hybrid_rpc_fallbacks
@@ -38,6 +49,8 @@ class RetrievalMetricsStore:
                 "hybrid_rpc_fallbacks": self._metrics.hybrid_rpc_fallbacks,
                 "hybrid_rpc_disabled": self._metrics.hybrid_rpc_disabled,
                 "hybrid_rpc_hit_ratio": hit_ratio,
+                "rpc_contract_status": self._metrics.rpc_contract_status,
+                "rpc_contract_mismatch_events": self._metrics.rpc_contract_mismatch_events,
             }
 
 

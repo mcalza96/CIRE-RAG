@@ -76,7 +76,7 @@ Base URL local: `http://localhost:8000/api/v1`
 - `GET /management/collections`: lista colecciones por tenant.
 - `GET /management/queue/status`: estado de cola por tenant.
 - `GET /management/health`: health de API v1.
-- `GET /management/retrieval/metrics`: metricas runtime de uso/fallback del hybrid RPC.
+- `GET /management/retrieval/metrics`: metricas runtime de uso/fallback del hybrid RPC + estado de contrato (`rpc_contract_status`, `rpc_contract_mismatch_events`).
 - `POST /retrieval/hybrid`: retrieval unificado (vector + FTS + graph) con filtros de scope.
 - `POST /retrieval/multi-query`: ejecucion de subconsultas y fusion RRF global con modo fail-soft parcial.
 - `POST /retrieval/explain`: retrieval con explicacion segura de score/path/filtros aplicados.
@@ -113,6 +113,7 @@ Contexto conversacional en chat:
 
 - El motor atomico puede usar RPC unificada `retrieve_hybrid_optimized` para ejecutar vector + FTS + RRF en una sola llamada SQL.
 - Control por flag `ATOMIC_USE_HYBRID_RPC=true` (fallback automatico a primitives si la RPC falla).
+- Startup preflight valida firma efectiva de la RPC; si detecta mismatch de `hnsw_ef_search`, autodegrada a primitives en runtime y expone `HYBRID_RPC_SIGNATURE_MISMATCH_HNSW` en trace.
 - Ajuste fino HNSW por consulta: `ATOMIC_HNSW_EF_SEARCH`.
 - Control de latencia de reranking: `RERANK_MAX_CANDIDATES`.
 

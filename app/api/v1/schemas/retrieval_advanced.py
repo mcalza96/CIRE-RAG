@@ -92,6 +92,7 @@ class HybridTrace(BaseModel):
     planner_used: bool = False
     planner_multihop: bool = False
     fallback_used: bool = False
+    rpc_contract_status: str | None = None
     rpc_compat_mode: str | None = None
     timings_ms: dict[str, float] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)

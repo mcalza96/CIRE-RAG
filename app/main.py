@@ -10,6 +10,7 @@ from app.core.middleware.business_context import BusinessContextMiddleware
 from app.core.observability.correlation import CorrelationMiddleware, get_correlation_id
 from app.core.observability.logger_config import configure_structlog
 from app.core.settings import settings
+from app.infrastructure.container import CognitiveContainer
 
 # Configure Structlog (JSON Logging)
 configure_structlog()
@@ -95,6 +96,17 @@ async def api_error_handler(request: Request, exc: ApiError):
 
 # Include Modular Routers
 app.include_router(v1_router)
+
+
+@app.on_event("startup")
+async def preflight_retrieval_contract() -> None:
+    """Best-effort startup preflight for hybrid RPC contract compatibility."""
+    try:
+        container = CognitiveContainer.get_instance()
+        status = await container.retrieval_broker.atomic_engine.preflight_hybrid_rpc_contract()
+        logger.info("retrieval_rpc_contract_preflight", **status)
+    except Exception as exc:
+        logger.warning("retrieval_rpc_contract_preflight_failed", error=str(exc))
 
 
 @app.get("/health")

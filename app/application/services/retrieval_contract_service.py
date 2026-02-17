@@ -444,6 +444,7 @@ class RetrievalContractService:
             trace_warning_codes.append("HYBRID_RPC_SIGNATURE_MISMATCH_HNSW")
         validation_warnings = [str(item.message) for item in validated.warnings]
         merged_warnings = list(dict.fromkeys([*validation_warnings, *trace_warnings]))
+        rpc_contract_status = str(trace_payload.get("rpc_contract_status") or "").strip()
         rpc_compat_mode = str(
             trace_payload.get("rpc_compat_mode") or trace_payload.get("hybrid_rpc_compat_mode") or ""
         ).strip()
@@ -457,6 +458,7 @@ class RetrievalContractService:
                 planner_used=bool(trace_payload.get("planner_used", False)),
                 planner_multihop=bool(trace_payload.get("planner_multihop", False)),
                 fallback_used=bool(trace_payload.get("fallback_used", False)),
+                rpc_contract_status=rpc_contract_status or None,
                 rpc_compat_mode=rpc_compat_mode or None,
                 timings_ms=dict(
                     trace_payload.get("timings_ms")

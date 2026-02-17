@@ -46,6 +46,8 @@ class RetrievalMetricsResponse(BaseModel):
     hybrid_rpc_fallbacks: int = 0
     hybrid_rpc_disabled: int = 0
     hybrid_rpc_hit_ratio: float = 0.0
+    rpc_contract_status: str = "unknown"
+    rpc_contract_mismatch_events: int = 0
 
 
 @router.get(

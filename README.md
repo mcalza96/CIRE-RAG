@@ -87,7 +87,7 @@ Base URL local: `http://localhost:8000/api/v1`
 - `GET /management/collections`: colecciones por tenant.
 - `GET /management/queue/status`: profundidad/ETA de cola por tenant.
 - `GET /management/health`: health del dominio management.
-- `GET /management/retrieval/metrics`: metricas runtime de retrieval hibrido.
+- `GET /management/retrieval/metrics`: metricas runtime de retrieval hibrido + estado de contrato RPC (`rpc_contract_status`, `rpc_contract_mismatch_events`).
 - `POST /debug/retrieval/chunks`: retrieval de chunks para diagnostico/control fino.
 - `POST /debug/retrieval/summaries`: retrieval de summaries para diagnostico/control fino.
 - `POST /ingestion/batches`, `POST /ingestion/batches/{batch_id}/files`, `GET /ingestion/batches/{batch_id}/status|progress|events|stream`, `GET /ingestion/batches/active`: flujo operativo de batch ingestion/observabilidad.

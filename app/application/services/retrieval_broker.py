@@ -274,6 +274,9 @@ class RetrievalBroker:
                         raise atomic_exc
 
                 if atomic_trace:
+                    contract_status = str(atomic_trace.get("rpc_contract_status") or "").strip()
+                    if contract_status:
+                        trace_payload["rpc_contract_status"] = contract_status
                     warnings_raw = atomic_trace.get("warnings")
                     warnings = (
                         [str(item) for item in warnings_raw if str(item).strip()]
