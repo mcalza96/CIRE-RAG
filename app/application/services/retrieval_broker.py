@@ -78,6 +78,54 @@ class RetrievalBroker:
         return tuple(ordered)
 
     @staticmethod
+    def _normalize_standard_filters(filters: Dict[str, Any]) -> Dict[str, Any]:
+        normalized: Dict[str, Any] = dict(filters)
+        standards_raw = normalized.get("source_standards")
+        standards: list[str] = []
+        if isinstance(standards_raw, list):
+            standards = [
+                str(item).strip()
+                for item in standards_raw
+                if isinstance(item, str) and str(item).strip()
+            ]
+            standards = list(dict.fromkeys(standards))
+        single = str(normalized.get("source_standard") or "").strip()
+
+        if single and single not in standards:
+            standards.insert(0, single)
+
+        if len(standards) > 1:
+            normalized["source_standards"] = standards
+            normalized.pop("source_standard", None)
+        elif len(standards) == 1:
+            normalized["source_standard"] = standards[0]
+            normalized.pop("source_standards", None)
+        else:
+            normalized.pop("source_standard", None)
+            normalized.pop("source_standards", None)
+
+        return normalized
+
+    @staticmethod
+    def _clause_near_standard(query: str, standard: str) -> str | None:
+        q = str(query or "")
+        s = str(standard or "").strip()
+        if not q or not s:
+            return None
+
+        std_match = re.search(re.escape(s), q, flags=re.IGNORECASE)
+        if not std_match:
+            return None
+
+        window_start = max(0, std_match.start() - 80)
+        window_end = min(len(q), std_match.end() + 120)
+        window = q[window_start:window_end]
+        clauses = list(dict.fromkeys(re.findall(r"\b\d+(?:\.\d+)+\b", window)))
+        if len(clauses) == 1:
+            return clauses[0]
+        return None
+
+    @staticmethod
     def _extract_row_scope(item: Dict[str, Any]) -> str:
         meta_raw = item.get("metadata")
         metadata: Dict[str, Any] = meta_raw if isinstance(meta_raw, dict) else {}
@@ -92,6 +140,20 @@ class RetrievalBroker:
             if isinstance(value, str) and value.strip():
                 return value.strip().upper()
         return ""
+
+    @staticmethod
+    def _scope_key(value: str) -> str:
+        text = str(value or "").strip().upper()
+        if not text:
+            return ""
+        iso_match = re.search(r"\bISO\s*[-:]?\s*(\d{4,5})\b", text, flags=re.IGNORECASE)
+        if iso_match:
+            return f"ISO-{iso_match.group(1)}"
+        digits_match = re.search(r"\b(\d{4,5})\b", text)
+        if digits_match:
+            return f"ISO-{digits_match.group(1)}"
+        compact = re.sub(r"[^A-Z0-9]", "", text)
+        return compact
 
     @staticmethod
     def _requested_scopes_from_context(scope_context: Dict[str, Any]) -> tuple[str, ...]:
@@ -125,7 +187,9 @@ class RetrievalBroker:
         if not requested_scopes:
             return results
 
-        requested_upper = {item.upper() for item in requested_scopes}
+        requested_keys = {
+            self._scope_key(item) for item in requested_scopes if self._scope_key(item)
+        }
         reranked: list[Dict[str, Any]] = []
         for row in results:
             row_scope = self._extract_row_scope(row)
@@ -133,7 +197,12 @@ class RetrievalBroker:
                 reranked.append(row)
                 continue
 
-            if any(scope in row_scope for scope in requested_upper):
+            row_scope_key = self._scope_key(row_scope)
+            row_scope_upper = row_scope.upper()
+            if row_scope_key and row_scope_key in requested_keys:
+                reranked.append(row)
+                continue
+            if any(str(scope).upper() in row_scope_upper for scope in requested_scopes):
                 reranked.append(row)
                 continue
 
@@ -220,13 +289,18 @@ class RetrievalBroker:
                 )
             else:
                 mode = self._engine_mode()
+                skip_planner_flag = bool(scope_context.get("_skip_planner"))
                 planner_used = bool(
-                    settings.QUERY_DECOMPOSER_ENABLED and mode in {"atomic", "hybrid"}
+                    settings.QUERY_DECOMPOSER_ENABLED
+                    and mode in {"atomic", "hybrid"}
+                    and not skip_planner_flag
                 )
                 if planner_used and bool(settings.QUERY_DECOMPOSER_SKIP_SIMPLE_QUERIES):
                     if is_simple_single_hop_query(query):
                         planner_used = False
                         trace_payload["planner_skipped_reason"] = "simple_single_hop_query"
+                if skip_planner_flag:
+                    trace_payload["planner_skipped_reason"] = "multi_query_subquery"
                 if planner_used:
                     plan = await self.query_decomposer.decompose(query)
                 else:
@@ -508,9 +582,24 @@ class RetrievalBroker:
         if isinstance(extra, dict) and extra:
             filters.update(extra)
 
+        nested_raw = filters.get("filters")
+        nested_filters: Dict[str, Any] = nested_raw if isinstance(nested_raw, dict) else {}
+        if "clause_id" in nested_filters:
+            nested_filters = dict(nested_filters)
+            nested_filters.pop("clause_id", None)
+            if nested_filters:
+                filters["filters"] = nested_filters
+            else:
+                filters.pop("filters", None)
+
         scope_collection = scope_context.get("collection_id")
         if scope_collection and not filters.get("collection_id"):
             filters["collection_id"] = scope_collection
+
+        context_scopes = self._requested_scopes_from_context(scope_context)
+        query_scopes = self._extract_requested_standards(query)
+        effective_scopes = context_scopes if context_scopes else query_scopes
+        clause_hint_allowed = len(effective_scopes) <= 1
 
         # Query enrichment contributes metadata hints but cannot override validated scope standards.
         _, query_filters = enrich_metadata(query, {})
@@ -525,7 +614,7 @@ class RetrievalBroker:
                     continue
                 if key_str == "clause_refs":
                     continue
-                if key_str == "clause_id" and metadata_clause:
+                if key_str == "clause_id":
                     continue
                 safe_query_filters[key_str] = value
             if safe_query_filters:
@@ -537,37 +626,34 @@ class RetrievalBroker:
                 nested_merged.update(safe_query_filters)
                 filters["filters"] = nested_merged
 
-        context_scopes = self._requested_scopes_from_context(scope_context)
-        query_scopes = self._extract_requested_standards(query)
-        effective_scopes = context_scopes if context_scopes else query_scopes
-
         if effective_scopes:
             standards = [str(scope).strip() for scope in effective_scopes if str(scope).strip()]
             standards = list(dict.fromkeys(standards))
             if standards:
-                filters["source_standards"] = standards
-                filters["source_standard"] = standards[0]
+                if len(standards) == 1:
+                    filters["source_standard"] = standards[0]
+                    filters.pop("source_standards", None)
+                else:
+                    filters["source_standards"] = standards
+                    filters.pop("source_standard", None)
         else:
             # Normalize any standard leftovers from merged filters.
-            raw_list = filters.get("source_standards")
-            normalized: list[str] = []
-            if isinstance(raw_list, list):
-                normalized = [
-                    str(item).strip()
-                    for item in raw_list
-                    if isinstance(item, str) and str(item).strip()
-                ]
-            single = str(filters.get("source_standard") or "").strip()
-            if single and single not in normalized:
-                normalized.insert(0, single)
-            if normalized:
-                filters["source_standards"] = list(dict.fromkeys(normalized))
-                filters["source_standard"] = filters["source_standards"][0]
-            else:
-                filters.pop("source_standards", None)
-                filters.pop("source_standard", None)
+            pass
 
-        return filters
+        if clause_hint_allowed:
+            metadata_existing = filters.get("metadata")
+            metadata = dict(metadata_existing) if isinstance(metadata_existing, dict) else {}
+            if not str(metadata.get("clause_id") or "").strip():
+                active_standard = str(filters.get("source_standard") or "").strip()
+                clause_hint = (
+                    self._clause_near_standard(query, active_standard) if active_standard else None
+                )
+                if clause_hint:
+                    metadata["clause_id"] = clause_hint
+            if metadata:
+                filters["metadata"] = metadata
+
+        return self._normalize_standard_filters(filters)
 
     async def _apply_reranking(
         self, query: str, results: List[Dict], scope_context: Dict, k: int
@@ -577,7 +663,8 @@ class RetrievalBroker:
             semantic_ranked = results
             requested_scopes = self._requested_scopes_from_context(scope_context)
             jina_started = time.perf_counter()
-            use_jina = rerank_mode in {"jina", "hybrid"}
+            skip_external_rerank = bool(scope_context.get("_skip_external_rerank"))
+            use_jina = rerank_mode in {"jina", "hybrid"} and not skip_external_rerank
             use_local = rerank_mode in {"local", "hybrid"}
 
             if use_jina and self.jina_reranker.is_enabled() and results:

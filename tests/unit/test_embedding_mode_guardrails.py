@@ -7,7 +7,11 @@ from app.services import embedding_service
 
 
 class _DummyCloudProvider:
+    def __init__(self):
+        self.calls = 0
+
     async def embed(self, texts, task="retrieval.passage"):
+        self.calls += 1
         return [[0.0] for _ in texts]
 
     async def chunk_and_encode(self, text):
@@ -21,6 +25,8 @@ class _DummySettings:
         self.JINA_MODE = jina_mode
         self.JINA_API_KEY = jina_api_key
         self.EMBEDDING_CONCURRENCY = 1
+        self.EMBEDDING_CACHE_MAX_SIZE = 100
+        self.EMBEDDING_CACHE_TTL_SECONDS = 300
         self.RUNNING_IN_DOCKER = app_env != "local"
         self.is_deployed_environment = app_env in {"staging", "production"}
 
@@ -39,9 +45,15 @@ def test_settings_allow_local_mode_when_app_env_local() -> None:
     assert settings.JINA_MODE == "LOCAL"
 
 
-def test_embedding_service_blocks_local_override_in_deployed_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_embedding_service_blocks_local_override_in_deployed_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     cloud = _DummyCloudProvider()
-    monkeypatch.setattr(embedding_service, "settings", _DummySettings(app_env="production", jina_mode="LOCAL", jina_api_key="x"))
+    monkeypatch.setattr(
+        embedding_service,
+        "settings",
+        _DummySettings(app_env="production", jina_mode="LOCAL", jina_api_key="x"),
+    )
     monkeypatch.setattr(embedding_service, "JinaCloudProvider", lambda api_key: cloud)
     monkeypatch.setattr(embedding_service.JinaEmbeddingService, "_instance", None)
 
@@ -51,9 +63,36 @@ def test_embedding_service_blocks_local_override_in_deployed_environment(monkeyp
     assert service._get_provider("LOCAL") is cloud
 
 
-def test_embedding_service_requires_cloud_key_in_deployed_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(embedding_service, "settings", _DummySettings(app_env="production", jina_mode="CLOUD", jina_api_key=None))
+def test_embedding_service_requires_cloud_key_in_deployed_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        embedding_service,
+        "settings",
+        _DummySettings(app_env="production", jina_mode="CLOUD", jina_api_key=None),
+    )
     monkeypatch.setattr(embedding_service.JinaEmbeddingService, "_instance", None)
 
     with pytest.raises(RuntimeError, match="requires JINA_MODE=CLOUD"):
         embedding_service.JinaEmbeddingService.get_instance()
+
+
+@pytest.mark.asyncio
+async def test_embedding_service_query_cache_reuses_embedding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cloud = _DummyCloudProvider()
+    monkeypatch.setattr(
+        embedding_service,
+        "settings",
+        _DummySettings(app_env="local", jina_mode="CLOUD", jina_api_key="x"),
+    )
+    monkeypatch.setattr(embedding_service, "JinaCloudProvider", lambda api_key: cloud)
+    monkeypatch.setattr(embedding_service.JinaEmbeddingService, "_instance", None)
+
+    service = embedding_service.JinaEmbeddingService.get_instance()
+    out1 = await service.embed_texts(["hola"], task="retrieval.query")
+    out2 = await service.embed_texts(["hola"], task="retrieval.query")
+
+    assert out1 == out2
+    assert cloud.calls == 1

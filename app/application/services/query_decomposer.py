@@ -25,6 +25,8 @@ _MULTIHOP_CUES_RE = re.compile(
     r")\b",
     flags=re.IGNORECASE,
 )
+_STD_RE = re.compile(r"\biso\s*[-:]?\s*(\d{4,5})\b", flags=re.IGNORECASE)
+_CLAUSE_RE = re.compile(r"\b\d+(?:\.\d+)+\b")
 
 
 def is_simple_single_hop_query(query: str) -> bool:
@@ -105,6 +107,45 @@ class QueryDecomposer:
             temperature=0.0, capability="ORCHESTRATION", prefer_provider="groq"
         )
         self._timeout_ms = int(timeout_ms or settings.QUERY_DECOMPOSER_TIMEOUT_MS)
+        self._max_subqueries = max(
+            1, int(getattr(settings, "QUERY_DECOMPOSER_MAX_SUBQUERIES", 4) or 4)
+        )
+
+    @staticmethod
+    def _multihop_tolerance() -> float:
+        try:
+            value = float(getattr(settings, "QUERY_DECOMPOSER_MULTIHOP_TOLERANCE", 0.55) or 0.55)
+        except (TypeError, ValueError):
+            value = 0.55
+        return max(0.0, min(1.0, value))
+
+    @staticmethod
+    def _estimate_multihop_signal(
+        *,
+        query: str,
+        sub_queries_count: int,
+        model_marked_multihop: bool,
+    ) -> float:
+        text = str(query or "")
+        standards = set(_STD_RE.findall(text))
+        clauses = set(_CLAUSE_RE.findall(text))
+
+        score = 0.0
+        if model_marked_multihop:
+            score += 0.2
+        if sub_queries_count >= 2:
+            score += 0.25
+        if len(standards) >= 2:
+            score += 0.35
+        elif len(standards) == 1 and len(clauses) >= 2:
+            score += 0.15
+        if len(clauses) >= 3:
+            score += 0.15
+        elif len(clauses) == 2:
+            score += 0.1
+        if _MULTIHOP_CUES_RE.search(text):
+            score += 0.2
+        return round(max(0.0, min(1.0, score)), 4)
 
     async def decompose(self, query: str) -> QueryPlan:
         if not query.strip():
@@ -125,23 +166,37 @@ class QueryDecomposer:
             return self._normalize_plan(payload=payload, original_query=query)
         except asyncio.TimeoutError:
             logger.info("query_decomposer_timeout", timeout_ms=self._timeout_ms)
-            return QueryPlan(
-                is_multihop=False,
-                execution_mode="parallel",
-                sub_queries=[PlannedSubQuery(id=1, query=query)],
-                fallback_reason="timeout",
-            )
+            return self._deterministic_fallback_plan(query, reason="timeout")
         except Exception as exc:
             logger.warning(
                 "query_decomposer_failed",
                 error=str(exc),
             )
-            return QueryPlan(
-                is_multihop=False,
-                execution_mode="parallel",
-                sub_queries=[PlannedSubQuery(id=1, query=query)],
-                fallback_reason="error",
-            )
+            return self._deterministic_fallback_plan(query, reason="error")
+
+    def _deterministic_fallback_plan(self, query: str, *, reason: str) -> QueryPlan:
+        standards = [f"ISO {m}" for m in _STD_RE.findall(query or "")]
+        standards = list(dict.fromkeys(standards))
+        clauses = list(dict.fromkeys(_CLAUSE_RE.findall(query or "")))
+
+        sub_queries: list[PlannedSubQuery] = []
+        next_id = 1
+        for std in standards[: self._max_subqueries]:
+            clause = clauses[next_id - 1] if next_id - 1 < len(clauses) else ""
+            text = " ".join(part for part in [std, clause, query] if part).strip()
+            sub_queries.append(PlannedSubQuery(id=next_id, query=text[:900]))
+            next_id += 1
+
+        if not sub_queries:
+            sub_queries = [PlannedSubQuery(id=1, query=query)]
+
+        is_multihop = len(sub_queries) > 1
+        return QueryPlan(
+            is_multihop=is_multihop,
+            execution_mode="parallel",
+            sub_queries=sub_queries[: self._max_subqueries],
+            fallback_reason=f"deterministic_{reason}",
+        )
 
     @staticmethod
     def _response_to_text(response: Any) -> str:
@@ -216,8 +271,8 @@ class QueryDecomposer:
 
         raise ValueError("planner output is not valid JSON object")
 
-    @staticmethod
-    def _normalize_plan(payload: dict[str, Any], original_query: str) -> QueryPlan:
+    @classmethod
+    def _normalize_plan(cls, payload: dict[str, Any], original_query: str) -> QueryPlan:
         def infer_graph_controls(
             query_text: str,
         ) -> tuple[list[str] | None, list[str] | None, bool]:
@@ -263,7 +318,10 @@ class QueryDecomposer:
         raw_sub_queries = payload.get("sub_queries")
         sub_queries: list[PlannedSubQuery] = []
         if isinstance(raw_sub_queries, list):
-            for idx, item in enumerate(raw_sub_queries[:6], start=1):
+            max_subqueries = max(
+                1, int(getattr(settings, "QUERY_DECOMPOSER_MAX_SUBQUERIES", 4) or 4)
+            )
+            for idx, item in enumerate(raw_sub_queries[:max_subqueries], start=1):
                 if not isinstance(item, dict):
                     continue
                 raw_query = str(item.get("query") or "").strip()
@@ -323,6 +381,9 @@ class QueryDecomposer:
                     )
                 )
 
+            if len(sub_queries) > max_subqueries:
+                sub_queries = sub_queries[:max_subqueries]
+
         if not sub_queries:
             fallback_relations, fallback_node_types, fallback_deep = infer_graph_controls(
                 original_query
@@ -342,8 +403,23 @@ class QueryDecomposer:
         if not is_multihop and len(sub_queries) > 1:
             sub_queries = [sub_queries[0]]
 
+        fallback_reason: str | None = None
+        if is_multihop and len(sub_queries) > 1:
+            multihop_signal = cls._estimate_multihop_signal(
+                query=original_query,
+                sub_queries_count=len(sub_queries),
+                model_marked_multihop=bool(payload.get("is_multihop", False)),
+            )
+            tolerance = cls._multihop_tolerance()
+            if multihop_signal < tolerance:
+                sub_queries = [sub_queries[0]]
+                is_multihop = False
+                execution_mode = "parallel"
+                fallback_reason = "multihop_below_tolerance"
+
         return QueryPlan(
             is_multihop=is_multihop,
             execution_mode=execution_mode,
             sub_queries=sub_queries,
+            fallback_reason=fallback_reason,
         )

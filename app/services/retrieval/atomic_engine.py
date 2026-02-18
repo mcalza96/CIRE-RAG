@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import re
 from datetime import datetime, timezone
 from typing import Any, cast
 from uuid import UUID
@@ -20,6 +22,8 @@ from app.services.embedding_service import JinaEmbeddingService
 
 logger = structlog.get_logger(__name__)
 HYBRID_RPC_SIGNATURE_MISMATCH_HNSW = "HYBRID_RPC_SIGNATURE_MISMATCH_HNSW"
+_QUERY_STANDARD_RE = re.compile(r"\biso\s*[-:]?\s*(\d{4,5})\b", flags=re.IGNORECASE)
+_CLAUSE_RE = re.compile(r"\b\d+(?:\.\d+)+\b")
 
 
 class AtomicRetrievalEngine:
@@ -443,12 +447,42 @@ class AtomicRetrievalEngine:
                 graph_max_hops=graph_max_hops,
             )
 
+        max_branch_expansions = max(
+            1,
+            int(getattr(settings, "RETRIEVAL_PLAN_MAX_BRANCH_EXPANSIONS", 2) or 2),
+        )
+        selected_sub_queries = list(plan.sub_queries[:max_branch_expansions])
+
+        try:
+            early_exit_scope_penalty = float(
+                getattr(settings, "RETRIEVAL_PLAN_EARLY_EXIT_SCOPE_PENALTY", 0.8) or 0.8
+            )
+        except (TypeError, ValueError):
+            early_exit_scope_penalty = 0.8
+        early_exit_scope_penalty = max(0.0, min(1.0, early_exit_scope_penalty))
+        requested_scopes = self._requested_scopes(scope_context)
+
+        self.last_trace = {
+            **(self.last_trace if isinstance(self.last_trace, dict) else {}),
+            "plan_branch_policy": {
+                "configured_subqueries": len(plan.sub_queries),
+                "applied_subqueries": len(selected_sub_queries),
+                "max_branch_expansions": max_branch_expansions,
+                "early_exit_scope_penalty": early_exit_scope_penalty,
+            },
+        }
+
         if plan.execution_mode == "sequential":
             merged: list[dict[str, Any]] = []
-            for sq in plan.sub_queries:
+            early_exit_state: dict[str, Any] | None = None
+            for sq in selected_sub_queries:
+                sq_scope_context = self._scope_context_for_subquery(
+                    scope_context=scope_context,
+                    subquery_text=sq.query,
+                )
                 rows = await self.retrieve_context(
                     query=sq.query,
-                    scope_context=scope_context,
+                    scope_context=sq_scope_context,
                     k=max(k, 12),
                     fetch_k=fetch_k,
                     graph_filter_relation_types=graph_filter_relation_types or sq.target_relations,
@@ -458,6 +492,16 @@ class AtomicRetrievalEngine:
                     else (2 if sq.is_deep else 1),
                 )
                 merged.extend(rows)
+                branch_scope_penalty = self._scope_penalty_ratio(rows, requested_scopes)
+                if requested_scopes and rows and branch_scope_penalty >= early_exit_scope_penalty:
+                    early_exit_state = {
+                        "enabled": True,
+                        "triggered": True,
+                        "subquery_id": sq.id,
+                        "subquery_query": sq.query[:180],
+                        "scope_penalized_ratio": round(branch_scope_penalty, 4),
+                    }
+                    break
             safety = await self.retrieve_context(
                 query=query,
                 scope_context=scope_context,
@@ -468,23 +512,31 @@ class AtomicRetrievalEngine:
                 graph_max_hops=0 if graph_max_hops is None else graph_max_hops,
             )
             merged.extend(safety)
+            if early_exit_state:
+                self.last_trace["plan_early_exit"] = early_exit_state
             return self._dedupe_by_id(merged)[:k]
 
         semaphore = asyncio.Semaphore(max(1, settings.RETRIEVAL_MULTI_QUERY_MAX_PARALLEL))
 
         async def _bounded_retrieve(sq: Any) -> list[RetrievalRow]:
             async with semaphore:
+                sq_scope_context = self._scope_context_for_subquery(
+                    scope_context=scope_context,
+                    subquery_text=sq.query,
+                )
                 return await self.retrieve_context(
                     query=sq.query,
-                    scope_context=scope_context,
+                    scope_context=sq_scope_context,
                     k=max(k, 12),
                     fetch_k=fetch_k,
                     graph_filter_relation_types=graph_filter_relation_types or sq.target_relations,
                     graph_filter_node_types=graph_filter_node_types or sq.target_node_types,
-                    graph_max_hops=graph_max_hops if graph_max_hops is not None else (2 if sq.is_deep else 1),
+                    graph_max_hops=graph_max_hops
+                    if graph_max_hops is not None
+                    else (2 if sq.is_deep else 1),
                 )
 
-        tasks = [_bounded_retrieve(sq) for sq in plan.sub_queries]
+        tasks = [_bounded_retrieve(sq) for sq in selected_sub_queries]
         tasks.append(
             self.retrieve_context(
                 query=query,
@@ -505,6 +557,158 @@ class AtomicRetrievalEngine:
             if isinstance(payload, list):
                 merged.extend(item for item in payload if isinstance(item, dict))
         return self._dedupe_by_id(merged)[:k]
+
+    @staticmethod
+    def _extract_row_scope(item: dict[str, Any]) -> str:
+        metadata_raw = item.get("metadata")
+        metadata: dict[str, Any] = metadata_raw if isinstance(metadata_raw, dict) else {}
+        candidates = (
+            metadata.get("source_standard"),
+            metadata.get("standard"),
+            metadata.get("scope"),
+            metadata.get("norma"),
+            item.get("source_standard"),
+        )
+        for value in candidates:
+            if isinstance(value, str) and value.strip():
+                return value.strip().upper()
+        return ""
+
+    @staticmethod
+    def _requested_scopes(scope_context: dict[str, Any] | None) -> tuple[str, ...]:
+        if not isinstance(scope_context, dict):
+            return ()
+
+        values: list[str] = []
+        source_standards_raw = scope_context.get("source_standards")
+        if isinstance(source_standards_raw, list):
+            values.extend(
+                str(item).strip()
+                for item in source_standards_raw
+                if isinstance(item, str) and str(item).strip()
+            )
+
+        source_standard = scope_context.get("source_standard")
+        if isinstance(source_standard, str) and source_standard.strip():
+            values.append(source_standard.strip())
+
+        nested_raw = scope_context.get("filters")
+        nested = nested_raw if isinstance(nested_raw, dict) else {}
+        nested_standards_raw = nested.get("source_standards")
+        if isinstance(nested_standards_raw, list):
+            values.extend(
+                str(item).strip()
+                for item in nested_standards_raw
+                if isinstance(item, str) and str(item).strip()
+            )
+        nested_single = nested.get("source_standard")
+        if isinstance(nested_single, str) and nested_single.strip():
+            values.append(nested_single.strip())
+
+        if not values:
+            return ()
+        return tuple(dict.fromkeys(values))
+
+    def _scope_penalty_ratio(
+        self, rows: list[dict[str, Any]], requested_scopes: tuple[str, ...]
+    ) -> float:
+        if not requested_scopes or not rows:
+            return 0.0
+
+        requested_upper = {scope.upper() for scope in requested_scopes}
+        considered = 0
+        penalized = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_scope = self._extract_row_scope(row)
+            if not row_scope:
+                continue
+            considered += 1
+            if not any(scope in row_scope for scope in requested_upper):
+                penalized += 1
+        if considered == 0:
+            return 0.0
+        return penalized / considered
+
+    def _scope_context_for_subquery(
+        self,
+        *,
+        scope_context: dict[str, Any] | None,
+        subquery_text: str,
+    ) -> dict[str, Any] | None:
+        if not isinstance(scope_context, dict):
+            return scope_context
+
+        scoped: dict[str, Any] = copy.deepcopy(scope_context)
+        standards = [f"ISO {match}" for match in _QUERY_STANDARD_RE.findall(subquery_text or "")]
+        standards = list(dict.fromkeys(standards))
+        clauses = list(dict.fromkeys(_CLAUSE_RE.findall(subquery_text or "")))
+
+        nested_raw = scoped.get("filters")
+        nested: dict[str, Any] = dict(nested_raw) if isinstance(nested_raw, dict) else {}
+
+        if standards:
+            if len(standards) == 1:
+                scoped["source_standard"] = standards[0]
+                scoped.pop("source_standards", None)
+                nested["source_standard"] = standards[0]
+                nested.pop("source_standards", None)
+            else:
+                scoped["source_standards"] = standards
+                scoped.pop("source_standard", None)
+                nested["source_standards"] = standards
+                nested.pop("source_standard", None)
+
+        if clauses:
+            # Apply hard clause only when subquery standard is singular/explicit.
+            active_standard = str(
+                scoped.get("source_standard") or nested.get("source_standard") or ""
+            ).strip()
+            clause_for_standard = (
+                self._clause_near_standard(subquery_text, active_standard)
+                if active_standard
+                else None
+            )
+            if active_standard and clause_for_standard:
+                metadata_raw = nested.get("metadata")
+                metadata: dict[str, Any] = (
+                    dict(metadata_raw) if isinstance(metadata_raw, dict) else {}
+                )
+                metadata["clause_id"] = clause_for_standard
+                nested["metadata"] = metadata
+            else:
+                metadata_raw = nested.get("metadata")
+                metadata: dict[str, Any] = (
+                    dict(metadata_raw) if isinstance(metadata_raw, dict) else {}
+                )
+                metadata.pop("clause_id", None)
+                if metadata:
+                    nested["metadata"] = metadata
+                else:
+                    nested.pop("metadata", None)
+
+        scoped["filters"] = nested
+        return scoped
+
+    @staticmethod
+    def _clause_near_standard(query: str, standard: str) -> str | None:
+        q = str(query or "")
+        s = str(standard or "").strip()
+        if not q or not s:
+            return None
+
+        std_match = re.search(re.escape(s), q, flags=re.IGNORECASE)
+        if not std_match:
+            return None
+
+        window_start = max(0, std_match.start() - 80)
+        window_end = min(len(q), std_match.end() + 120)
+        window = q[window_start:window_end]
+        clauses = list(dict.fromkeys(_CLAUSE_RE.findall(window)))
+        if len(clauses) == 1:
+            return str(clauses[0])
+        return None
 
     async def _search_vectors(
         self, query_vector: list[float], source_ids: list[str], fetch_k: int

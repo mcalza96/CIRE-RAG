@@ -23,12 +23,24 @@ class JinaCloudProvider(IEmbeddingProvider):
         self.model_name = self._normalize_cloud_model_name(AIModelConfig.JINA_MODEL_NAME)
         self.dimensions = AIModelConfig.JINA_EMBEDDING_DIMENSIONS
         self._session: Optional[aiohttp.ClientSession] = None
+        self._post_semaphore = asyncio.Semaphore(
+            max(1, int(settings.JINA_REQUEST_MAX_PARALLEL or 2))
+        )
+        self._rate_limited_until: float = 0.0
+        self._rate_limit_lock = asyncio.Lock()
         if self.model_name != AIModelConfig.JINA_MODEL_NAME:
             logger.info(
                 "jina_cloud_model_name_normalized",
                 configured_model=AIModelConfig.JINA_MODEL_NAME,
                 cloud_model=self.model_name,
             )
+        key_suffix = str(self.api_key or "")[-4:] if self.api_key else "none"
+        logger.info(
+            "jina_cloud_provider_initialized",
+            model=self.model_name,
+            key_suffix=key_suffix,
+            max_parallel_requests=max(1, int(settings.JINA_REQUEST_MAX_PARALLEL or 2)),
+        )
 
     @staticmethod
     def _normalize_cloud_model_name(model_name: str) -> str:
@@ -278,42 +290,56 @@ class JinaCloudProvider(IEmbeddingProvider):
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
             try:
-                async with session.post(self.base_url, json=data) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        if isinstance(result, dict):
-                            return result
-                        raise Exception("Jina API Error: malformed JSON response")
+                await self._wait_for_rate_limit_window()
+                async with self._post_semaphore:
+                    async with session.post(self.base_url, json=data) as response:
+                        if response.status == 200:
+                            result = await response.json()
+                            if isinstance(result, dict):
+                                return result
+                            raise Exception("Jina API Error: malformed JSON response")
 
-                    text_resp = await response.text()
-                    is_rate_limit = response.status == 429
-                    retryable = response.status in {429, 500, 502, 503, 504}
+                        text_resp = await response.text()
+                        is_rate_limit = response.status == 429
+                        retryable = response.status in {429, 500, 502, 503, 504}
 
-                    if not retryable or attempt >= attempts:
-                        logger.error(f"Jina API Error {response.status}: {text_resp}")
-                        raise Exception(f"Jina API Error: {text_resp}")
+                        if not retryable or attempt >= attempts:
+                            logger.error(f"Jina API Error {response.status}: {text_resp}")
+                            raise Exception(f"Jina API Error: {text_resp}")
 
-                    # Backoff más agresivo para rate limits (429)
-                    if is_rate_limit:
-                        delay = min(
-                            max_delay, base_delay * (backoff_429_multiplier ** (attempt - 1))
-                        )
-                        logger.warning(
-                            "jina_embed_rate_limit_retry",
-                            status=response.status,
-                            attempt=attempt,
-                            delay_seconds=delay,
-                            batch_size=len(data.get("input", [])),
-                        )
-                    else:
-                        delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
-                        logger.warning(
-                            "jina_embed_retry",
-                            status=response.status,
-                            attempt=attempt,
-                            delay_seconds=delay,
-                        )
-                    await asyncio.sleep(delay)
+                        # Backoff más agresivo para rate limits (429)
+                        if is_rate_limit:
+                            retry_after_header = response.headers.get("Retry-After")
+                            try:
+                                retry_after_s = (
+                                    float(retry_after_header) if retry_after_header else 0.0
+                                )
+                            except (TypeError, ValueError):
+                                retry_after_s = 0.0
+                            delay = min(
+                                max_delay,
+                                max(
+                                    retry_after_s,
+                                    base_delay * (backoff_429_multiplier ** (attempt - 1)),
+                                ),
+                            )
+                            await self._register_rate_limit_delay(delay)
+                            logger.warning(
+                                "jina_embed_rate_limit_retry",
+                                status=response.status,
+                                attempt=attempt,
+                                delay_seconds=delay,
+                                batch_size=len(data.get("input", [])),
+                            )
+                        else:
+                            delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
+                            logger.warning(
+                                "jina_embed_retry",
+                                status=response.status,
+                                attempt=attempt,
+                                delay_seconds=delay,
+                            )
+                await asyncio.sleep(delay)
             except Exception as exc:
                 last_error = exc
                 if attempt >= attempts:
@@ -324,6 +350,24 @@ class JinaCloudProvider(IEmbeddingProvider):
         if last_error is not None:
             raise last_error
         raise Exception("Jina API Error: retry exhausted")
+
+    async def _register_rate_limit_delay(self, delay_seconds: float) -> None:
+        cooldown_floor = max(0.0, float(settings.JINA_RATE_LIMIT_COOLDOWN_SECONDS or 0.0))
+        target_delay = max(float(delay_seconds or 0.0), cooldown_floor)
+        if target_delay <= 0:
+            return
+        loop = asyncio.get_running_loop()
+        async with self._rate_limit_lock:
+            self._rate_limited_until = max(self._rate_limited_until, loop.time() + target_delay)
+
+    async def _wait_for_rate_limit_window(self) -> None:
+        loop = asyncio.get_running_loop()
+        while True:
+            async with self._rate_limit_lock:
+                remaining = self._rate_limited_until - loop.time()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(remaining, 1.0))
 
     def _split_text_simple(self, text: str, limit: int = 1000) -> List[str]:
         parts = []

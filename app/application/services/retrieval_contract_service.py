@@ -276,6 +276,13 @@ class RetrievalContractService:
         if not source_standard and source_standards:
             source_standard = source_standards[0]
 
+        # Enforce mutually exclusive standard selectors to avoid ambiguous filtering.
+        if len(source_standards) > 1:
+            source_standard = None
+        elif len(source_standards) == 1:
+            source_standard = source_standards[0]
+            source_standards = []
+
         scope_resolution = self._knowledge_service._resolve_scope(request.query)
         query_scope = QueryScopeSummary(
             requested_standards=list(scope_resolution.get("requested_standards") or []),
@@ -358,9 +365,9 @@ class RetrievalContractService:
             content = str(row.get("content") or "").strip()
             if not content:
                 continue
-            
-            # Use the entire row dictionary as metadata. 
-            # This allows the orchestrator to see both top-level filterable fields 
+
+            # Use the entire row dictionary as metadata.
+            # This allows the orchestrator to see both top-level filterable fields
             # and nested structures (like our backfilled 'row' key).
             out.append(
                 RetrievalItem(
@@ -383,7 +390,13 @@ class RetrievalContractService:
                 rows.append(row)
         return rows
 
-    async def run_hybrid(self, request: HybridRetrievalRequest) -> HybridRetrievalResponse:
+    async def run_hybrid(
+        self,
+        request: HybridRetrievalRequest,
+        *,
+        skip_planner: bool = False,
+        skip_external_rerank: bool = False,
+    ) -> HybridRetrievalResponse:
         started = time.perf_counter()
         validated = self.validate_scope(request)
         if not validated.valid:
@@ -395,6 +408,10 @@ class RetrievalContractService:
             )
 
         scope_context = self._build_scope_context(validated, collection_id=request.collection_id)
+        if skip_planner:
+            scope_context["_skip_planner"] = True
+        if skip_external_rerank:
+            scope_context["_skip_external_rerank"] = True
         container = CognitiveContainer.get_instance()
         rerank_enabled = bool(request.rerank.enabled) if request.rerank is not None else True
         graph_relations = request.graph.relation_types if request.graph is not None else None
@@ -544,7 +561,11 @@ class RetrievalContractService:
                 )
                 async with semaphore:
                     result = await asyncio.wait_for(
-                        self.run_hybrid(hybrid_request),
+                        self.run_hybrid(
+                            hybrid_request,
+                            skip_planner=True,
+                            skip_external_rerank=True,
+                        ),
                         timeout=subquery_timeout_ms / 1000.0,
                     )
                 return (

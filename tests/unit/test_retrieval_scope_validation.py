@@ -38,7 +38,11 @@ def test_validate_scope_normalizes_time_range_and_standards() -> None:
         filters=ScopeFilters.model_validate(
             {
                 "source_standards": ["ISO 9001", "ISO 14001"],
-                "time_range": {"field": "created_at", "from": "2026-01-01T00:00:00Z", "to": "2026-02-01T00:00:00Z"},
+                "time_range": {
+                    "field": "created_at",
+                    "from": "2026-01-01T00:00:00Z",
+                    "to": "2026-02-01T00:00:00Z",
+                },
             }
         ),
     )
@@ -47,9 +51,8 @@ def test_validate_scope_normalizes_time_range_and_standards() -> None:
 
     assert result.valid is True
     normalized_filters = result.normalized_scope["filters"]
-    assert normalized_filters["source_standard"] == "ISO 9001"
+    assert normalized_filters["source_standard"] is None
     assert normalized_filters["source_standards"] == ["ISO 9001", "ISO 14001"]
     assert normalized_filters["time_range"]["field"] == "created_at"
     assert normalized_filters["time_range"]["from"].startswith("2026-01-01T00:00:00")
     assert normalized_filters["time_range"]["to"].startswith("2026-02-01T00:00:00")
-

@@ -1,6 +1,8 @@
 import structlog
 import threading
 import asyncio
+import time
+from collections import OrderedDict
 from typing import List, Dict, Any, Optional, cast
 from app.core.observability.metrics import track_span
 from app.core.settings import settings
@@ -9,11 +11,13 @@ from app.infrastructure.services.jina_cloud_provider import JinaCloudProvider
 
 logger = structlog.get_logger(__name__)
 
+
 class JinaEmbeddingService:
     """
-    Facade Service for Embeddings. 
+    Facade Service for Embeddings.
     Handles caching, provider selection (Cloud vs Local), and metrics.
     """
+
     _instance = None
     _lock = threading.Lock()
 
@@ -51,21 +55,27 @@ class JinaEmbeddingService:
             elif self.default_mode == "CLOUD" and not self.cloud_provider:
                 logger.warning("cloud_mode_without_api_key_fallback_local")
                 self.default_mode = "LOCAL"
-            
+
             # Caching for query embeddings
-            self._cache = {}
-            self._cache_max_size = 1000
+            self._cache: "OrderedDict[tuple[str, str], tuple[list[float], float]]" = OrderedDict()
+            self._cache_max_size = max(
+                100, int(getattr(settings, "EMBEDDING_CACHE_MAX_SIZE", 4000))
+            )
+            self._cache_ttl_seconds = max(
+                30,
+                int(getattr(settings, "EMBEDDING_CACHE_TTL_SECONDS", 1800) or 1800),
+            )
             self._cache_lock = threading.Lock()
 
             # Throughput controls
             self.embedding_concurrency = max(1, int(getattr(settings, "EMBEDDING_CONCURRENCY", 5)))
             self._embedding_semaphore = asyncio.Semaphore(self.embedding_concurrency)
-            
+
             self._initialized = True
 
     @classmethod
     def get_instance(cls):
-        return cls() # Singleton
+        return cls()  # Singleton
 
     def _build_local_provider(self) -> IEmbeddingProvider:
         try:
@@ -101,24 +111,33 @@ class JinaEmbeddingService:
         return self.local_provider
 
     @track_span(name="span:embedding_generation")
-    async def embed_texts(self, texts: List[str], task: str = "retrieval.passage", mode: Optional[str] = None) -> List[List[float]]:
-        if not texts: return []
-        
+    async def embed_texts(
+        self, texts: List[str], task: str = "retrieval.passage", mode: Optional[str] = None
+    ) -> List[List[float]]:
+        if not texts:
+            return []
+
         # Cache logic
         is_query_task = task == "retrieval.query"
         final_embeddings: List[Optional[List[float]]] = [None] * len(texts)
         missing_indices = []
         missing_texts = []
-        
+
         if is_query_task:
             with self._cache_lock:
+                now = time.monotonic()
                 for i, t in enumerate(texts):
                     cache_key = (t, task)
-                    if cache_key in self._cache:
-                        final_embeddings[i] = self._cache[cache_key]
-                        # Move to end (LRU)
-                        self._cache[cache_key] = self._cache.pop(cache_key)
-                    else:
+                    cached = self._cache.get(cache_key)
+                    if cached is not None:
+                        embedding, expires_at = cached
+                        if expires_at > now:
+                            final_embeddings[i] = embedding
+                            # Move to end (LRU)
+                            self._cache.move_to_end(cache_key)
+                            continue
+                        self._cache.pop(cache_key, None)
+                    if final_embeddings[i] is None:
                         missing_indices.append(i)
                         missing_texts.append(t)
         else:
@@ -128,22 +147,37 @@ class JinaEmbeddingService:
         if not missing_texts:
             return cast(List[List[float]], final_embeddings)
 
+        # Dedupe repeated query texts in the same request.
+        unique_texts: List[str] = []
+        unique_keys: List[tuple[str, str]] = []
+        key_to_indices: Dict[tuple[str, str], List[int]] = {}
+        for idx, txt in zip(missing_indices, missing_texts):
+            key = (txt, task)
+            if key not in key_to_indices:
+                key_to_indices[key] = []
+                unique_texts.append(txt)
+                unique_keys.append(key)
+            key_to_indices[key].append(idx)
+
         # Delegate to provider
         provider = self._get_provider(mode)
         try:
             async with self._embedding_semaphore:
-                embeddings = await provider.embed(missing_texts, task=task)
-            
+                embeddings = await provider.embed(unique_texts, task=task)
+
             # Update cache and merge results
-            for i, emb in zip(missing_indices, embeddings):
-                final_embeddings[i] = emb
+            for key, emb in zip(unique_keys, embeddings):
+                for idx in key_to_indices.get(key, []):
+                    final_embeddings[idx] = emb
+
                 if is_query_task:
                     with self._cache_lock:
-                        cache_key = (texts[i], task)
-                        self._cache[cache_key] = emb
-                        if len(self._cache) > self._cache_max_size:
-                            self._cache.pop(next(iter(self._cache)))
-            
+                        expires_at = time.monotonic() + float(self._cache_ttl_seconds)
+                        self._cache[key] = (emb, expires_at)
+                        self._cache.move_to_end(key)
+                        while len(self._cache) > self._cache_max_size:
+                            self._cache.popitem(last=False)
+
             return cast(List[List[float]], final_embeddings)
         except Exception as e:
             logger.error("embedding_generation_failed", error=str(e), texts_count=len(texts))
