@@ -57,12 +57,20 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: Optional[str] = None
     JINA_API_KEY: Optional[str] = None
     JINA_MODE: Literal["LOCAL", "CLOUD"] = "CLOUD"
+    EMBEDDING_PROVIDER_DEFAULT: str = "jina"
+    INGEST_EMBED_PROVIDER_DEFAULT: Optional[str] = None
+    EMBEDDING_PROVIDER_ALLOWLIST: str = "jina,cohere"
     OPENAI_FALLBACK_MODEL: str = "gpt-4o-mini"
     JINA_BASE_URL: str = "https://api.jina.ai/v1/embeddings"
     JINA_MODEL_NAME: str = "jinaai/jina-embeddings-v3"
     JINA_EMBEDDING_DIMENSIONS: int = 1024
     JINA_RERANK_URL: str = "https://api.jina.ai/v1/rerank"
     JINA_RERANK_MODEL: str = "jina-reranker-v2-base-multilingual"
+    COHERE_API_KEY: Optional[str] = None
+    COHERE_EMBED_URL: str = "https://api.cohere.com/v2/embed"
+    COHERE_EMBED_MODEL: str = "embed-multilingual-v3.0"
+    COHERE_EMBEDDING_DIMENSIONS: int = 1024
+    COHERE_REQUEST_MAX_PARALLEL: int = 2
 
     # API Config
     API_PORT: int = 8000
@@ -132,6 +140,9 @@ class Settings(BaseSettings):
     RERANK_MAX_CANDIDATES: int = 10
     RETRIEVAL_MULTI_QUERY_MAX_PARALLEL: int = 4
     RETRIEVAL_MULTI_QUERY_SUBQUERY_TIMEOUT_MS: int = 8000
+    RETRIEVAL_MULTI_QUERY_SUBQUERY_RERANK_ENABLED: bool = False
+    RETRIEVAL_MULTI_QUERY_DROP_SCOPE_PENALIZED_BRANCHES: bool = True
+    RETRIEVAL_MULTI_QUERY_SCOPE_PENALTY_DROP_THRESHOLD: float = 0.95
     RETRIEVAL_PLAN_MAX_BRANCH_EXPANSIONS: int = 2
     RETRIEVAL_PLAN_EARLY_EXIT_SCOPE_PENALTY: float = 0.8
     AUTHORITY_CLASSIFIER_MODE: str = "rules"  # rules | embedding_first
@@ -179,6 +190,13 @@ class Settings(BaseSettings):
                 extra={"app_env": self.APP_ENV, "environment": self.ENVIRONMENT},
             )
             self.JINA_MODE = "CLOUD"
+        self.EMBEDDING_PROVIDER_DEFAULT = (
+            str(self.EMBEDDING_PROVIDER_DEFAULT or "jina").strip().lower()
+        )
+        if self.INGEST_EMBED_PROVIDER_DEFAULT:
+            self.INGEST_EMBED_PROVIDER_DEFAULT = (
+                str(self.INGEST_EMBED_PROVIDER_DEFAULT).strip().lower()
+            )
         return self
 
 

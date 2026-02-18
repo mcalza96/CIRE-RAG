@@ -275,6 +275,7 @@ class PostIngestionPipelineService:
         graph_repository = SupabaseGraphRepository()
         extractor = GraphExtractor(get_llm(temperature=0.0, capability="FORENSIC"))
         embedding_mode = self._resolve_embedding_mode(chunks)
+        embedding_provider = self._resolve_embedding_provider(chunks)
         graph_batch_size = max(
             1,
             int(getattr(settings, "INGESTION_GRAPH_BATCH_SIZE", 6) or 6),
@@ -324,6 +325,7 @@ class PostIngestionPipelineService:
                     chunk_id=chunk_uuid,
                     tenant_id=tenant_uuid,
                     embedding_mode=embedding_mode,
+                    embedding_provider=embedding_provider,
                 )
                 totals["entities_extracted"] += stats.get("entities_extracted", 0)
                 totals["relations_extracted"] += stats.get("relations_extracted", 0)
@@ -423,4 +425,24 @@ class PostIngestionPipelineService:
             mode = str(raw_mode).upper().strip()
             if mode in {"LOCAL", "CLOUD"}:
                 return mode
+        return None
+
+    @staticmethod
+    def _resolve_embedding_provider(chunks: list[Any]) -> Optional[str]:
+        for chunk in chunks:
+            if not isinstance(chunk, dict):
+                continue
+            metadata = chunk.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+            raw_provider = metadata.get("embedding_provider")
+            if raw_provider:
+                provider = str(raw_provider).strip().lower()
+                if provider:
+                    return provider
+            profile = metadata.get("embedding_profile")
+            if isinstance(profile, dict) and profile.get("provider"):
+                provider = str(profile.get("provider") or "").strip().lower()
+                if provider:
+                    return provider
         return None

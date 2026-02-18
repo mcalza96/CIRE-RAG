@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any
 
+
 class IEmbeddingProvider(ABC):
     """
     Interface for embedding providers.
@@ -20,3 +21,29 @@ class IEmbeddingProvider(ABC):
         Performs semantic chunking (Late Chunking) and returns chunks with embeddings and offsets.
         """
         pass
+
+    @property
+    @abstractmethod
+    def provider_name(self) -> str:
+        """Stable provider identifier (e.g. 'jina', 'cohere')."""
+        pass
+
+    @property
+    @abstractmethod
+    def model_name(self) -> str:
+        """Configured embedding model identifier."""
+        pass
+
+    @property
+    @abstractmethod
+    def embedding_dimensions(self) -> int:
+        """Output vector dimensions for this provider/model."""
+        pass
+
+    def profile(self) -> Dict[str, Any]:
+        """Provider-agnostic embedding profile metadata for traceability."""
+        return {
+            "provider": str(self.provider_name),
+            "model": str(self.model_name),
+            "dimensions": int(self.embedding_dimensions),
+        }

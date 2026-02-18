@@ -24,11 +24,13 @@ from app.api.v1.schemas.retrieval_advanced import (
     MultiQueryRetrievalResponse,
     MultiQueryTrace,
     QueryScopeSummary,
+    RerankOptions,
     RetrievalItem,
     RetrievalPath,
     ScopeIssue,
     ScoreComponents,
     SubQueryExecution,
+    SubQueryRequest,
     ValidateScopeRequest,
     ValidateScopeResponse,
 )
@@ -390,6 +392,31 @@ class RetrievalContractService:
                 rows.append(row)
         return rows
 
+    @staticmethod
+    def _normalize_scope_name(value: Any) -> str:
+        text = str(value or "").strip().upper()
+        if not text:
+            return ""
+        match = re.search(r"\bISO\s*[-:]?\s*(\d{4,5})\b", text, flags=re.IGNORECASE)
+        if match:
+            return f"ISO {match.group(1)}"
+        digits = re.search(r"\b(\d{4,5})\b", text)
+        if digits:
+            return f"ISO {digits.group(1)}"
+        return text
+
+    @classmethod
+    def _scope_clause_key(cls, item: SubQueryRequest) -> str:
+        filters = item.filters
+        scope = cls._normalize_scope_name(filters.source_standard if filters else "")
+        clause_id = ""
+        if filters and isinstance(filters.metadata, dict):
+            clause_id = str(filters.metadata.get("clause_id") or "").strip()
+        if scope and clause_id:
+            return f"scope_clause::{scope}::{clause_id}"
+        normalized_query = re.sub(r"\s+", " ", str(item.query or "").strip().lower())
+        return f"query::{normalized_query}"
+
     async def run_hybrid(
         self,
         request: HybridRetrievalRequest,
@@ -475,6 +502,9 @@ class RetrievalContractService:
             or trace_payload.get("hybrid_rpc_compat_mode")
             or ""
         ).strip()
+        scope_penalized_count = int(trace_payload.get("scope_penalized_count") or 0)
+        scope_candidate_count = int(trace_payload.get("scope_candidate_count") or 0)
+        scope_penalized_ratio = _finite_or_none(trace_payload.get("scope_penalized_ratio"))
         return HybridRetrievalResponse(
             items=items,
             trace=HybridTrace(
@@ -493,6 +523,9 @@ class RetrievalContractService:
                 ),
                 warnings=merged_warnings,
                 warning_codes=list(dict.fromkeys(trace_warning_codes)),
+                scope_penalized_count=scope_penalized_count,
+                scope_candidate_count=scope_candidate_count,
+                scope_penalized_ratio=scope_penalized_ratio,
             ),
         )
 
@@ -545,6 +578,36 @@ class RetrievalContractService:
             int(getattr(settings, "RETRIEVAL_MULTI_QUERY_SUBQUERY_TIMEOUT_MS", 8000) or 8000),
         )
         semaphore = asyncio.Semaphore(max_parallel)
+        drop_out_of_scope = bool(
+            getattr(settings, "RETRIEVAL_MULTI_QUERY_DROP_SCOPE_PENALIZED_BRANCHES", True)
+        )
+        scope_drop_threshold = float(
+            getattr(settings, "RETRIEVAL_MULTI_QUERY_SCOPE_PENALTY_DROP_THRESHOLD", 0.95) or 0.95
+        )
+        scope_drop_threshold = max(0.0, min(1.0, scope_drop_threshold))
+        subquery_rerank_enabled = bool(
+            getattr(settings, "RETRIEVAL_MULTI_QUERY_SUBQUERY_RERANK_ENABLED", False)
+        )
+
+        deduped_queries: list[SubQueryRequest] = []
+        duplicate_subqueries: list[SubQueryExecution] = []
+        seen_query_keys: set[str] = set()
+        for item in request.queries:
+            key = self._scope_clause_key(item)
+            if key in seen_query_keys:
+                duplicate_subqueries.append(
+                    SubQueryExecution(
+                        id=item.id,
+                        status="error",
+                        items_count=0,
+                        latency_ms=0.0,
+                        error_code="SUBQUERY_SKIPPED_DUPLICATE",
+                        error_message="Duplicate subquery scope/clause fingerprint",
+                    )
+                )
+                continue
+            seen_query_keys.add(key)
+            deduped_queries.append(item)
 
         async def _execute_subquery(item: Any) -> tuple[SubQueryExecution, list[RetrievalItem]]:
             sq_started = time.perf_counter()
@@ -556,7 +619,7 @@ class RetrievalContractService:
                     k=item.k or request.merge.top_k,
                     fetch_k=item.fetch_k or max(request.merge.top_k * 4, 40),
                     filters=item.filters,
-                    rerank=None,
+                    rerank=RerankOptions(enabled=subquery_rerank_enabled),
                     graph=None,
                 )
                 async with semaphore:
@@ -568,6 +631,34 @@ class RetrievalContractService:
                         ),
                         timeout=subquery_timeout_ms / 1000.0,
                     )
+
+                scope_penalized_ratio: float | None = None
+                trace_payload = result.trace.model_dump() if result and result.trace else {}
+                if isinstance(trace_payload, dict):
+                    ratio_raw = trace_payload.get("scope_penalized_ratio")
+                    ratio = _finite_or_none(ratio_raw)
+                    if ratio is not None:
+                        scope_penalized_ratio = max(0.0, min(1.0, ratio))
+
+                if (
+                    drop_out_of_scope
+                    and scope_penalized_ratio is not None
+                    and scope_penalized_ratio >= scope_drop_threshold
+                ):
+                    return (
+                        SubQueryExecution(
+                            id=item.id,
+                            status="error",
+                            items_count=0,
+                            latency_ms=round((time.perf_counter() - sq_started) * 1000, 2),
+                            error_code="SUBQUERY_OUT_OF_SCOPE",
+                            error_message=(
+                                "Branch dropped: all candidates were penalized by scope filtering"
+                            ),
+                        ),
+                        [],
+                    )
+
                 return (
                     SubQueryExecution(
                         id=item.id,
@@ -614,9 +705,14 @@ class RetrievalContractService:
                     [],
                 )
 
-        executions = await asyncio.gather(*[_execute_subquery(item) for item in request.queries])
+        if deduped_queries:
+            executions = await asyncio.gather(
+                *[_execute_subquery(item) for item in deduped_queries]
+            )
+        else:
+            executions = []
         grouped_items: list[tuple[str, list[RetrievalItem]]] = []
-        subqueries: list[SubQueryExecution] = []
+        subqueries: list[SubQueryExecution] = list(duplicate_subqueries)
         failed_count = 0
         timed_out_count = 0
         for execution, items in executions:

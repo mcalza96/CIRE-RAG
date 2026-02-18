@@ -17,6 +17,25 @@ class _DummyCloudProvider:
     async def chunk_and_encode(self, text):
         return []
 
+    @property
+    def provider_name(self):
+        return "jina"
+
+    @property
+    def model_name(self):
+        return "dummy-jina"
+
+    @property
+    def embedding_dimensions(self):
+        return 1
+
+    def profile(self):
+        return {
+            "provider": "jina",
+            "model": "dummy-jina",
+            "dimensions": 1,
+        }
+
 
 class _DummySettings:
     def __init__(self, *, app_env: str, jina_mode: str, jina_api_key: str | None):
@@ -24,6 +43,10 @@ class _DummySettings:
         self.ENVIRONMENT = app_env
         self.JINA_MODE = jina_mode
         self.JINA_API_KEY = jina_api_key
+        self.COHERE_API_KEY = None
+        self.EMBEDDING_PROVIDER_DEFAULT = "jina"
+        self.INGEST_EMBED_PROVIDER_DEFAULT = None
+        self.EMBEDDING_PROVIDER_ALLOWLIST = "jina,cohere"
         self.EMBEDDING_CONCURRENCY = 1
         self.EMBEDDING_CACHE_MAX_SIZE = 100
         self.EMBEDDING_CACHE_TTL_SECONDS = 300
@@ -73,7 +96,7 @@ def test_embedding_service_requires_cloud_key_in_deployed_environment(
     )
     monkeypatch.setattr(embedding_service.JinaEmbeddingService, "_instance", None)
 
-    with pytest.raises(RuntimeError, match="requires JINA_MODE=CLOUD"):
+    with pytest.raises(RuntimeError, match="requires Jina cloud credentials"):
         embedding_service.JinaEmbeddingService.get_instance()
 
 
@@ -96,3 +119,23 @@ async def test_embedding_service_query_cache_reuses_embedding(
 
     assert out1 == out2
     assert cloud.calls == 1
+
+
+def test_embedding_service_resolves_ingestion_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    cloud = _DummyCloudProvider()
+    monkeypatch.setattr(
+        embedding_service,
+        "settings",
+        _DummySettings(app_env="local", jina_mode="CLOUD", jina_api_key="x"),
+    )
+    monkeypatch.setattr(embedding_service, "JinaCloudProvider", lambda api_key: cloud)
+    monkeypatch.setattr(embedding_service.JinaEmbeddingService, "_instance", None)
+
+    service = embedding_service.JinaEmbeddingService.get_instance()
+    profile = service.resolve_ingestion_profile(
+        {"embedding_provider": "jina", "embedding_mode": "cloud"}
+    )
+
+    assert profile["provider"] == "jina"
+    assert str(profile.get("model") or "")
+    assert int(profile.get("dimensions") or 0) > 0

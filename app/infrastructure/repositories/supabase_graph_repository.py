@@ -13,7 +13,9 @@ logger = logging.getLogger(__name__)
 class SupabaseGraphRepository:
     """Persistencia del subgrafo semantico en tablas knowledge_* de Supabase."""
 
-    def __init__(self, supabase_client=None, embedding_service: Optional[JinaEmbeddingService] = None):
+    def __init__(
+        self, supabase_client=None, embedding_service: Optional[JinaEmbeddingService] = None
+    ):
         self._client = supabase_client
         self._embedding_service = embedding_service or JinaEmbeddingService.get_instance()
 
@@ -76,7 +78,9 @@ class SupabaseGraphRepository:
             return -1.0
         return dot / (norm_a * norm_b)
 
-    async def _bulk_insert_with_fallback(self, table: str, rows: list[dict], select_cols: str = "*") -> list[dict]:
+    async def _bulk_insert_with_fallback(
+        self, table: str, rows: list[dict], select_cols: str = "*"
+    ) -> list[dict]:
         if not rows:
             return []
 
@@ -108,14 +112,24 @@ class SupabaseGraphRepository:
 
         client = await self._get_client()
         try:
-            response = await client.table(table).upsert(rows, on_conflict=on_conflict).select(select_cols).execute()
+            response = (
+                await client.table(table)
+                .upsert(rows, on_conflict=on_conflict)
+                .select(select_cols)
+                .execute()
+            )
             return response.data or []
         except Exception as batch_error:
             logger.warning("Fallo upsert batch en %s, fallback por fila: %s", table, batch_error)
             upserted: list[dict] = []
             for row in rows:
                 try:
-                    response = await client.table(table).upsert(row, on_conflict=on_conflict).select(select_cols).execute()
+                    response = (
+                        await client.table(table)
+                        .upsert(row, on_conflict=on_conflict)
+                        .select(select_cols)
+                        .execute()
+                    )
                     if response.data:
                         upserted.extend(response.data)
                 except Exception as row_error:
@@ -127,6 +141,7 @@ class SupabaseGraphRepository:
         extraction: ChunkGraphExtraction,
         entity_embeddings: Optional[dict[str, list[float]]],
         embedding_mode: Optional[str] = None,
+        embedding_provider: Optional[str] = None,
     ) -> dict[str, list[float]]:
         by_name = entity_embeddings or {}
 
@@ -143,7 +158,11 @@ class SupabaseGraphRepository:
             return by_name
 
         try:
-            vectors = await self._embedding_service.embed_texts(missing_texts, mode=embedding_mode)
+            vectors = await self._embedding_service.embed_texts(
+                missing_texts,
+                mode=embedding_mode,
+                provider=embedding_provider,
+            )
             for entity, vector in zip(missing_entities, vectors):
                 if vector:
                     by_name[self._norm(entity.name)] = vector
@@ -233,7 +252,9 @@ class SupabaseGraphRepository:
                 "edges_upserted": int(row.get("edges_upserted", 0)),
                 "links_upserted": int(row.get("links_upserted", 0)),
                 "entities_extracted": int(row.get("entities_extracted", len(extraction.entities))),
-                "relations_extracted": int(row.get("relations_extracted", len(extraction.relations))),
+                "relations_extracted": int(
+                    row.get("relations_extracted", len(extraction.relations))
+                ),
                 "entities_inserted": int(row.get("entities_inserted", 0)),
                 "entities_merged": int(row.get("entities_merged", 0)),
                 "relations_inserted": int(row.get("relations_inserted", 0)),
@@ -251,6 +272,7 @@ class SupabaseGraphRepository:
         tenant_id: UUID,
         entity_embeddings: Optional[dict[str, list[float]]] = None,
         embedding_mode: Optional[str] = None,
+        embedding_provider: Optional[str] = None,
     ) -> dict[str, Any]:
         stats = {
             "nodes_upserted": 0,
@@ -279,12 +301,15 @@ class SupabaseGraphRepository:
             )
             for relation in extraction.relations
         ]
-        normalized_extraction = ChunkGraphExtraction(entities=entities, relations=normalized_relations)
+        normalized_extraction = ChunkGraphExtraction(
+            entities=entities, relations=normalized_relations
+        )
 
         entity_embeddings = await self._ensure_entity_embeddings(
             normalized_extraction,
             entity_embeddings,
             embedding_mode=embedding_mode,
+            embedding_provider=embedding_provider,
         )
 
         rpc_stats = await self._upsert_subgraph_atomic_rpc(
@@ -305,11 +330,15 @@ class SupabaseGraphRepository:
             ChunkGraphExtraction(entities=entities, relations=normalized_extraction.relations),
             entity_embeddings,
             embedding_mode=embedding_mode,
+            embedding_provider=embedding_provider,
         )
 
-        existing_response = await client.table("knowledge_entities").select(
-            "id,name,type,description,embedding"
-        ).eq("tenant_id", tenant_str).execute()
+        existing_response = (
+            await client.table("knowledge_entities")
+            .select("id,name,type,description,embedding")
+            .eq("tenant_id", tenant_str)
+            .execute()
+        )
         existing_rows = existing_response.data or []
 
         existing_by_name = {self._norm(row.get("name", "")): row for row in existing_rows}
@@ -344,7 +373,9 @@ class SupabaseGraphRepository:
 
             try:
                 if matched is not None:
-                    merged_description = self._merge_description(matched.get("description"), entity.description)
+                    merged_description = self._merge_description(
+                        matched.get("description"), entity.description
+                    )
                     row = {
                         "id": matched["id"],
                         "tenant_id": tenant_str,
@@ -390,17 +421,25 @@ class SupabaseGraphRepository:
         stats["entities_merged"] = len(updated_entities)
         stats["entities_inserted"] = len(inserted_entities)
 
-        unresolved_entities = [entity for entity in entities if self._norm(entity.name) not in entity_id_by_name]
+        unresolved_entities = [
+            entity for entity in entities if self._norm(entity.name) not in entity_id_by_name
+        ]
         if unresolved_entities:
             unresolved_names = [entity.name for entity in unresolved_entities]
             try:
-                resolve_resp = await client.table("knowledge_entities").select("id,name").eq(
-                    "tenant_id", tenant_str
-                ).in_("name", unresolved_names).execute()
+                resolve_resp = (
+                    await client.table("knowledge_entities")
+                    .select("id,name")
+                    .eq("tenant_id", tenant_str)
+                    .in_("name", unresolved_names)
+                    .execute()
+                )
                 for row in resolve_resp.data or []:
                     entity_id_by_name[self._norm(row.get("name", ""))] = str(row.get("id"))
             except Exception as resolve_err:
-                logger.warning("No se pudieron resolver entidades faltantes post-upsert: %s", resolve_err)
+                logger.warning(
+                    "No se pudieron resolver entidades faltantes post-upsert: %s", resolve_err
+                )
 
         relation_candidates: list[Relation] = []
         seen_relations: set[tuple[str, str, str]] = set()
@@ -408,7 +447,9 @@ class SupabaseGraphRepository:
         for relation in normalized_extraction.relations:
             source_name = self._norm(relation.source)
             target_name = self._norm(relation.target)
-            relation_type = relation.relation_type.strip().upper().replace(" ", "_").replace("-", "_")
+            relation_type = (
+                relation.relation_type.strip().upper().replace(" ", "_").replace("-", "_")
+            )
 
             source_id = entity_id_by_name.get(source_name)
             target_id = entity_id_by_name.get(target_name)
@@ -441,11 +482,15 @@ class SupabaseGraphRepository:
             target_ids = list({rel.target for rel in relation_candidates})
             relation_types = list({rel.relation_type for rel in relation_candidates})
 
-            existing_rel_response = await client.table("knowledge_relations").select(
-                "id,source_entity_id,target_entity_id,relation_type,description,weight"
-            ).eq("tenant_id", tenant_str).in_("source_entity_id", source_ids).in_(
-                "target_entity_id", target_ids
-            ).in_("relation_type", relation_types).execute()
+            existing_rel_response = (
+                await client.table("knowledge_relations")
+                .select("id,source_entity_id,target_entity_id,relation_type,description,weight")
+                .eq("tenant_id", tenant_str)
+                .in_("source_entity_id", source_ids)
+                .in_("target_entity_id", target_ids)
+                .in_("relation_type", relation_types)
+                .execute()
+            )
 
             existing_rel_rows_raw = existing_rel_response.data or []
             existing_rel_rows: list[dict[str, Any]] = [
@@ -466,7 +511,9 @@ class SupabaseGraphRepository:
 
                 if existing_rel:
                     current_weight = float(existing_rel.get("weight") or 0)
-                    merged_description = self._merge_description(existing_rel.get("description"), relation.description)
+                    merged_description = self._merge_description(
+                        existing_rel.get("description"), relation.description
+                    )
                     update_rel_rows.append(
                         {
                             "id": existing_rel["id"],
@@ -580,6 +627,7 @@ class SupabaseGraphRepository:
         chunk_id: UUID,
         generate_embeddings: bool = True,
         embedding_mode: Optional[str] = None,
+        embedding_provider: Optional[str] = None,
     ) -> dict[str, Any]:
         if isinstance(extraction, ChunkGraphExtraction):
             graph_extraction = extraction
@@ -589,8 +637,14 @@ class SupabaseGraphRepository:
         entity_embeddings = None
         if generate_embeddings and graph_extraction.entities:
             try:
-                texts = [f"{entity.name}. {entity.description}" for entity in graph_extraction.entities]
-                vectors = await self._embedding_service.embed_texts(texts, mode=embedding_mode)
+                texts = [
+                    f"{entity.name}. {entity.description}" for entity in graph_extraction.entities
+                ]
+                vectors = await self._embedding_service.embed_texts(
+                    texts,
+                    mode=embedding_mode,
+                    provider=embedding_provider,
+                )
                 entity_embeddings = {
                     self._norm(entity.name): vector
                     for entity, vector in zip(graph_extraction.entities, vectors)
@@ -605,4 +659,5 @@ class SupabaseGraphRepository:
             tenant_id=tenant_id,
             entity_embeddings=entity_embeddings,
             embedding_mode=embedding_mode,
+            embedding_provider=embedding_provider,
         )

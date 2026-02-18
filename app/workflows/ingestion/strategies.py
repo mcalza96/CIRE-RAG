@@ -19,41 +19,51 @@ from app.core.settings import settings
 
 logger = structlog.get_logger(__name__)
 
+
 def _get_container() -> CognitiveContainer:
     return CognitiveContainer.get_instance()
+
 
 @dataclass
 class IngestionResult:
     """Standardized output from any ingestion strategy."""
+
     source_id: str
     chunks_count: int
     status: str = IngestionStatus.SUCCESS.value
     metadata: Dict[str, Any] = field(default_factory=dict)
-    chunks: List[Dict[str, Any]] = field(default_factory=list) # New field to carry chunks
+    chunks: List[Dict[str, Any]] = field(default_factory=list)  # New field to carry chunks
+
 
 class IngestionStrategy(ABC):
     """
     Abstract Base Class for Ingestion Strategies.
     Defines the contract for processing different types of documents.
     """
-    
+
     @abstractmethod
-    async def process(self, source: IngestionSource, metadata: IngestionMetadata) -> IngestionResult:
+    async def process(
+        self, source: IngestionSource, metadata: IngestionMetadata
+    ) -> IngestionResult:
         """
         Process the file and return ingestion results.
         Pure transformation: Source -> Chunks.
         """
         pass
 
+
 @register_strategy("CONTENT")
 class CurriculumContentStrategy(IngestionStrategy):
     """
     Strategy for processing Curriculum Content using JinaLateChunker.
     """
-    async def process(self, source: IngestionSource, metadata: IngestionMetadata) -> IngestionResult:
+
+    async def process(
+        self, source: IngestionSource, metadata: IngestionMetadata
+    ) -> IngestionResult:
         filename = source.get_filename()
         logger.info("starting_content_ingestion", strategy=self.__class__.__name__, file=filename)
-        
+
         container = _get_container()
         parser: PdfParserService = container.pdf_parser_service
         router: DocumentStructureRouter = container.document_structure_router
@@ -62,39 +72,64 @@ class CurriculumContentStrategy(IngestionStrategy):
         # 1. Route pages with fast heuristics (TEXT_STANDARD vs VISUAL_COMPLEX)
         file_path = source.get_file_path()
         if not file_path:
-             raise ValueError("CurriculumContentStrategy requires a local file path.")
+            raise ValueError("CurriculumContentStrategy requires a local file path.")
 
         source_path = None
         if metadata.metadata and isinstance(metadata.metadata, dict):
-            source_path = metadata.metadata.get("storage_path") or metadata.metadata.get("source_path")
+            source_path = metadata.metadata.get("storage_path") or metadata.metadata.get(
+                "source_path"
+            )
         if not source_path:
             candidate = source.get_filename()
             if isinstance(candidate, str) and candidate.startswith(("http://", "https://")):
                 source_path = candidate
 
         if str(settings.INGEST_PARSER_MODE or "local").strip().lower() == "cloud":
-            extraction = await parser.extract_structured_document(file_path=file_path, source_path=source_path)
+            extraction = await parser.extract_structured_document(
+                file_path=file_path, source_path=source_path
+            )
             if extraction and extraction.get("full_text"):
                 full_text = extraction["full_text"]
-                page_map = extraction.get("page_map", [{"page": 1, "start": 0, "end": len(full_text)}])
+                page_map = extraction.get(
+                    "page_map", [{"page": 1, "start": 0, "end": len(full_text)}]
+                )
                 page_tasks = []
                 text_tasks = []
                 visual_tasks = []
             else:
                 page_tasks = router.route_document(file_path)
-                text_tasks = [task for task in page_tasks if task.strategy == ProcessingStrategy.TEXT_STANDARD and task.raw_content.strip()]
-                visual_tasks = [task for task in page_tasks if task.strategy == ProcessingStrategy.VISUAL_COMPLEX]
+                text_tasks = [
+                    task
+                    for task in page_tasks
+                    if task.strategy == ProcessingStrategy.TEXT_STANDARD
+                    and task.raw_content.strip()
+                ]
+                visual_tasks = [
+                    task
+                    for task in page_tasks
+                    if task.strategy == ProcessingStrategy.VISUAL_COMPLEX
+                ]
                 full_text, page_map = self._build_text_payload(text_tasks)
         else:
             page_tasks = router.route_document(file_path)
-            text_tasks = [task for task in page_tasks if task.strategy == ProcessingStrategy.TEXT_STANDARD and task.raw_content.strip()]
-            visual_tasks = [task for task in page_tasks if task.strategy == ProcessingStrategy.VISUAL_COMPLEX]
+            text_tasks = [
+                task
+                for task in page_tasks
+                if task.strategy == ProcessingStrategy.TEXT_STANDARD and task.raw_content.strip()
+            ]
+            visual_tasks = [
+                task for task in page_tasks if task.strategy == ProcessingStrategy.VISUAL_COMPLEX
+            ]
             full_text, page_map = self._build_text_payload(text_tasks)
 
         if not full_text:
             logger.warning("empty_file_detected", file=filename)
-            return IngestionResult(source_id=metadata.source_id, chunks_count=0, status=IngestionStatus.EMPTY_FILE.value)
-        
+            return IngestionResult(
+                source_id=metadata.source_id,
+                chunks_count=0,
+                status=IngestionStatus.EMPTY_FILE.value,
+            )
+
         logger.info(
             "document_routed_for_ingestion",
             chars=len(full_text),
@@ -115,14 +150,26 @@ class CurriculumContentStrategy(IngestionStrategy):
             logger.warning("toc_discovery_failed_fail_open", error=str(e))
 
         structure_mapper = StructureMapper(toc_entries)
-        
+
         # 3. Late Chunking (default) + contextual fallback
-        embedding_mode = metadata.metadata.get("embedding_mode", settings.JINA_MODE) if metadata.metadata else settings.JINA_MODE
+        embedding_mode = (
+            metadata.metadata.get("embedding_mode", settings.JINA_MODE)
+            if metadata.metadata
+            else settings.JINA_MODE
+        )
+        embedding_provider = (
+            metadata.metadata.get("embedding_provider")
+            if metadata.metadata and isinstance(metadata.metadata, dict)
+            else None
+        )
+        embedding_engine = JinaEmbeddingService.get_instance()
+        embedding_profile = embedding_engine.resolve_ingestion_profile(metadata.metadata)
         chunking_service = ChunkingService(parser)
 
         late_chunks = await chunking_service.chunk_document_with_late_chunking(
             full_text=full_text,
             embedding_mode=embedding_mode,
+            embedding_provider=embedding_provider,
             max_chars=AIModelConfig.MAX_CHARACTERS_PER_CHUNKING_BLOCK,
         )
 
@@ -137,7 +184,8 @@ class CurriculumContentStrategy(IngestionStrategy):
                 embedding=chunk["embedding"],
                 strategy_name="late_chunking_v3",
                 embedding_mode=embedding_mode,
-                structure_mapper=structure_mapper
+                embedding_profile=embedding_profile,
+                structure_mapper=structure_mapper,
             )
             # Enrich with heading path
             if chunk.get("heading_path"):
@@ -148,10 +196,13 @@ class CurriculumContentStrategy(IngestionStrategy):
         logger.info("chunking_complete", total_chunks=len(all_chunks_data))
         return IngestionResult(
             source_id=metadata.source_id,
-            chunks_count=len(all_chunks_data), 
+            chunks_count=len(all_chunks_data),
             metadata={
                 "parser": "hybrid_router_text_extraction",
-                "embedding_model": AIModelConfig.JINA_MODEL_NAME,
+                "embedding_provider": embedding_profile.get("provider"),
+                "embedding_model": embedding_profile.get("model"),
+                "embedding_dimensions": embedding_profile.get("dimensions"),
+                "embedding_profile": embedding_profile,
                 "strategy_type": "late_chunking",
                 "toc_structure": toc_structure,
                 "routing": {
@@ -166,13 +217,15 @@ class CurriculumContentStrategy(IngestionStrategy):
                             "metadata": {
                                 **(task.metadata or {}),
                                 "embedding_mode": embedding_mode,
+                                "embedding_provider": embedding_profile.get("provider"),
+                                "embedding_profile": embedding_profile,
                             },
                         }
                         for task in visual_tasks
                     ],
                 },
             },
-            chunks=all_chunks_data
+            chunks=all_chunks_data,
         )
 
     @staticmethod
@@ -204,10 +257,15 @@ class FastCurriculumContentStrategy(CurriculumContentStrategy):
     Strategy for processing Curriculum Content using Fast Chunking (Recursive/Fixed) + Standard Embedding.
     Lower memory footprint and faster than Late Chunking.
     """
-    async def process(self, source: IngestionSource, metadata: IngestionMetadata) -> IngestionResult:
+
+    async def process(
+        self, source: IngestionSource, metadata: IngestionMetadata
+    ) -> IngestionResult:
         filename = source.get_filename()
-        logger.info("starting_fast_content_ingestion", strategy=self.__class__.__name__, file=filename)
-        
+        logger.info(
+            "starting_fast_content_ingestion", strategy=self.__class__.__name__, file=filename
+        )
+
         container = _get_container()
         chunker = JinaEmbeddingService.get_instance()
         parser: PdfParserService = container.pdf_parser_service
@@ -216,19 +274,27 @@ class FastCurriculumContentStrategy(CurriculumContentStrategy):
         # 1. Extract Text
         file_path = source.get_file_path()
         if not file_path:
-             raise ValueError("FastCurriculumContentStrategy requires a local file path.")
+            raise ValueError("FastCurriculumContentStrategy requires a local file path.")
 
         source_path = None
         if metadata.metadata and isinstance(metadata.metadata, dict):
-            source_path = metadata.metadata.get("storage_path") or metadata.metadata.get("source_path")
+            source_path = metadata.metadata.get("storage_path") or metadata.metadata.get(
+                "source_path"
+            )
         if not source_path:
             candidate = source.get_filename()
             if isinstance(candidate, str) and candidate.startswith(("http://", "https://")):
                 source_path = candidate
-        extraction = await parser.extract_structured_document(file_path=file_path, source_path=source_path)
+        extraction = await parser.extract_structured_document(
+            file_path=file_path, source_path=source_path
+        )
         if not extraction or not extraction.get("full_text"):
             logger.warning("empty_file_detected", file=filename)
-            return IngestionResult(source_id=metadata.source_id, chunks_count=0, status=IngestionStatus.EMPTY_FILE.value)
+            return IngestionResult(
+                source_id=metadata.source_id,
+                chunks_count=0,
+                status=IngestionStatus.EMPTY_FILE.value,
+            )
 
         full_text = extraction["full_text"]
         page_map = extraction["page_map"]
@@ -252,20 +318,34 @@ class FastCurriculumContentStrategy(CurriculumContentStrategy):
         chunk_size = 1000
         chunking_service = ChunkingService(parser)
         text_chunks = chunking_service.split_text(full_text, chunk_size)
-        
-        embedding_mode = metadata.metadata.get("embedding_mode", settings.JINA_MODE) if metadata.metadata else settings.JINA_MODE
+
+        embedding_mode = (
+            metadata.metadata.get("embedding_mode", settings.JINA_MODE)
+            if metadata.metadata
+            else settings.JINA_MODE
+        )
+        embedding_provider = (
+            metadata.metadata.get("embedding_provider")
+            if metadata.metadata and isinstance(metadata.metadata, dict)
+            else None
+        )
+        embedding_profile = chunker.resolve_ingestion_profile(metadata.metadata)
         logger.info("requesting_batch_embeddings", count=len(text_chunks), mode=embedding_mode)
-        
+
         # FIXED: Calling embed_texts which was missing in original implementation
-        embeddings = await chunker.embed_texts(text_chunks, mode=embedding_mode)
-        
+        embeddings = await chunker.embed_texts(
+            text_chunks,
+            mode=embedding_mode,
+            provider=embedding_provider,
+        )
+
         all_chunks_data = []
         current_offset = 0
-        
+
         for i, (chunk_text, embedding) in enumerate(zip(text_chunks, embeddings)):
             chunk_len = len(chunk_text)
             start = current_offset
-            
+
             chunk_data = chunking_service.assemble_chunk(
                 content=chunk_text,
                 char_start=start,
@@ -275,22 +355,26 @@ class FastCurriculumContentStrategy(CurriculumContentStrategy):
                 embedding=embedding,
                 strategy_name="fast_chunking_v1",
                 embedding_mode=embedding_mode,
-                structure_mapper=structure_mapper
+                embedding_profile=embedding_profile,
+                structure_mapper=structure_mapper,
             )
             all_chunks_data.append(chunk_data)
             current_offset += chunk_len
-        
+
         logger.info("fast_chunking_complete", total_chunks=len(all_chunks_data))
         return IngestionResult(
             source_id=metadata.source_id,
             chunks_count=len(all_chunks_data),
             metadata={
                 "parser": "PdfParserService",
-                "embedding_model": AIModelConfig.JINA_MODEL_NAME,
+                "embedding_provider": embedding_profile.get("provider"),
+                "embedding_model": embedding_profile.get("model"),
+                "embedding_dimensions": embedding_profile.get("dimensions"),
+                "embedding_profile": embedding_profile,
                 "strategy_type": "fast_content",
-                "toc_structure": toc_structure
+                "toc_structure": toc_structure,
             },
-            chunks=all_chunks_data
+            chunks=all_chunks_data,
         )
 
 
@@ -302,9 +386,14 @@ class PreProcessedContentStrategy(IngestionStrategy):
     Reads plain text directly from the source file, then applies
     the standard chunking + embedding pipeline.
     """
-    async def process(self, source: IngestionSource, metadata: IngestionMetadata) -> IngestionResult:
+
+    async def process(
+        self, source: IngestionSource, metadata: IngestionMetadata
+    ) -> IngestionResult:
         filename = source.get_filename()
-        logger.info("starting_pre_processed_ingestion", strategy=self.__class__.__name__, file=filename)
+        logger.info(
+            "starting_pre_processed_ingestion", strategy=self.__class__.__name__, file=filename
+        )
 
         # 1. Read text directly (NO PDF parser)
         file_path = source.get_file_path()
@@ -334,13 +423,24 @@ class PreProcessedContentStrategy(IngestionStrategy):
         chunking_service = ChunkingService(parser)
 
         # 4. Chunk + Embedding (single production path)
-        embedding_mode = metadata.metadata.get("embedding_mode", settings.JINA_MODE) if metadata.metadata else settings.JINA_MODE
+        embedding_mode = (
+            metadata.metadata.get("embedding_mode", settings.JINA_MODE)
+            if metadata.metadata
+            else settings.JINA_MODE
+        )
+        embedding_provider = (
+            metadata.metadata.get("embedding_provider")
+            if metadata.metadata and isinstance(metadata.metadata, dict)
+            else None
+        )
+        embedding_engine = JinaEmbeddingService.get_instance()
+        embedding_profile = embedding_engine.resolve_ingestion_profile(metadata.metadata)
         late_chunks = await chunking_service.chunk_document_with_late_chunking(
             full_text=full_text,
             embedding_mode=embedding_mode,
+            embedding_provider=embedding_provider,
             max_chars=4000,
         )
-
 
         if not late_chunks:
             logger.error("pre_processed_chunking_failed_no_chunks", file=filename)
@@ -364,6 +464,7 @@ class PreProcessedContentStrategy(IngestionStrategy):
                 embedding=chunk["embedding"],
                 strategy_name="pre_processed_late_chunking_v3",
                 embedding_mode=embedding_mode,
+                embedding_profile=embedding_profile,
                 structure_mapper=structure_mapper,
             )
             # Enrich with heading path for retrieval quality
@@ -378,9 +479,14 @@ class PreProcessedContentStrategy(IngestionStrategy):
             chunks_count=len(all_chunks_data),
             metadata={
                 "parser": "pre_processed_structural",
-                "embedding_model": AIModelConfig.JINA_MODEL_NAME,
+                "embedding_provider": embedding_profile.get("provider"),
+                "embedding_model": embedding_profile.get("model"),
+                "embedding_dimensions": embedding_profile.get("dimensions"),
+                "embedding_profile": embedding_profile,
                 "strategy_type": "pre_processed_structural",
-                "source_format": filename.rsplit(".", 1)[-1].lower() if "." in filename else "unknown",
+                "source_format": filename.rsplit(".", 1)[-1].lower()
+                if "." in filename
+                else "unknown",
             },
             chunks=all_chunks_data,
         )

@@ -97,6 +97,9 @@ class HybridTrace(BaseModel):
     timings_ms: dict[str, float] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     warning_codes: list[str] = Field(default_factory=list)
+    scope_penalized_count: int | None = None
+    scope_candidate_count: int | None = None
+    scope_penalized_ratio: float | None = None
 
 
 class HybridRetrievalResponse(BaseModel):

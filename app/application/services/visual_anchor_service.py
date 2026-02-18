@@ -31,7 +31,9 @@ class VisualAnchorService:
         self.visual_parser = visual_parser
         self.visual_integrator = visual_integrator
 
-    async def run_if_needed(self, doc_id: str, tenant_id: Optional[str], result: Any) -> Dict[str, Any]:
+    async def run_if_needed(
+        self, doc_id: str, tenant_id: Optional[str], result: Any
+    ) -> Dict[str, Any]:
         routing = (result.metadata or {}).get("routing", {}) if hasattr(result, "metadata") else {}
         visual_tasks = routing.get("visual_tasks", []) if isinstance(routing, dict) else []
         if not visual_tasks:
@@ -55,7 +57,9 @@ class VisualAnchorService:
                 fallback_chunk = chunk
 
         if fallback_chunk is None:
-            raise RuntimeError("Visual anchor stitching requires at least one persisted text chunk.")
+            raise RuntimeError(
+                "Visual anchor stitching requires at least one persisted text chunk."
+            )
 
         stitched = 0
         degraded_inline = 0
@@ -79,7 +83,9 @@ class VisualAnchorService:
                 skipped += 1
                 continue
 
-            parent_chunk = self._select_parent_chunk(page=page, page_to_chunk=page_to_chunk, fallback_chunk=fallback_chunk)
+            parent_chunk = self._select_parent_chunk(
+                page=page, page_to_chunk=page_to_chunk, fallback_chunk=fallback_chunk
+            )
             parent_chunk_id = parent_chunk.get("id")
             parent_chunk_content = parent_chunk.get("content", "")
             if not parent_chunk_id or not isinstance(parent_chunk_content, str):
@@ -92,9 +98,17 @@ class VisualAnchorService:
                 continue
 
             client = await get_async_supabase_client()
-            check = await client.table("content_chunks").select("id").eq("id", str(parent_chunk_id)).limit(1).execute()
+            check = (
+                await client.table("content_chunks")
+                .select("id")
+                .eq("id", str(parent_chunk_id))
+                .limit(1)
+                .execute()
+            )
             if not check.data:
-                persisted_parent = await self._resolve_persisted_parent_chunk(client=client, doc_id=doc_id, page=page)
+                persisted_parent = await self._resolve_persisted_parent_chunk(
+                    client=client, doc_id=doc_id, page=page
+                )
                 if persisted_parent is None:
                     logger.warning(
                         "visual_anchor_parent_not_in_db",
@@ -118,21 +132,29 @@ class VisualAnchorService:
             parse_result: Any | None = None
 
             try:
-                task_metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+                task_metadata = (
+                    task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+                )
                 raw_mode = task_metadata.get("embedding_mode") or task_metadata.get("jina_mode")
                 embedding_mode = str(raw_mode).upper() if raw_mode else None
                 if embedding_mode not in {"LOCAL", "CLOUD"}:
                     embedding_mode = None
+                raw_provider = task_metadata.get("embedding_provider")
+                embedding_provider = str(raw_provider).strip().lower() if raw_provider else None
+                if embedding_provider == "jina" and embedding_mode is None:
+                    embedding_mode = str(settings.JINA_MODE or "CLOUD").upper()
                 source_metadata_key = self._source_metadata_key(task_metadata)
                 prepared_key = (image_path, content_type, source_metadata_key)
                 prepared = prepared_cache_inputs.get(prepared_key)
                 parse_result = None
 
                 if prepared is not None:
-                    prefetched_row = prefetched_cache.get(self._cache_key(
-                        image_hash=prepared["image_hash"],
-                        content_type=content_type,
-                    ))
+                    prefetched_row = prefetched_cache.get(
+                        self._cache_key(
+                            image_hash=prepared["image_hash"],
+                            content_type=content_type,
+                        )
+                    )
                     if prefetched_row is not None:
                         parse_result = self._parse_result_from_cache_row(
                             row=prefetched_row,
@@ -178,6 +200,7 @@ class VisualAnchorService:
                     },
                     metadata=task_metadata,
                     embedding_mode=embedding_mode,
+                    embedding_provider=embedding_provider,
                 )
 
                 parent_chunk["content"] = parent_chunk_content + "\n\n" + integration.anchor_token
@@ -192,7 +215,9 @@ class VisualAnchorService:
                         or "copyright" in err_text
                     ):
                         parse_failed_copyright += 1
-                        image_name = image_path.rsplit("/", 1)[-1] if isinstance(image_path, str) else ""
+                        image_name = (
+                            image_path.rsplit("/", 1)[-1] if isinstance(image_path, str) else ""
+                        )
                         parse_failed_copyright_refs.append(
                             {
                                 "page": page,
@@ -252,7 +277,9 @@ class VisualAnchorService:
             "parse_p95_ms": self._percentile(parse_durations_ms, 95),
         }
 
-    async def _resolve_persisted_parent_chunk(self, client: Any, doc_id: str, page: int) -> Optional[Dict[str, Any]]:
+    async def _resolve_persisted_parent_chunk(
+        self, client: Any, doc_id: str, page: int
+    ) -> Optional[Dict[str, Any]]:
         if page > 0:
             by_page = (
                 await client.table("content_chunks")
@@ -282,20 +309,20 @@ class VisualAnchorService:
 
     async def _persist_chunk_content_fallback(self, chunk_id: str, content: str) -> None:
         client = await get_async_supabase_client()
-        await client.table("content_chunks").update({"content": content}).eq("id", chunk_id).execute()
+        await (
+            client.table("content_chunks").update({"content": content}).eq("id", chunk_id).execute()
+        )
 
     @staticmethod
-    def _build_inline_visual_fallback(parent_chunk_content: str, content_type: str, parse_result: Any) -> str:
+    def _build_inline_visual_fallback(
+        parent_chunk_content: str, content_type: str, parse_result: Any
+    ) -> str:
         markdown = getattr(parse_result, "markdown_content", "")
         safe_markdown = markdown.strip() if isinstance(markdown, str) else ""
         if not safe_markdown:
             safe_markdown = "[VISUAL_PARSE_UNAVAILABLE]"
 
-        block = (
-            f"<visual_fallback type=\"{content_type}\">\n"
-            f"{safe_markdown}\n"
-            "</visual_fallback>"
-        )
+        block = f'<visual_fallback type="{content_type}">\n{safe_markdown}\n</visual_fallback>'
         if parent_chunk_content.endswith("\n"):
             return parent_chunk_content + block
         if parent_chunk_content:
@@ -349,7 +376,9 @@ class VisualAnchorService:
     def _cache_key(*, image_hash: str, content_type: str) -> str:
         return f"{image_hash}:{content_type.strip().lower()}"
 
-    async def _prepare_cache_inputs(self, visual_tasks: list[dict[str, Any]]) -> dict[tuple[str, str, str], dict[str, Any]]:
+    async def _prepare_cache_inputs(
+        self, visual_tasks: list[dict[str, Any]]
+    ) -> dict[tuple[str, str, str], dict[str, Any]]:
         prepared: dict[tuple[str, str, str], dict[str, Any]] = {}
         for task in visual_tasks:
             image_path = task.get("image_path")
@@ -371,7 +400,9 @@ class VisualAnchorService:
                     "content_type": content_type,
                 }
             except Exception as exc:
-                logger.warning("visual_cache_input_prepare_failed", image_path=image_path, error=str(exc))
+                logger.warning(
+                    "visual_cache_input_prepare_failed", image_path=image_path, error=str(exc)
+                )
         return prepared
 
     async def _prefetch_visual_cache(
@@ -387,8 +418,16 @@ class VisualAnchorService:
         prompt_version = str(settings.VISUAL_CACHE_PROMPT_VERSION or "v1").strip()
         schema_version = str(settings.VISUAL_CACHE_SCHEMA_VERSION or "VisualParseResult:v1").strip()
 
-        hashes = sorted({str(item["image_hash"]) for item in prepared_inputs.values() if item.get("image_hash")})
-        content_types = sorted({str(item["content_type"]) for item in prepared_inputs.values() if item.get("content_type")})
+        hashes = sorted(
+            {str(item["image_hash"]) for item in prepared_inputs.values() if item.get("image_hash")}
+        )
+        content_types = sorted(
+            {
+                str(item["content_type"])
+                for item in prepared_inputs.values()
+                if item.get("content_type")
+            }
+        )
         if not hashes:
             return {}
 
@@ -396,7 +435,9 @@ class VisualAnchorService:
         try:
             query = (
                 client.table("cache_visual_extractions")
-                .select("image_hash,content_type,prompt_version,schema_version,result_data,created_at")
+                .select(
+                    "image_hash,content_type,prompt_version,schema_version,result_data,created_at"
+                )
                 .eq("provider", provider)
                 .eq("model_version", model_version)
                 .in_("image_hash", hashes)
@@ -404,8 +445,7 @@ class VisualAnchorService:
 
             if bool(settings.VISUAL_CACHE_KEY_V2_ENABLED):
                 query = (
-                    query
-                    .eq("prompt_version", prompt_version)
+                    query.eq("prompt_version", prompt_version)
                     .eq("schema_version", schema_version)
                     .in_("content_type", content_types or ["table"])
                 )
@@ -427,7 +467,9 @@ class VisualAnchorService:
             result[self._cache_key(image_hash=image_hash, content_type=content_type)] = row
         return result
 
-    def _parse_result_from_cache_row(self, *, row: dict[str, Any], image_hash: str, content_type: str) -> VisualParseResult:
+    def _parse_result_from_cache_row(
+        self, *, row: dict[str, Any], image_hash: str, content_type: str
+    ) -> VisualParseResult:
         result_data = row.get("result_data") or {}
         parsed = VisualParseResult.model_validate(result_data)
         metadata = parsed.visual_metadata if isinstance(parsed.visual_metadata, dict) else {}
@@ -439,7 +481,9 @@ class VisualAnchorService:
             "model_version": model_settings.resolved_ingest_model_name,
             "content_type": content_type,
             "prompt_version": str(settings.VISUAL_CACHE_PROMPT_VERSION or "v1").strip(),
-            "schema_version": str(settings.VISUAL_CACHE_SCHEMA_VERSION or "VisualParseResult:v1").strip(),
+            "schema_version": str(
+                settings.VISUAL_CACHE_SCHEMA_VERSION or "VisualParseResult:v1"
+            ).strip(),
         }
         metadata["parse_duration_ms"] = 0.0
         created_at = row.get("created_at")

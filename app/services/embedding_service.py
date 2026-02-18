@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional, cast
 from app.core.observability.metrics import track_span
 from app.core.settings import settings
 from app.domain.interfaces.embedding_provider import IEmbeddingProvider
+from app.infrastructure.services.cohere_cloud_provider import CohereCloudProvider
 from app.infrastructure.services.jina_cloud_provider import JinaCloudProvider
 
 logger = structlog.get_logger(__name__)
@@ -37,22 +38,55 @@ class JinaEmbeddingService:
             self.is_deployed_environment = settings.is_deployed_environment
 
             # Providers
-            self.cloud_provider: Optional[IEmbeddingProvider] = (
+            self.jina_cloud_provider: Optional[IEmbeddingProvider] = (
                 JinaCloudProvider(api_key=settings.JINA_API_KEY) if settings.JINA_API_KEY else None
+            )
+            self.cloud_provider = self.jina_cloud_provider
+            self.cohere_cloud_provider: Optional[IEmbeddingProvider] = (
+                CohereCloudProvider(api_key=settings.COHERE_API_KEY)
+                if getattr(settings, "COHERE_API_KEY", None)
+                else None
             )
 
             # Default behavior from env
             self.default_mode = str(settings.JINA_MODE or "CLOUD").upper()
+            self.default_provider = (
+                str(getattr(settings, "EMBEDDING_PROVIDER_DEFAULT", "jina") or "jina")
+                .strip()
+                .lower()
+            )
+            self.ingest_default_provider = (
+                str(
+                    getattr(settings, "INGEST_EMBED_PROVIDER_DEFAULT", self.default_provider)
+                    or self.default_provider
+                )
+                .strip()
+                .lower()
+            )
+            allowlist_raw = str(
+                getattr(settings, "EMBEDDING_PROVIDER_ALLOWLIST", "jina,cohere") or ""
+            )
+            self.allowed_providers = {
+                p.strip().lower() for p in allowlist_raw.split(",") if p.strip()
+            } or {"jina", "cohere"}
 
             if self.is_deployed_environment:
                 self.default_mode = "CLOUD"
-                if not self.cloud_provider:
+                if self.default_provider == "jina" and not self.jina_cloud_provider:
                     raise RuntimeError(
-                        "Deployed environment requires JINA_MODE=CLOUD with JINA_API_KEY configured."
+                        "Deployed environment requires Jina cloud credentials when EMBEDDING_PROVIDER_DEFAULT=jina."
+                    )
+                if self.default_provider == "cohere" and not self.cohere_cloud_provider:
+                    raise RuntimeError(
+                        "Deployed environment requires Cohere credentials when EMBEDDING_PROVIDER_DEFAULT=cohere."
                     )
             elif self.default_mode == "LOCAL":
                 self.local_provider = self._build_local_provider()
-            elif self.default_mode == "CLOUD" and not self.cloud_provider:
+            elif (
+                self.default_provider == "jina"
+                and self.default_mode == "CLOUD"
+                and not self.jina_cloud_provider
+            ):
                 logger.warning("cloud_mode_without_api_key_fallback_local")
                 self.default_mode = "LOCAL"
 
@@ -87,17 +121,36 @@ class JinaEmbeddingService:
             ) from exc
         return JinaLocalProvider()
 
-    def _get_provider(self, mode: Optional[str] = None) -> IEmbeddingProvider:
+    def _resolve_provider_name(self, provider: Optional[str] = None) -> str:
+        selected = str(provider or self.default_provider or "jina").strip().lower()
+        if selected not in self.allowed_providers:
+            logger.warning(
+                "embedding_provider_not_allowed_defaulting",
+                requested=selected,
+                default=self.default_provider,
+            )
+            selected = self.default_provider
+        return selected
+
+    def _get_provider(
+        self, mode: Optional[str] = None, provider: Optional[str] = None
+    ) -> IEmbeddingProvider:
+        provider_name = self._resolve_provider_name(provider)
         resolved_mode = str(mode or self.default_mode or "CLOUD").upper()
 
         if self.is_deployed_environment:
-            if resolved_mode == "LOCAL":
+            if provider_name == "jina" and resolved_mode == "LOCAL":
                 logger.warning("local_mode_blocked_in_deployed_environment")
-            resolved_mode = "CLOUD"
+                resolved_mode = "CLOUD"
+
+        if provider_name == "cohere":
+            if self.cohere_cloud_provider:
+                return self.cohere_cloud_provider
+            raise RuntimeError("Cohere embedding provider unavailable. Set COHERE_API_KEY.")
 
         if resolved_mode == "CLOUD":
-            if self.cloud_provider:
-                return self.cloud_provider
+            if self.jina_cloud_provider:
+                return self.jina_cloud_provider
             if self.is_deployed_environment:
                 raise RuntimeError(
                     "Cloud embedding provider unavailable in deployed environment. "
@@ -110,9 +163,63 @@ class JinaEmbeddingService:
 
         return self.local_provider
 
+    def resolve_embedding_profile(
+        self,
+        *,
+        provider: Optional[str] = None,
+        mode: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        runtime_provider = self._get_provider(mode=mode, provider=provider)
+        profile = runtime_provider.profile()
+        if runtime_provider.provider_name == "jina":
+            profile["mode"] = str(mode or self.default_mode or "CLOUD").upper()
+        return profile
+
+    def resolve_ingestion_profile(
+        self, metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        meta = metadata if isinstance(metadata, dict) else {}
+        requested_provider = (
+            meta.get("embedding_provider")
+            or meta.get("provider")
+            or self.ingest_default_provider
+            or self.default_provider
+        )
+        requested_mode = meta.get("embedding_mode") or meta.get("jina_mode")
+        return self.resolve_embedding_profile(
+            provider=str(requested_provider) if requested_provider else None,
+            mode=str(requested_mode) if requested_mode else None,
+        )
+
+    def ensure_profile_compatibility(
+        self,
+        *,
+        index_profile: Dict[str, Any] | None,
+        query_provider: Optional[str] = None,
+        query_mode: Optional[str] = None,
+    ) -> bool:
+        if not index_profile:
+            return True
+        query_profile = self.resolve_embedding_profile(provider=query_provider, mode=query_mode)
+        expected_provider = str(index_profile.get("provider") or "").strip().lower()
+        expected_model = str(index_profile.get("model") or "").strip().lower()
+        expected_dims = int(index_profile.get("dimensions") or 0)
+        actual_provider = str(query_profile.get("provider") or "").strip().lower()
+        actual_model = str(query_profile.get("model") or "").strip().lower()
+        actual_dims = int(query_profile.get("dimensions") or 0)
+        return (
+            expected_provider == actual_provider
+            and expected_model == actual_model
+            and expected_dims == actual_dims
+        )
+
     @track_span(name="span:embedding_generation")
     async def embed_texts(
-        self, texts: List[str], task: str = "retrieval.passage", mode: Optional[str] = None
+        self,
+        texts: List[str],
+        task: str = "retrieval.passage",
+        mode: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> List[List[float]]:
         if not texts:
             return []
@@ -160,10 +267,10 @@ class JinaEmbeddingService:
             key_to_indices[key].append(idx)
 
         # Delegate to provider
-        provider = self._get_provider(mode)
+        runtime_provider = self._get_provider(mode=mode, provider=provider)
         try:
             async with self._embedding_semaphore:
-                embeddings = await provider.embed(unique_texts, task=task)
+                embeddings = await runtime_provider.embed(unique_texts, task=task)
 
             # Update cache and merge results
             for key, emb in zip(unique_keys, embeddings):
@@ -184,11 +291,16 @@ class JinaEmbeddingService:
             raise e
 
     @track_span(name="span:late_chunking")
-    async def chunk_and_encode(self, text: str, mode: Optional[str] = None) -> List[Dict[str, Any]]:
-        provider = self._get_provider(mode)
+    async def chunk_and_encode(
+        self,
+        text: str,
+        mode: Optional[str] = None,
+        provider: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        runtime_provider = self._get_provider(mode=mode, provider=provider)
         try:
             async with self._embedding_semaphore:
-                return await provider.chunk_and_encode(text)
+                return await runtime_provider.chunk_and_encode(text)
         except Exception as e:
             logger.error(f"Error in chunk_and_encode: {e}")
             raise e

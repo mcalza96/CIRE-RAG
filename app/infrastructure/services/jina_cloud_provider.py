@@ -20,24 +20,24 @@ class JinaCloudProvider(IEmbeddingProvider):
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.base_url = AIModelConfig.JINA_BASE_URL
-        self.model_name = self._normalize_cloud_model_name(AIModelConfig.JINA_MODEL_NAME)
-        self.dimensions = AIModelConfig.JINA_EMBEDDING_DIMENSIONS
+        self._model_name = self._normalize_cloud_model_name(AIModelConfig.JINA_MODEL_NAME)
+        self._dimensions = AIModelConfig.JINA_EMBEDDING_DIMENSIONS
         self._session: Optional[aiohttp.ClientSession] = None
         self._post_semaphore = asyncio.Semaphore(
             max(1, int(settings.JINA_REQUEST_MAX_PARALLEL or 2))
         )
         self._rate_limited_until: float = 0.0
         self._rate_limit_lock = asyncio.Lock()
-        if self.model_name != AIModelConfig.JINA_MODEL_NAME:
+        if self._model_name != AIModelConfig.JINA_MODEL_NAME:
             logger.info(
                 "jina_cloud_model_name_normalized",
                 configured_model=AIModelConfig.JINA_MODEL_NAME,
-                cloud_model=self.model_name,
+                cloud_model=self._model_name,
             )
         key_suffix = str(self.api_key or "")[-4:] if self.api_key else "none"
         logger.info(
             "jina_cloud_provider_initialized",
-            model=self.model_name,
+            model=self._model_name,
             key_suffix=key_suffix,
             max_parallel_requests=max(1, int(settings.JINA_REQUEST_MAX_PARALLEL or 2)),
         )
@@ -68,6 +68,18 @@ class JinaCloudProvider(IEmbeddingProvider):
         if self._session and not self._session.closed:
             await self._session.close()
             self._session = None
+
+    @property
+    def provider_name(self) -> str:
+        return "jina"
+
+    @property
+    def model_name(self) -> str:
+        return str(self._model_name)
+
+    @property
+    def embedding_dimensions(self) -> int:
+        return int(self._dimensions)
 
     def _safe_split_text(self, text: str, max_chars: int = 15000) -> List[str]:
         """
@@ -124,9 +136,9 @@ class JinaCloudProvider(IEmbeddingProvider):
 
             # Payload optimizado para Jina v3
             data = {
-                "model": self.model_name,
+                "model": self._model_name,
                 "task": task,
-                "dimensions": self.dimensions,
+                "dimensions": self._dimensions,
                 "late_chunking": True,  # ACTIVAR LATE CHUNKING
                 "embedding_type": "float",
                 "truncate": True,  # Seguridad extra: truncar si algo se escapa
@@ -158,7 +170,7 @@ class JinaCloudProvider(IEmbeddingProvider):
             vectors = temp_map.get(i, [])
             if not vectors:
                 # Should not happen if API works, but safety fallback
-                final_embeddings.append([0.0] * self.dimensions)
+                final_embeddings.append([0.0] * self._dimensions)
             elif len(vectors) == 1:
                 final_embeddings.append(vectors[0])
             else:
@@ -176,9 +188,9 @@ class JinaCloudProvider(IEmbeddingProvider):
         """
         chunks = self._split_text_simple(text, limit=1000)  # Pre-split locally to allow array input
         data = {
-            "model": self.model_name,
+            "model": self._model_name,
             "input": chunks,
-            "dimensions": self.dimensions,
+            "dimensions": self._dimensions,
             "late_chunking": True,
         }
 
@@ -223,7 +235,7 @@ class JinaCloudProvider(IEmbeddingProvider):
             # Find corresponding embedding by index
             # If Jina combined/split (unlikely with array input + late_chunking), we safe-guard
             emb_item = next((x for x in embeddings_data if x["index"] == i), None)
-            embedding = emb_item["embedding"] if emb_item else [0.0] * self.dimensions
+            embedding = emb_item["embedding"] if emb_item else [0.0] * self._dimensions
 
             results.append(
                 {
@@ -250,9 +262,9 @@ class JinaCloudProvider(IEmbeddingProvider):
                 payload = await self._post_with_retry(
                     session=session,
                     data={
-                        "model": self.model_name,
+                        "model": self._model_name,
                         "input": batch,
-                        "dimensions": self.dimensions,
+                        "dimensions": self._dimensions,
                     },
                 )
                 data_raw = payload.get("data") if isinstance(payload, dict) else []
@@ -264,7 +276,7 @@ class JinaCloudProvider(IEmbeddingProvider):
                 embeddings.extend([x["embedding"] for x in sorted_d])
             except Exception as exc:
                 logger.error("cloud_embedding_fallback_failed", error=str(exc))
-                embeddings.extend([[0.0] * self.dimensions] * len(batch))
+                embeddings.extend([[0.0] * self._dimensions] * len(batch))
 
         results = []
         offset = 0

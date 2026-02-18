@@ -499,7 +499,13 @@ class RetrievalBroker:
             # 4. Reranking Phase
             rerank_started = time.perf_counter()
             if enable_reranking and raw_results:
-                ranked = await self._apply_reranking(query, raw_results, filter_conditions, k)
+                ranked = await self._apply_reranking(
+                    query,
+                    raw_results,
+                    filter_conditions,
+                    k,
+                    trace_payload=trace_payload,
+                )
             else:
                 ranked = raw_results[:k]
 
@@ -656,7 +662,13 @@ class RetrievalBroker:
         return self._normalize_standard_filters(filters)
 
     async def _apply_reranking(
-        self, query: str, results: List[Dict], scope_context: Dict, k: int
+        self,
+        query: str,
+        results: List[Dict],
+        scope_context: Dict,
+        k: int,
+        *,
+        trace_payload: Dict[str, Any] | None = None,
     ) -> List[Dict]:
         try:
             rerank_mode = self._rerank_mode()
@@ -713,6 +725,12 @@ class RetrievalBroker:
                 (scope_penalized_count / candidate_count) if candidate_count else 0.0,
                 4,
             )
+
+            if isinstance(trace_payload, dict):
+                trace_payload["scope_penalized_count"] = int(scope_penalized_count)
+                trace_payload["scope_candidate_count"] = int(candidate_count)
+                trace_payload["scope_penalized_ratio"] = float(scope_penalized_ratio)
+                trace_payload["requested_scopes"] = list(requested_scopes)
 
             logger.info(
                 "retrieval_pipeline_timing",

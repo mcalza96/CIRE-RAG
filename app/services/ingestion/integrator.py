@@ -65,6 +65,7 @@ class VisualGraphIntegrator:
         parent_chunk_table: str | None = None,
         metadata: dict[str, Any] | None = None,
         embedding_mode: str | None = None,
+        embedding_provider: str | None = None,
     ) -> VisualIntegrationResult:
         """Persist visual node and parent anchor in a consistency-safe sequence."""
 
@@ -82,18 +83,25 @@ class VisualGraphIntegrator:
             context=context,
             node_id=node_id,
         )
-        anchor_token = self._extract_anchor_token(updated_parent_text=updated_parent_text, node_id=node_id)
+        anchor_token = self._extract_anchor_token(
+            updated_parent_text=updated_parent_text, node_id=node_id
+        )
 
         embedding = await self._generate_summary_embedding(
             parse_result.dense_summary,
             embedding_mode=embedding_mode,
+            embedding_provider=embedding_provider,
         )
-        storage_path = self._build_storage_path(parent_chunk_id=parent_chunk_id_str, node_id=node_id, image_path=image_path)
+        storage_path = self._build_storage_path(
+            parent_chunk_id=parent_chunk_id_str, node_id=node_id, image_path=image_path
+        )
 
         uploaded = False
         public_url: str | None = None
         try:
-            public_url = await self._upload_visual_asset(client=client, image_path=image_path, storage_path=storage_path)
+            public_url = await self._upload_visual_asset(
+                client=client, image_path=image_path, storage_path=storage_path
+            )
             uploaded = True
 
             structured_reconstruction = {
@@ -104,6 +112,8 @@ class VisualGraphIntegrator:
                     "content_type": content_type,
                     "storage_path": storage_path,
                     "public_url": public_url,
+                    "embedding_provider": embedding_provider,
+                    "embedding_mode": embedding_mode,
                 },
             }
 
@@ -122,7 +132,9 @@ class VisualGraphIntegrator:
                 response = await client.rpc(self._rpc_name, rpc_payload).execute()
                 rows = response.data or []
                 if not rows:
-                    raise VisualIntegrationError("RPC returned no rows; transaction result is unknown.")
+                    raise VisualIntegrationError(
+                        "RPC returned no rows; transaction result is unknown."
+                    )
 
                 parent_table = rows[0].get("parent_table") or (parent_chunk_table or "unknown")
                 return VisualIntegrationResult(
@@ -187,9 +199,13 @@ class VisualGraphIntegrator:
         """Fallback stitching path when RPC fails in runtime environments."""
 
         parent_tables = self._candidate_parent_tables(preferred_parent_table)
-        parent_table = await self._find_parent_table(client=client, parent_chunk_id=parent_chunk_id, candidates=parent_tables)
+        parent_table = await self._find_parent_table(
+            client=client, parent_chunk_id=parent_chunk_id, candidates=parent_tables
+        )
         if parent_table is None:
-            raise VisualIntegrationError(f"Parent chunk not found in candidate tables: {parent_tables}")
+            raise VisualIntegrationError(
+                f"Parent chunk not found in candidate tables: {parent_tables}"
+            )
 
         await self._update_parent_content(
             client=client,
@@ -200,18 +216,22 @@ class VisualGraphIntegrator:
 
         insert_exc: Exception | None = None
         try:
-            await client.table("visual_nodes").insert(
-                {
-                    "id": node_id,
-                    "parent_chunk_id": parent_chunk_id,
-                    "image_storage_path": image_storage_path,
-                    "visual_summary": visual_summary,
-                    "structured_reconstruction": structured_reconstruction,
-                    "summary_embedding": summary_embedding,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }
-            ).execute()
+            await (
+                client.table("visual_nodes")
+                .insert(
+                    {
+                        "id": node_id,
+                        "parent_chunk_id": parent_chunk_id,
+                        "image_storage_path": image_storage_path,
+                        "visual_summary": visual_summary,
+                        "structured_reconstruction": structured_reconstruction,
+                        "summary_embedding": summary_embedding,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
+                .execute()
+            )
         except Exception as direct_insert_exc:
             logger.warning(
                 "visual_node_insert_embedding_list_failed_retrying_literal",
@@ -219,18 +239,22 @@ class VisualGraphIntegrator:
                 error=str(direct_insert_exc),
             )
             try:
-                await client.table("visual_nodes").insert(
-                    {
-                        "id": node_id,
-                        "parent_chunk_id": parent_chunk_id,
-                        "image_storage_path": image_storage_path,
-                        "visual_summary": visual_summary,
-                        "structured_reconstruction": structured_reconstruction,
-                        "summary_embedding": self._vector_literal(summary_embedding),
-                        "created_at": datetime.now(timezone.utc).isoformat(),
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                ).execute()
+                await (
+                    client.table("visual_nodes")
+                    .insert(
+                        {
+                            "id": node_id,
+                            "parent_chunk_id": parent_chunk_id,
+                            "image_storage_path": image_storage_path,
+                            "visual_summary": visual_summary,
+                            "structured_reconstruction": structured_reconstruction,
+                            "summary_embedding": self._vector_literal(summary_embedding),
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
+                    .execute()
+                )
             except Exception as literal_insert_exc:
                 insert_exc = literal_insert_exc
 
@@ -241,7 +265,9 @@ class VisualGraphIntegrator:
                 chunk_id=parent_chunk_id,
                 content=parent_chunk_text,
             )
-            raise VisualIntegrationError(f"Fallback insert into visual_nodes failed: {insert_exc}") from insert_exc
+            raise VisualIntegrationError(
+                f"Fallback insert into visual_nodes failed: {insert_exc}"
+            ) from insert_exc
 
         return parent_table
 
@@ -262,12 +288,20 @@ class VisualGraphIntegrator:
                 result.append(table)
         return result
 
-    async def _find_parent_table(self, client: Any, parent_chunk_id: str, candidates: list[str]) -> str | None:
+    async def _find_parent_table(
+        self, client: Any, parent_chunk_id: str, candidates: list[str]
+    ) -> str | None:
         """Find which candidate table contains the parent chunk id."""
 
         for table in candidates:
             try:
-                response = await client.table(table).select("id").eq("id", parent_chunk_id).limit(1).execute()
+                response = (
+                    await client.table(table)
+                    .select("id")
+                    .eq("id", parent_chunk_id)
+                    .limit(1)
+                    .execute()
+                )
                 rows = response.data or []
                 if rows:
                     return table
@@ -275,13 +309,18 @@ class VisualGraphIntegrator:
                 continue
         return None
 
-    async def _update_parent_content(self, client: Any, table: str, chunk_id: str, content: str) -> None:
+    async def _update_parent_content(
+        self, client: Any, table: str, chunk_id: str, content: str
+    ) -> None:
         """Update parent chunk content with optional updated_at compatibility."""
 
         try:
-            await client.table(table).update(
-                {"content": content, "updated_at": datetime.now(timezone.utc).isoformat()}
-            ).eq("id", chunk_id).execute()
+            await (
+                client.table(table)
+                .update({"content": content, "updated_at": datetime.now(timezone.utc).isoformat()})
+                .eq("id", chunk_id)
+                .execute()
+            )
             return
         except Exception:
             await client.table(table).update({"content": content}).eq("id", chunk_id).execute()
@@ -300,7 +339,9 @@ class VisualGraphIntegrator:
         self._supabase_client = await get_async_supabase_client()
         return self._supabase_client
 
-    async def _upload_visual_asset(self, client: Any, image_path: str | Path, storage_path: str) -> str | None:
+    async def _upload_visual_asset(
+        self, client: Any, image_path: str | Path, storage_path: str
+    ) -> str | None:
         """Upload image to Supabase Storage and return public URL when available."""
 
         path = Path(image_path)
@@ -318,7 +359,9 @@ class VisualGraphIntegrator:
                 file_options={"content-type": content_type, "upsert": "false"},
             )
         except TypeError:
-            await storage.upload(storage_path, payload, {"content-type": content_type, "upsert": "false"})
+            await storage.upload(
+                storage_path, payload, {"content-type": content_type, "upsert": "false"}
+            )
 
         return await self._extract_public_url(storage=storage, storage_path=storage_path)
 
@@ -329,9 +372,18 @@ class VisualGraphIntegrator:
             await client.storage.from_(self._bucket_name).remove([storage_path])
             logger.info("orphan_visual_asset_removed", storage_path=storage_path)
         except Exception as cleanup_exc:
-            logger.warning("orphan_visual_asset_cleanup_failed", storage_path=storage_path, error=str(cleanup_exc))
+            logger.warning(
+                "orphan_visual_asset_cleanup_failed",
+                storage_path=storage_path,
+                error=str(cleanup_exc),
+            )
 
-    async def _generate_summary_embedding(self, summary: str, embedding_mode: str | None = None) -> list[float]:
+    async def _generate_summary_embedding(
+        self,
+        summary: str,
+        embedding_mode: str | None = None,
+        embedding_provider: str | None = None,
+    ) -> list[float]:
         """Generate embedding for dense retrieval indexing."""
 
         mode = str(embedding_mode or settings.JINA_MODE or "LOCAL").upper()
@@ -339,6 +391,7 @@ class VisualGraphIntegrator:
             [summary],
             task="retrieval.passage",
             mode=mode,
+            provider=embedding_provider,
         )
         if not embeddings or not embeddings[0]:
             raise VisualIntegrationError("Embedding generation returned empty vector.")
