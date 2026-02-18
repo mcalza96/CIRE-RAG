@@ -117,6 +117,8 @@ class MultiQueryTrace(BaseModel):
     merge_strategy: str
     rrf_k: int
     failed_count: int
+    timed_out_count: int = 0
+    max_parallel: int = 1
     timings_ms: dict[str, float] = Field(default_factory=dict)
 
 

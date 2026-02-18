@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional, Protocol, runtime_checkable
 from uuid import UUID
@@ -17,6 +18,7 @@ from app.core.structured_generation import StrictEngine, get_strict_engine
 try:
     from app.domain.graph_schemas import ExtractedNode, ExtractedEdge, GraphExtractionResult
 except Exception:  # pragma: no cover - fallback for older branches
+
     class ExtractedNode(BaseModel):
         temp_id: str
         name: str
@@ -59,7 +61,9 @@ class Entity(BaseModel):
 class Relation(BaseModel):
     source: str = Field(..., description="Source entity name")
     target: str = Field(..., description="Target entity name")
-    relation_type: str = Field(..., description="Semantic relation type (SIGNED_BY, VIOLATES, etc.)")
+    relation_type: str = Field(
+        ..., description="Semantic relation type (SIGNED_BY, VIOLATES, etc.)"
+    )
     description: str = Field(..., description="Evidence/context supporting this relation")
     weight: int = Field(..., ge=1, le=10, description="Strength score from 1 to 10")
 
@@ -80,16 +84,25 @@ class ChunkGraphExtraction(BaseModel):
         return not self.entities and not self.relations
 
 
+class IndexedChunkGraphExtraction(BaseModel):
+    chunk_index: int = Field(..., ge=1, description="1-based chunk index in batch prompt")
+    entities: list[Entity] = Field(default_factory=list)
+    relations: list[Relation] = Field(default_factory=list)
+
+
+class BatchChunkGraphExtraction(BaseModel):
+    chunks: list[IndexedChunkGraphExtraction] = Field(default_factory=list)
+
+
 @runtime_checkable
 class IGraphExtractor(Protocol):
-    def extract(self, text: str, chunk_id: Optional[UUID] = None) -> GraphExtractionResult:
-        ...
+    def extract(self, text: str, chunk_id: Optional[UUID] = None) -> GraphExtractionResult: ...
 
-    async def extract_async(self, text: str, chunk_id: Optional[UUID] = None) -> GraphExtractionResult:
-        ...
+    async def extract_async(
+        self, text: str, chunk_id: Optional[UUID] = None
+    ) -> GraphExtractionResult: ...
 
-    def extract_graph_from_chunk(self, text: str) -> ChunkGraphExtraction:
-        ...
+    def extract_graph_from_chunk(self, text: str) -> ChunkGraphExtraction: ...
 
 
 class GraphExtractor(IGraphExtractor):
@@ -112,10 +125,16 @@ class GraphExtractor(IGraphExtractor):
     )
 
     _USER_PROMPT = (
-        "Extract semantic triples from the following text chunk.\n"
-        "Text chunk:\n"
+        "Extract semantic triples from the following text chunk.\nText chunk:\n---\n{text}\n---"
+    )
+
+    _USER_BATCH_PROMPT = (
+        "Extract semantic triples from the following batch of chunks.\n"
+        "Return one output object per chunk using the same chunk_index values.\n"
+        "If a chunk has no extractable facts, return empty entities and relations for that chunk.\n"
+        "Chunks:\n"
         "---\n"
-        "{text}\n"
+        "{batch_text}\n"
         "---"
     )
 
@@ -137,7 +156,9 @@ class GraphExtractor(IGraphExtractor):
         return value.strip().replace(" ", "_").replace("-", "_").upper()
 
     @staticmethod
-    def _attach_chunk_grounding(result: GraphExtractionResult, chunk_id: Optional[UUID]) -> GraphExtractionResult:
+    def _attach_chunk_grounding(
+        result: GraphExtractionResult, chunk_id: Optional[UUID]
+    ) -> GraphExtractionResult:
         if not chunk_id:
             return result
 
@@ -229,7 +250,9 @@ class GraphExtractor(IGraphExtractor):
                 )
             )
 
-        return self._attach_chunk_grounding(GraphExtractionResult(nodes=nodes, edges=edges), chunk_id)
+        return self._attach_chunk_grounding(
+            GraphExtractionResult(nodes=nodes, edges=edges), chunk_id
+        )
 
     def _extract_with_json_fallback(self, text: str) -> ChunkGraphExtraction:
         if not self._llm:
@@ -267,6 +290,87 @@ class GraphExtractor(IGraphExtractor):
             }
         )
 
+    async def _aextract_batch_with_json_fallback(
+        self, batch_text: str
+    ) -> BatchChunkGraphExtraction:
+        if not self._llm:
+            raise ValueError("LLM fallback unavailable: no BaseChatModel provided")
+
+        batch_parser = PydanticOutputParser(pydantic_object=BatchChunkGraphExtraction)
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", self._SYSTEM_PROMPT),
+                ("human", "{prompt}\n\n{format_instructions}"),
+            ]
+        )
+        chain = prompt | self._llm | batch_parser
+        return await chain.ainvoke(
+            {
+                "prompt": self._USER_BATCH_PROMPT.format(batch_text=batch_text),
+                "format_instructions": batch_parser.get_format_instructions(),
+            }
+        )
+
+    @staticmethod
+    def _build_batch_text(texts: list[str]) -> str:
+        sections: list[str] = []
+        for idx, text in enumerate(texts, start=1):
+            chunk_text = text.strip()
+            sections.append(f"[CHUNK {idx}]\\n{chunk_text}")
+        return "\n\n".join(sections)
+
+    async def extract_graph_batch_async(self, texts: list[str]) -> list[ChunkGraphExtraction]:
+        if not texts:
+            return []
+
+        cleaned_texts = [text.strip() if isinstance(text, str) else "" for text in texts]
+        if len(cleaned_texts) == 1:
+            return [await self.extract_graph_from_chunk_async(cleaned_texts[0])]
+
+        batch_text = self._build_batch_text(cleaned_texts)
+        if not batch_text.strip():
+            return [ChunkGraphExtraction() for _ in cleaned_texts]
+
+        try:
+            extraction = await self._strict_engine.agenerate(
+                prompt=self._USER_BATCH_PROMPT.format(batch_text=batch_text),
+                schema=BatchChunkGraphExtraction,
+                system_prompt=self._SYSTEM_PROMPT,
+            )
+        except Exception as primary_err:
+            logger.warning(
+                "Batch graph extraction failed via instructor; trying JSON fallback: %s",
+                primary_err,
+            )
+            try:
+                extraction = await self._aextract_batch_with_json_fallback(batch_text=batch_text)
+            except Exception as fallback_err:
+                logger.warning(
+                    "Batch graph extraction fallback failed; reverting to per-chunk calls: %s",
+                    fallback_err,
+                )
+                return await asyncio.gather(
+                    *(self.extract_graph_from_chunk_async(text) for text in cleaned_texts)
+                )
+
+        by_index: dict[int, ChunkGraphExtraction] = {}
+        for chunk_output in extraction.chunks:
+            index = int(chunk_output.chunk_index)
+            if index < 1 or index > len(cleaned_texts):
+                continue
+            normalized = self._dedupe_and_validate(
+                ChunkGraphExtraction(
+                    entities=chunk_output.entities,
+                    relations=chunk_output.relations,
+                )
+            )
+            by_index[index - 1] = normalized
+
+        results: list[ChunkGraphExtraction] = []
+        for idx in range(len(cleaned_texts)):
+            results.append(by_index.get(idx, ChunkGraphExtraction()))
+        return results
+
     def extract_graph_from_chunk(self, text: str) -> ChunkGraphExtraction:
         if not text or not text.strip():
             return ChunkGraphExtraction()
@@ -281,7 +385,10 @@ class GraphExtractor(IGraphExtractor):
             )
             return self._dedupe_and_validate(extraction)
         except Exception as primary_err:
-            logger.warning("Graph triple extraction failed via instructor; trying JSON fallback: %s", primary_err)
+            logger.warning(
+                "Graph triple extraction failed via instructor; trying JSON fallback: %s",
+                primary_err,
+            )
             try:
                 extraction = self._extract_with_json_fallback(text)
                 return self._dedupe_and_validate(extraction)
@@ -303,7 +410,10 @@ class GraphExtractor(IGraphExtractor):
             )
             return self._dedupe_and_validate(extraction)
         except Exception as primary_err:
-            logger.warning("Async graph triple extraction failed via instructor; trying JSON fallback: %s", primary_err)
+            logger.warning(
+                "Async graph triple extraction failed via instructor; trying JSON fallback: %s",
+                primary_err,
+            )
             try:
                 extraction = await self._aextract_with_json_fallback(text)
                 return self._dedupe_and_validate(extraction)
@@ -321,7 +431,9 @@ class GraphExtractor(IGraphExtractor):
         )
         return result
 
-    async def extract_async(self, text: str, chunk_id: Optional[UUID] = None) -> GraphExtractionResult:
+    async def extract_async(
+        self, text: str, chunk_id: Optional[UUID] = None
+    ) -> GraphExtractionResult:
         extraction = await self.extract_graph_from_chunk_async(text)
         result = self._to_legacy_graph_result(extraction, chunk_id=chunk_id)
         logger.info(

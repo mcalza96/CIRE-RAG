@@ -19,6 +19,18 @@ class _FakeRetrievalTools:
 
         if self.behavior == "all_fail":
             raise RuntimeError("upstream down")
+        if self.behavior == "all_empty":
+            return {
+                "items": [],
+                "trace": {
+                    "filters_applied": {"tenant_id": tenant_id},
+                    "engine_mode": "atomic",
+                    "planner_used": False,
+                    "planner_multihop": False,
+                    "fallback_used": False,
+                    "timings_ms": {"total": 7.5},
+                },
+            }
         if self.behavior == "partial_fail" and query.lower() == "fail":
             raise RuntimeError("subquery failed")
         if self.behavior == "leak":
@@ -139,6 +151,32 @@ def test_multi_query_all_failed_returns_502(monkeypatch) -> None:
 
         assert response.status_code == 502
         assert response.json()["error"]["code"] == "MULTI_QUERY_ALL_FAILED"
+    finally:
+        _restore(original)
+
+
+def test_multi_query_all_empty_returns_200(monkeypatch) -> None:
+    original = _set_local()
+    monkeypatch.setattr(CognitiveContainer, "get_instance", classmethod(lambda cls: _FakeContainer("all_empty")))
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/retrieval/multi-query",
+                headers={"X-Tenant-ID": "tenant-demo"},
+                json={
+                    "tenant_id": "tenant-demo",
+                    "queries": [
+                        {"id": "q1", "query": "empty-1"},
+                        {"id": "q2", "query": "empty-2"},
+                    ],
+                },
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["items"] == []
+        assert payload["partial"] is False
+        assert all(sq["status"] == "ok" for sq in payload["subqueries"])
     finally:
         _restore(original)
 

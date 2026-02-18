@@ -113,6 +113,10 @@ class RaptorProcessor:
                 logger.info("Converged to single cluster, stopping")
                 break
             
+            # Extract common metadata from first chunk in level to propagate (assuming same source)
+            first_chunk = current_level_nodes[0]
+            level_source_standard = getattr(first_chunk, "source_standard", None)
+            
             # Create content lookup for summarization (use strings for robustness)
             content_lookup = {str(c.id): c.content for c in current_level_nodes}
             
@@ -149,6 +153,7 @@ class RaptorProcessor:
                     tenant_id=tenant_id,
                     source_document_id=source_document_id,
                     collection_id=collection_id,
+                    source_standard=level_source_standard,
                 )
                 
                 # Persist via repository
@@ -156,12 +161,18 @@ class RaptorProcessor:
                 total_created += 1
                 
                 # Add to next iteration as BaseChunk-like object
-                new_level_nodes.append(BaseChunk(
+                # Update BaseChunk with source_standard if needed for further propagation
+                new_level_chunk = BaseChunk(
                     id=summary_node.id,
                     content=summary_node.content,
                     embedding=summary_node.embedding,
                     tenant_id=tenant_id
-                ))
+                )
+                # Manual attribute injection since BaseChunk doesn't have it in __init__ yet?
+                # Actually let's check if BaseChunk needs it too.
+                # If I want recursive propagation, I should add it to BaseChunk too.
+                setattr(new_level_chunk, "source_standard", level_source_standard)
+                new_level_nodes.append(new_level_chunk)
             
             levels[current_level] = [n.id for n in new_level_nodes]
             current_level_nodes = new_level_nodes

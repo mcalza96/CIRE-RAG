@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, Dict, Optional
 from uuid import UUID, uuid4
 
 import structlog
 
 from app.application.services.ingestion_state_manager import IngestionStateManager
+from app.core.settings import settings
 from app.domain.repositories.content_repository import IContentRepository
 from app.core.llm import get_llm
+from app.infrastructure.supabase.client import get_async_supabase_client
 from app.infrastructure.repositories.supabase_graph_repository import SupabaseGraphRepository
 from app.infrastructure.repositories.supabase_raptor_repository import SupabaseRaptorRepository
 from app.services.knowledge.graph_extractor import GraphExtractor
@@ -37,7 +40,9 @@ class PostIngestionPipelineService:
     ) -> int:
         self._attach_collection_scope(chunks, collection_id)
         self._ensure_chunk_ids(chunks)
-        await self.state_manager.log_step(doc_id, f"Persistiendo {len(chunks)} fragmentos...", tenant_id=tenant_id)
+        await self.state_manager.log_step(
+            doc_id, f"Persistiendo {len(chunks)} fragmentos...", tenant_id=tenant_id
+        )
         persisted_count = int(await self.content_repo.save_chunks(chunks) or 0)
         if persisted_count <= 0:
             raise RuntimeError(
@@ -50,6 +55,89 @@ class PostIngestionPipelineService:
         if source:
             await source.close()
 
+    async def enqueue_deferred_enrichment(
+        self,
+        doc_id: str,
+        tenant_id: Optional[str],
+        collection_id: Optional[str] = None,
+    ) -> bool:
+        client = await get_async_supabase_client()
+        payload = {
+            "source_document_id": str(doc_id),
+            "collection_id": str(collection_id) if collection_id else None,
+        }
+
+        existing = await (
+            client.table("job_queue")
+            .select("id")
+            .eq("job_type", "enrich_document")
+            .in_("status", ["pending", "processing"])
+            .contains("payload", {"source_document_id": str(doc_id)})
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            return False
+
+        await (
+            client.table("job_queue")
+            .insert(
+                {
+                    "job_type": "enrich_document",
+                    "tenant_id": str(tenant_id) if tenant_id else None,
+                    "payload": payload,
+                }
+            )
+            .execute()
+        )
+        return True
+
+    async def run_deferred_enrichment(
+        self,
+        doc_id: str,
+        tenant_id: Optional[str],
+        collection_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        chunks = await self._load_persisted_chunks(doc_id=doc_id)
+        if not chunks:
+            return {
+                "ok": False,
+                "reason": "no_chunks",
+                "source_document_id": str(doc_id),
+            }
+
+        result_obj = SimpleNamespace(chunks=chunks)
+        await self.run_raptor_if_needed(
+            doc_id=doc_id,
+            tenant_id=tenant_id,
+            result=result_obj,
+            collection_id=collection_id,
+        )
+        await self.run_graph_if_needed(
+            doc_id=doc_id,
+            tenant_id=tenant_id,
+            result=result_obj,
+        )
+        return {
+            "ok": True,
+            "source_document_id": str(doc_id),
+            "chunks": len(chunks),
+        }
+
+    async def _load_persisted_chunks(self, doc_id: str) -> list[dict[str, Any]]:
+        client = await get_async_supabase_client()
+        query = (
+            client.table("content_chunks")
+            .select("id,content,embedding,metadata")
+            .eq("source_id", str(doc_id))
+        )
+        try:
+            response = await query.order("created_at", desc=False).execute()
+        except Exception:
+            response = await query.execute()
+        rows = response.data if isinstance(response.data, list) else []
+        return [row for row in rows if isinstance(row, dict)]
+
     async def run_raptor_if_needed(
         self,
         doc_id: str,
@@ -60,7 +148,9 @@ class PostIngestionPipelineService:
         if not self.raptor_processor or len(result.chunks) <= 5:
             return
 
-        await self.state_manager.log_step(doc_id, "Iniciando procesamiento RAPTOR...", tenant_id=tenant_id)
+        await self.state_manager.log_step(
+            doc_id, "Iniciando procesamiento RAPTOR...", tenant_id=tenant_id
+        )
         try:
             from app.domain.raptor_schemas import BaseChunk
 
@@ -76,7 +166,9 @@ class PostIngestionPipelineService:
                             id=chunk_id,
                             content=content,
                             embedding=embedding,
-                            tenant_id=UUID(tenant_id) if tenant_id else UUID("00000000-0000-0000-0000-000000000000"),
+                            tenant_id=UUID(tenant_id)
+                            if tenant_id
+                            else UUID("00000000-0000-0000-0000-000000000000"),
                         )
                     )
 
@@ -86,7 +178,9 @@ class PostIngestionPipelineService:
             embedding_mode = self._resolve_embedding_mode(result.chunks)
             tree_result = await self.raptor_processor.build_tree(
                 base_chunks=base_chunks,
-                tenant_id=UUID(tenant_id) if tenant_id else UUID("00000000-0000-0000-0000-000000000000"),
+                tenant_id=UUID(tenant_id)
+                if tenant_id
+                else UUID("00000000-0000-0000-0000-000000000000"),
                 source_document_id=UUID(doc_id),
                 collection_id=UUID(collection_id) if collection_id else None,
                 embedding_mode=embedding_mode,
@@ -103,11 +197,17 @@ class PostIngestionPipelineService:
             )
         except Exception as exc:
             logger.error(f"RAPTOR processing failed for {doc_id}: {exc}")
-            await self.state_manager.log_step(doc_id, f"Error en RAPTOR (no fatal): {str(exc)}", "WARNING", tenant_id=tenant_id)
+            await self.state_manager.log_step(
+                doc_id, f"Error en RAPTOR (no fatal): {str(exc)}", "WARNING", tenant_id=tenant_id
+            )
 
     async def run_graph_if_needed(self, doc_id: str, tenant_id: Optional[str], result: Any) -> None:
         try:
-            await self.state_manager.log_step(doc_id, "Iniciando extracción de grafo y trazabilidad chunk->nodo...", tenant_id=tenant_id)
+            await self.state_manager.log_step(
+                doc_id,
+                "Iniciando extracción de grafo y trazabilidad chunk->nodo...",
+                tenant_id=tenant_id,
+            )
             graph_stats = await self._run_graph_enrichment(
                 doc_id=doc_id,
                 tenant_id=tenant_id,
@@ -147,9 +247,13 @@ class PostIngestionPipelineService:
                 return
 
             logger.error(f"Graph extraction failed for {doc_id}: {exc}")
-            await self.state_manager.log_step(doc_id, f"Error en GraphRAG (no fatal): {err_text}", "WARNING", tenant_id=tenant_id)
+            await self.state_manager.log_step(
+                doc_id, f"Error en GraphRAG (no fatal): {err_text}", "WARNING", tenant_id=tenant_id
+            )
 
-    async def _run_graph_enrichment(self, doc_id: str, tenant_id: Optional[str], chunks: list[Any]) -> Dict[str, int]:
+    async def _run_graph_enrichment(
+        self, doc_id: str, tenant_id: Optional[str], chunks: list[Any]
+    ) -> Dict[str, int]:
         if not tenant_id:
             logger.warning("Skipping graph enrichment: missing tenant_id", doc_id=doc_id)
             return {
@@ -171,6 +275,10 @@ class PostIngestionPipelineService:
         graph_repository = SupabaseGraphRepository()
         extractor = GraphExtractor(get_llm(temperature=0.0, capability="FORENSIC"))
         embedding_mode = self._resolve_embedding_mode(chunks)
+        graph_batch_size = max(
+            1,
+            int(getattr(settings, "INGESTION_GRAPH_BATCH_SIZE", 6) or 6),
+        )
 
         totals = {
             "chunks_seen": 0,
@@ -187,85 +295,94 @@ class PostIngestionPipelineService:
             "chunk_errors": 0,
         }
 
+        candidate_chunks: list[tuple[int, UUID, str]] = []
         for idx, chunk in enumerate(chunks, start=1):
-            content = chunk.get("content") if isinstance(chunk, dict) else getattr(chunk, "content", "")
-            chunk_id_raw = chunk.get("id") if isinstance(chunk, dict) else getattr(chunk, "id", None)
+            content = (
+                chunk.get("content") if isinstance(chunk, dict) else getattr(chunk, "content", "")
+            )
+            chunk_id_raw = (
+                chunk.get("id") if isinstance(chunk, dict) else getattr(chunk, "id", None)
+            )
             totals["chunks_seen"] += 1
-
             if not content or not chunk_id_raw:
                 continue
+            candidate_chunks.append((idx, UUID(str(chunk_id_raw)), str(content)))
 
-            chunk_uuid = UUID(str(chunk_id_raw))
-            extraction = await extractor.extract_graph_from_chunk_async(text=content)
-            if extraction.is_empty():
-                continue
+        for batch_start in range(0, len(candidate_chunks), graph_batch_size):
+            batch = candidate_chunks[batch_start : batch_start + graph_batch_size]
+            batch_texts = [item[2] for item in batch]
+            batch_extractions = await extractor.extract_graph_batch_async(batch_texts)
 
-            totals["chunks_with_graph"] += 1
+            for (idx, chunk_uuid, _content), extraction in zip(batch, batch_extractions):
+                if extraction.is_empty():
+                    continue
 
-            stats = await graph_repository.upsert_knowledge_subgraph(
-                extraction=extraction,
-                chunk_id=chunk_uuid,
-                tenant_id=tenant_uuid,
-                embedding_mode=embedding_mode,
-            )
-            totals["entities_extracted"] += stats.get("entities_extracted", 0)
-            totals["relations_extracted"] += stats.get("relations_extracted", 0)
-            totals["entities_inserted"] += stats.get("entities_inserted", 0)
-            totals["entities_merged"] += stats.get("entities_merged", 0)
-            totals["relations_inserted"] += stats.get("relations_inserted", 0)
-            totals["relations_merged"] += stats.get("relations_merged", 0)
-            totals["nodes_upserted"] += stats.get("nodes_upserted", 0)
-            totals["edges_upserted"] += stats.get("edges_upserted", 0)
-            totals["links_upserted"] += stats.get("links_upserted", 0)
+                totals["chunks_with_graph"] += 1
 
-            chunk_error_count = len(stats.get("errors", []))
-            totals["chunk_errors"] += chunk_error_count
+                stats = await graph_repository.upsert_knowledge_subgraph(
+                    extraction=extraction,
+                    chunk_id=chunk_uuid,
+                    tenant_id=tenant_uuid,
+                    embedding_mode=embedding_mode,
+                )
+                totals["entities_extracted"] += stats.get("entities_extracted", 0)
+                totals["relations_extracted"] += stats.get("relations_extracted", 0)
+                totals["entities_inserted"] += stats.get("entities_inserted", 0)
+                totals["entities_merged"] += stats.get("entities_merged", 0)
+                totals["relations_inserted"] += stats.get("relations_inserted", 0)
+                totals["relations_merged"] += stats.get("relations_merged", 0)
+                totals["nodes_upserted"] += stats.get("nodes_upserted", 0)
+                totals["edges_upserted"] += stats.get("edges_upserted", 0)
+                totals["links_upserted"] += stats.get("links_upserted", 0)
 
-            logger.info(
-                "GraphRAG chunk metrics",
-                doc_id=doc_id,
-                chunk_index=idx,
-                chunk_id=str(chunk_uuid),
-                entities_extracted=stats.get("entities_extracted", 0),
-                relations_extracted=stats.get("relations_extracted", 0),
-                entities_inserted=stats.get("entities_inserted", 0),
-                entities_merged=stats.get("entities_merged", 0),
-                relations_inserted=stats.get("relations_inserted", 0),
-                relations_merged=stats.get("relations_merged", 0),
-                links_upserted=stats.get("links_upserted", 0),
-                errors=chunk_error_count,
-            )
+                chunk_error_count = len(stats.get("errors", []))
+                totals["chunk_errors"] += chunk_error_count
 
-            await self.state_manager.log_step(
-                doc_id,
-                (
-                    f"Graph chunk {idx}: "
-                    f"entities={stats.get('entities_extracted', 0)} "
-                    f"(new={stats.get('entities_inserted', 0)}, merged={stats.get('entities_merged', 0)}), "
-                    f"relations={stats.get('relations_extracted', 0)} "
-                    f"(new={stats.get('relations_inserted', 0)}, merged={stats.get('relations_merged', 0)}), "
-                    f"provenance={stats.get('links_upserted', 0)}, errors={chunk_error_count}"
-                ),
-                "INFO" if chunk_error_count == 0 else "WARNING",
-                tenant_id=tenant_id,
-                metadata={
-                    "phase": "graph_enrichment_chunk",
-                    "chunk_index": idx,
-                    "chunk_id": str(chunk_uuid),
-                    "metrics": {
-                        "entities_extracted": stats.get("entities_extracted", 0),
-                        "relations_extracted": stats.get("relations_extracted", 0),
-                        "entities_inserted": stats.get("entities_inserted", 0),
-                        "entities_merged": stats.get("entities_merged", 0),
-                        "relations_inserted": stats.get("relations_inserted", 0),
-                        "relations_merged": stats.get("relations_merged", 0),
-                        "nodes_upserted": stats.get("nodes_upserted", 0),
-                        "edges_upserted": stats.get("edges_upserted", 0),
-                        "links_upserted": stats.get("links_upserted", 0),
-                        "errors": chunk_error_count,
+                logger.info(
+                    "GraphRAG chunk metrics",
+                    doc_id=doc_id,
+                    chunk_index=idx,
+                    chunk_id=str(chunk_uuid),
+                    entities_extracted=stats.get("entities_extracted", 0),
+                    relations_extracted=stats.get("relations_extracted", 0),
+                    entities_inserted=stats.get("entities_inserted", 0),
+                    entities_merged=stats.get("entities_merged", 0),
+                    relations_inserted=stats.get("relations_inserted", 0),
+                    relations_merged=stats.get("relations_merged", 0),
+                    links_upserted=stats.get("links_upserted", 0),
+                    errors=chunk_error_count,
+                )
+
+                await self.state_manager.log_step(
+                    doc_id,
+                    (
+                        f"Graph chunk {idx}: "
+                        f"entities={stats.get('entities_extracted', 0)} "
+                        f"(new={stats.get('entities_inserted', 0)}, merged={stats.get('entities_merged', 0)}), "
+                        f"relations={stats.get('relations_extracted', 0)} "
+                        f"(new={stats.get('relations_inserted', 0)}, merged={stats.get('relations_merged', 0)}), "
+                        f"provenance={stats.get('links_upserted', 0)}, errors={chunk_error_count}"
+                    ),
+                    "INFO" if chunk_error_count == 0 else "WARNING",
+                    tenant_id=tenant_id,
+                    metadata={
+                        "phase": "graph_enrichment_chunk",
+                        "chunk_index": idx,
+                        "chunk_id": str(chunk_uuid),
+                        "metrics": {
+                            "entities_extracted": stats.get("entities_extracted", 0),
+                            "relations_extracted": stats.get("relations_extracted", 0),
+                            "entities_inserted": stats.get("entities_inserted", 0),
+                            "entities_merged": stats.get("entities_merged", 0),
+                            "relations_inserted": stats.get("relations_inserted", 0),
+                            "relations_merged": stats.get("relations_merged", 0),
+                            "nodes_upserted": stats.get("nodes_upserted", 0),
+                            "edges_upserted": stats.get("edges_upserted", 0),
+                            "links_upserted": stats.get("links_upserted", 0),
+                            "errors": chunk_error_count,
+                        },
                     },
-                },
-            )
+                )
 
         return totals
 

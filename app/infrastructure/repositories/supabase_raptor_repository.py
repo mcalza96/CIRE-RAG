@@ -34,7 +34,8 @@ class SupabaseRaptorRepository(IRaptorRepository):
             "properties": {
                 "raptor_level": node.level,
                 "is_summary": True,
-                "children_count": len(node.children_ids)
+                "children_count": len(node.children_ids),
+                "source_standard": node.source_standard
             }
         }
         

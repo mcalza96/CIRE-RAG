@@ -17,6 +17,7 @@ class BaseChunk(BaseModel):
     content: str
     embedding: List[float]
     tenant_id: UUID
+    source_standard: Optional[str] = None
 
 
 class ClusterAssignment(BaseModel):
@@ -52,6 +53,7 @@ class SummaryNode(BaseModel):
     tenant_id: UUID
     source_document_id: Optional[UUID] = None
     collection_id: Optional[UUID] = None
+    source_standard: Optional[str] = None
 
 
 class RaptorTreeResult(BaseModel):

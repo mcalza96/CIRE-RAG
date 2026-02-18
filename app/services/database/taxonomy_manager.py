@@ -50,6 +50,14 @@ class TaxonomyManager:
         final_meta["title"] = metadata.title # Ensure title is in metadata
         final_meta["correlation_id"] = get_correlation_id()
         
+        # Flatten extra metadata into top-level for agnostic retrieval
+        if metadata.metadata:
+            # We explicitly exclude keys that might collision with reserved fields if necessary, 
+            # but for now we trust the source or let them override.
+            # We iterate to avoid overwriting critical keys if we wanted to be safe, 
+            # but a simple update is usually what we want (override defaults).
+            final_meta.update(metadata.metadata)
+
         tenant_id: Optional[str] = str(metadata.institution_id) if metadata.institution_id else None
         if tenant_id:
             tenant_name_hint = None

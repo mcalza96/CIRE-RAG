@@ -12,6 +12,7 @@ import os
 from app.core.observability.correlation import get_correlation_id
 from app.services.database.taxonomy_manager import TaxonomyManager
 from app.core.settings import settings
+from app.core.utils.filename_utils import sanitize_filename
 
 
 class InstitutionalIngestionUseCase:
@@ -122,10 +123,13 @@ class InstitutionalIngestionUseCase:
                 merged_metadata["collection_id"] = collection_id
                 merged_metadata["collection_name"] = collection.get("name")
 
+            filename = os.path.basename(file_path)
+            sanitized_filename = sanitize_filename(filename)
+
             # 1.1 Ensure source_document exists without forcing invalid course_id FKs
             await self.query_service.upsert_source_document(
                 document_id=str(document_id),
-                filename=os.path.basename(file_path),
+                filename=sanitized_filename,
                 tenant_id=str(tenant_id),
                 metadata=merged_metadata,
                 collection_id=str(collection_id) if collection_id else None,

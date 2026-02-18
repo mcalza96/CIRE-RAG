@@ -358,6 +358,10 @@ class RetrievalContractService:
             content = str(row.get("content") or "").strip()
             if not content:
                 continue
+            
+            # Use the entire row dictionary as metadata. 
+            # This allows the orchestrator to see both top-level filterable fields 
+            # and nested structures (like our backfilled 'row' key).
             out.append(
                 RetrievalItem(
                     source=str(row.get("source") or f"C{idx + 1}"),
@@ -365,7 +369,7 @@ class RetrievalContractService:
                     score=_safe_float(
                         row.get("similarity"), default=_safe_float(row.get("score"), default=0.0)
                     ),
-                    metadata={"row": row},
+                    metadata=row,
                 )
             )
         return out
@@ -427,14 +431,18 @@ class RetrievalContractService:
                 details=str(exc),
             ) from exc
         items = self._to_retrieval_items(rows)
+        warnings_raw = trace_payload.get("warnings") if isinstance(trace_payload, dict) else None
+        warning_codes_raw = (
+            trace_payload.get("warning_codes") if isinstance(trace_payload, dict) else None
+        )
         trace_warnings = (
-            [str(item) for item in trace_payload.get("warnings") if str(item).strip()]
-            if isinstance(trace_payload.get("warnings"), list)
+            [str(item) for item in warnings_raw if str(item).strip()]
+            if isinstance(warnings_raw, list)
             else []
         )
         trace_warning_codes = (
-            [str(item).strip().upper() for item in trace_payload.get("warning_codes") if str(item).strip()]
-            if isinstance(trace_payload.get("warning_codes"), list)
+            [str(item).strip().upper() for item in warning_codes_raw if str(item).strip()]
+            if isinstance(warning_codes_raw, list)
             else []
         )
         if not trace_warning_codes and any(
@@ -446,7 +454,9 @@ class RetrievalContractService:
         merged_warnings = list(dict.fromkeys([*validation_warnings, *trace_warnings]))
         rpc_contract_status = str(trace_payload.get("rpc_contract_status") or "").strip()
         rpc_compat_mode = str(
-            trace_payload.get("rpc_compat_mode") or trace_payload.get("hybrid_rpc_compat_mode") or ""
+            trace_payload.get("rpc_compat_mode")
+            or trace_payload.get("hybrid_rpc_compat_mode")
+            or ""
         ).strip()
         return HybridRetrievalResponse(
             items=items,
@@ -506,6 +516,18 @@ class RetrievalContractService:
         self, request: MultiQueryRetrievalRequest
     ) -> MultiQueryRetrievalResponse:
         started = time.perf_counter()
+        max_parallel = max(
+            1,
+            min(
+                8,
+                int(getattr(settings, "RETRIEVAL_MULTI_QUERY_MAX_PARALLEL", 4) or 4),
+            ),
+        )
+        subquery_timeout_ms = max(
+            200,
+            int(getattr(settings, "RETRIEVAL_MULTI_QUERY_SUBQUERY_TIMEOUT_MS", 8000) or 8000),
+        )
+        semaphore = asyncio.Semaphore(max_parallel)
 
         async def _execute_subquery(item: Any) -> tuple[SubQueryExecution, list[RetrievalItem]]:
             sq_started = time.perf_counter()
@@ -520,7 +542,11 @@ class RetrievalContractService:
                     rerank=None,
                     graph=None,
                 )
-                result = await self.run_hybrid(hybrid_request)
+                async with semaphore:
+                    result = await asyncio.wait_for(
+                        self.run_hybrid(hybrid_request),
+                        timeout=subquery_timeout_ms / 1000.0,
+                    )
                 return (
                     SubQueryExecution(
                         id=item.id,
@@ -529,6 +555,18 @@ class RetrievalContractService:
                         latency_ms=round((time.perf_counter() - sq_started) * 1000, 2),
                     ),
                     result.items,
+                )
+            except TimeoutError:
+                return (
+                    SubQueryExecution(
+                        id=item.id,
+                        status="error",
+                        items_count=0,
+                        latency_ms=round((time.perf_counter() - sq_started) * 1000, 2),
+                        error_code="SUBQUERY_TIMEOUT",
+                        error_message="Subquery timed out",
+                    ),
+                    [],
                 )
             except ApiError as exc:
                 return (
@@ -559,14 +597,33 @@ class RetrievalContractService:
         grouped_items: list[tuple[str, list[RetrievalItem]]] = []
         subqueries: list[SubQueryExecution] = []
         failed_count = 0
+        timed_out_count = 0
         for execution, items in executions:
             subqueries.append(execution)
             if execution.status == "error":
                 failed_count += 1
+            if execution.error_code == "SUBQUERY_TIMEOUT":
+                timed_out_count += 1
             if items:
                 grouped_items.append((execution.id, items))
 
         if not grouped_items:
+            if failed_count < len(subqueries):
+                # Fail-soft: all subqueries may succeed but return no evidence.
+                # Return a valid empty payload so callers can trigger their own fallback policy.
+                return MultiQueryRetrievalResponse(
+                    items=[],
+                    subqueries=subqueries,
+                    partial=failed_count > 0,
+                    trace=MultiQueryTrace(
+                        merge_strategy=request.merge.strategy,
+                        rrf_k=request.merge.rrf_k,
+                        failed_count=failed_count,
+                        timed_out_count=timed_out_count,
+                        max_parallel=max_parallel,
+                        timings_ms={"total": round((time.perf_counter() - started) * 1000, 2)},
+                    ),
+                )
             raise ApiError(
                 status_code=502,
                 code="MULTI_QUERY_ALL_FAILED",
@@ -599,6 +656,8 @@ class RetrievalContractService:
                 merge_strategy=request.merge.strategy,
                 rrf_k=request.merge.rrf_k,
                 failed_count=failed_count,
+                timed_out_count=timed_out_count,
+                max_parallel=max_parallel,
                 timings_ms={"total": round((time.perf_counter() - started) * 1000, 2)},
             ),
         )

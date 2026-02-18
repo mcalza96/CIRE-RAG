@@ -77,9 +77,12 @@ class Settings(BaseSettings):
     WORKER_PER_TENANT_CONCURRENCY: int = 5
     WORKER_POLL_INTERVAL_SECONDS: int = 2
     EMBEDDING_CONCURRENCY: int = 5
-    JINA_EMBED_RETRY_MAX_ATTEMPTS: int = 3
+    JINA_EMBED_RETRY_MAX_ATTEMPTS: int = 5
     JINA_EMBED_RETRY_BASE_DELAY_SECONDS: float = 0.4
-    JINA_EMBED_RETRY_MAX_DELAY_SECONDS: float = 2.5
+    JINA_EMBED_RETRY_MAX_DELAY_SECONDS: float = 10.0
+    JINA_EMBED_RETRY_429_BACKOFF_MULTIPLIER: float = 3.0
+    JINA_BATCH_SIZE: int = 8
+    JINA_BATCH_RATE_LIMIT_DELAY_SECONDS: float = 1.0
     WORKER_TENANT_QUEUE_SAMPLE_LIMIT: int = 1000
     WORKER_TENANT_QUEUE_DEPTH_ALERT: int = 200
     WORKER_TENANT_QUEUE_WAIT_ALERT_SECONDS: int = 300
@@ -101,7 +104,7 @@ class Settings(BaseSettings):
     ENABLE_HEART_VERIFICATION: bool = False
     DAILY_VLM_LIMIT: Optional[int] = None
     QUERY_DECOMPOSER_ENABLED: bool = True
-    QUERY_DECOMPOSER_TIMEOUT_MS: int = 800
+    QUERY_DECOMPOSER_TIMEOUT_MS: int = 8000
     QUERY_DECOMPOSER_SKIP_SIMPLE_QUERIES: bool = True
     RETRIEVAL_ENGINE_MODE: str = "atomic"  # unified | atomic | hybrid
     SCOPE_STRICT_FILTERING: bool = False
@@ -121,6 +124,8 @@ class Settings(BaseSettings):
     JINA_READER_URL_TEMPLATE: Optional[str] = None  # e.g. https://r.jina.ai/http://host/{path}
     RERANK_MODE: str = "hybrid"  # local | jina | hybrid
     RERANK_MAX_CANDIDATES: int = 10
+    RETRIEVAL_MULTI_QUERY_MAX_PARALLEL: int = 4
+    RETRIEVAL_MULTI_QUERY_SUBQUERY_TIMEOUT_MS: int = 8000
     AUTHORITY_CLASSIFIER_MODE: str = "rules"  # rules | embedding_first
 
     # Visual router
@@ -133,6 +138,11 @@ class Settings(BaseSettings):
     VISUAL_CACHE_SCHEMA_VERSION: str = "VisualParseResult:v1"
     VISUAL_CACHE_KEY_V2_ENABLED: bool = True
     VISUAL_CACHE_BATCH_PREFETCH_ENABLED: bool = True
+
+    # Deferred enrichment pipeline
+    INGESTION_ENRICHMENT_ASYNC_ENABLED: bool = True
+    INGESTION_GRAPH_BATCH_SIZE: int = 6
+    ENRICHMENT_WORKER_CONCURRENCY: int = 2
 
     @field_validator("JINA_MODE", mode="before")
     @classmethod

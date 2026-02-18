@@ -59,7 +59,23 @@ class PersistenceMapper:
         source_id = get(chunk, ["sourceId", "source_id"])
         institution_id = get(chunk, ["institutionId", "institution_id"]) or get(chunk, ["metadata"], {}).get("institution_id")
         collection_id = get(chunk, ["collectionId", "collection_id"]) or get(chunk, ["metadata"], {}).get("collection_id")
-        chunk_id = get(chunk, ["id"])
+        # CIRE-ORCH expects metadata -> row -> metadata structure for advanced filtering.
+        # However, Supabase RPC (hybrid_search) expects filters at the TOP level of metadata.
+        # We duplicate critical fields to satisfy both.
+        raw_metadata = get(chunk, ["metadata"], {})
+        
+        nested_metadata = {
+            "row": {
+                "metadata": raw_metadata,
+                "source_layer": "content_chunk" 
+            }
+        }
+        
+        # Merge top-level filterable fields into the final metadata object
+        final_metadata = nested_metadata.copy()
+        for key in ["source_standard", "clause_id", "scope"]:
+            if key in raw_metadata:
+                final_metadata[key] = raw_metadata[key]
 
         result = {
             "source_id": str(source_id) if source_id else None,
@@ -67,7 +83,7 @@ class PersistenceMapper:
             "embedding": get(chunk, ["embedding"], []),
             "chunk_index": get(chunk, ["chunkIndex", "chunk_index"], 0),
             "file_page_number": get(chunk, ["filePageNumber", "file_page_number"], 1),
-            "metadata": get(chunk, ["metadata"], {}),
+            "metadata": final_metadata,
             "institution_id": str(institution_id) if institution_id else None,
             "collection_id": str(collection_id) if collection_id else None,
             "is_global": get(chunk, ["isGlobal", "is_global"], False),

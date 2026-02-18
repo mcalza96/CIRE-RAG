@@ -470,20 +470,21 @@ class AtomicRetrievalEngine:
             merged.extend(safety)
             return self._dedupe_by_id(merged)[:k]
 
-        tasks = [
-            self.retrieve_context(
-                query=sq.query,
-                scope_context=scope_context,
-                k=max(k, 12),
-                fetch_k=fetch_k,
-                graph_filter_relation_types=graph_filter_relation_types or sq.target_relations,
-                graph_filter_node_types=graph_filter_node_types or sq.target_node_types,
-                graph_max_hops=graph_max_hops
-                if graph_max_hops is not None
-                else (2 if sq.is_deep else 1),
-            )
-            for sq in plan.sub_queries
-        ]
+        semaphore = asyncio.Semaphore(max(1, settings.RETRIEVAL_MULTI_QUERY_MAX_PARALLEL))
+
+        async def _bounded_retrieve(sq: Any) -> list[RetrievalRow]:
+            async with semaphore:
+                return await self.retrieve_context(
+                    query=sq.query,
+                    scope_context=scope_context,
+                    k=max(k, 12),
+                    fetch_k=fetch_k,
+                    graph_filter_relation_types=graph_filter_relation_types or sq.target_relations,
+                    graph_filter_node_types=graph_filter_node_types or sq.target_node_types,
+                    graph_max_hops=graph_max_hops if graph_max_hops is not None else (2 if sq.is_deep else 1),
+                )
+
+        tasks = [_bounded_retrieve(sq) for sq in plan.sub_queries]
         tasks.append(
             self.retrieve_context(
                 query=query,

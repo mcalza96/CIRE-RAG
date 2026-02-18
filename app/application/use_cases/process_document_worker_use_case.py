@@ -19,8 +19,10 @@ from app.application.services.ingestion_state_manager import IngestionStateManag
 from app.application.services.visual_anchor_service import VisualAnchorService
 from app.services.ingestion.visual_parser import VisualDocumentParser
 from app.services.ingestion.integrator import VisualGraphIntegrator
+from app.core.settings import settings
 
 logger = structlog.get_logger(__name__)
+
 
 class ProcessDocumentWorkerUseCase:
     """
@@ -28,9 +30,10 @@ class ProcessDocumentWorkerUseCase:
     Refactored to enforce SRP, Atomic State correctness, and Retry awareness.
     Uses explicit dependencies to keep orchestration testable and simple.
     """
+
     def __init__(
-        self, 
-        repository: ISourceRepository, 
+        self,
+        repository: ISourceRepository,
         content_repo: IContentRepository,
         storage_service: StorageService,
         dispatcher: IngestionDispatcher,
@@ -57,7 +60,9 @@ class ProcessDocumentWorkerUseCase:
         self.visual_parser = visual_parser or VisualDocumentParser()
         self.visual_integrator = visual_integrator or VisualGraphIntegrator()
 
-        self.download_service = download_service or DocumentDownloadService(storage_service, repository)
+        self.download_service = download_service or DocumentDownloadService(
+            storage_service, repository
+        )
         self.state_manager = state_manager or IngestionStateManager(repository)
 
         resolved_raptor_repo = raptor_repo or SupabaseRaptorRepository()
@@ -73,22 +78,31 @@ class ProcessDocumentWorkerUseCase:
 
         set_correlation_id(correlation_id)
         bind_context(course_id=course_id)
-        
-        logger.info("Ingestión de documento iniciada", doc_id=doc_id, correlation_id=correlation_id, course_id=course_id)
+
+        logger.info(
+            "Ingestión de documento iniciada",
+            doc_id=doc_id,
+            correlation_id=correlation_id,
+            course_id=course_id,
+        )
 
         # 1. Domain Policy Guard
-        current_status = record.get('status')
-        meta: Dict[str, Any] = record.get('metadata', {}) or {}
-        if not self.policy.should_process(str(current_status or ""), str(meta.get('status') or ""), metadata=meta):
+        current_status = record.get("status")
+        meta: Dict[str, Any] = record.get("metadata", {}) or {}
+        if not self.policy.should_process(
+            str(current_status or ""), str(meta.get("status") or ""), metadata=meta
+        ):
             logger.debug(f"[UseCase] Document {doc_id} ignored by policy.")
             return
 
         # 2. Context Resolution
         try:
-            tenant_id, is_global, filename, storage_path, current_meta = self.resolver.resolve(record)
+            tenant_id, is_global, filename, storage_path, current_meta = self.resolver.resolve(
+                record
+            )
             self.policy.validate_tenant_isolation(is_global, tenant_id or "")
             collection_id = self._resolve_collection_id(record=record, metadata=current_meta)
-            
+
             if not storage_path:
                 raise ValueError(f"Missing storage_path for document {doc_id}")
 
@@ -96,7 +110,9 @@ class ProcessDocumentWorkerUseCase:
             await self.state_manager.start_processing(doc_id, filename, current_meta, tenant_id)
 
             # 4. Download Phase (Delegated)
-            bucket_name = current_meta.get("storage_bucket") if isinstance(current_meta, dict) else None
+            bucket_name = (
+                current_meta.get("storage_bucket") if isinstance(current_meta, dict) else None
+            )
             source = await self.download_service.download(
                 doc_id,
                 storage_path,
@@ -104,7 +120,7 @@ class ProcessDocumentWorkerUseCase:
                 tenant_id,
                 bucket_name=bucket_name,
             )
-            
+
             try:
                 # 5. Metadata & Strategy Resolution
                 ingestion_metadata = self.metadata_adapter.map_to_domain(
@@ -113,25 +129,29 @@ class ProcessDocumentWorkerUseCase:
                     source_id=doc_id,
                     filename=filename,
                     is_global=is_global,
-                    institution_id=tenant_id
+                    institution_id=tenant_id,
                 )
                 strategy_key = (
-                    current_meta.get("force_strategy") 
-                    or (ingestion_metadata.metadata or {}).get("strategy_override") 
-                    or await self.taxonomy_manager.resolve_strategy_slug(str(ingestion_metadata.type_id or ""))
+                    current_meta.get("force_strategy")
+                    or (ingestion_metadata.metadata or {}).get("strategy_override")
+                    or await self.taxonomy_manager.resolve_strategy_slug(
+                        str(ingestion_metadata.type_id or "")
+                    )
                 )
 
                 # 6. Dispatch to Strategy
-                await self.state_manager.log_step(doc_id, "Ejecutando pipeline de ingesta...", tenant_id=tenant_id)
-                
+                await self.state_manager.log_step(
+                    doc_id, "Ejecutando pipeline de ingesta...", tenant_id=tenant_id
+                )
+
                 # Cleanup previous data for idempotency
                 await self.content_repo.delete_chunks_by_source_id(doc_id)
 
                 result = await self.dispatcher.dispatch(
-                    source=source, 
-                    metadata=ingestion_metadata, 
+                    source=source,
+                    metadata=ingestion_metadata,
                     strategy_key=strategy_key,
-                    source_id=doc_id
+                    source_id=doc_id,
                 )
 
                 if result.status != IngestionStatus.SUCCESS.value:
@@ -163,40 +183,88 @@ class ProcessDocumentWorkerUseCase:
                     )
                     if visual_stats.get("attempted", 0) > 0:
                         current_meta["visual_anchor"] = visual_stats
-                        loss_events = int(visual_stats.get("degraded_inline", 0)) + int(
-                            visual_stats.get("parse_failed", 0)
-                        ) + int(visual_stats.get("skipped", 0))
+                        loss_events = (
+                            int(visual_stats.get("degraded_inline", 0))
+                            + int(visual_stats.get("parse_failed", 0))
+                            + int(visual_stats.get("skipped", 0))
+                        )
                         current_meta["visual_loss_indicator"] = {
                             "has_loss": loss_events > 0,
                             "loss_events": loss_events,
                             "copyright_blocks": int(visual_stats.get("parse_failed_copyright", 0)),
                         }
 
-                    # 9. RAPTOR Processing (Optional)
-                    await self.post_ingestion_service.run_raptor_if_needed(
-                        doc_id=doc_id,
-                        tenant_id=tenant_id,
-                        result=result,
-                        collection_id=collection_id,
-                    )
+                    if bool(getattr(settings, "INGESTION_ENRICHMENT_ASYNC_ENABLED", True)):
+                        try:
+                            enqueued = (
+                                await self.post_ingestion_service.enqueue_deferred_enrichment(
+                                    doc_id=doc_id,
+                                    tenant_id=tenant_id,
+                                    collection_id=collection_id,
+                                )
+                            )
+                            current_meta["enrichment"] = {
+                                "status": "queued" if enqueued else "already_queued",
+                                "async": True,
+                            }
+                            await self.state_manager.log_step(
+                                doc_id,
+                                (
+                                    "Enriquecimiento post-ingesta encolado "
+                                    "(GraphRAG + RAPTOR en background)."
+                                ),
+                                "INFO",
+                                tenant_id=tenant_id,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "deferred_enrichment_enqueue_failed",
+                                doc_id=doc_id,
+                                error=str(exc),
+                            )
+                            current_meta["enrichment"] = {
+                                "status": "enqueue_failed",
+                                "async": True,
+                                "error": str(exc),
+                            }
+                            await self.state_manager.log_step(
+                                doc_id,
+                                "No se pudo encolar enriquecimiento diferido (no fatal).",
+                                "WARNING",
+                                tenant_id=tenant_id,
+                            )
+                    else:
+                        # 9. RAPTOR Processing (Optional)
+                        await self.post_ingestion_service.run_raptor_if_needed(
+                            doc_id=doc_id,
+                            tenant_id=tenant_id,
+                            result=result,
+                            collection_id=collection_id,
+                        )
 
-                    # 10. Graph Enrichment (Optional)
-                    await self.post_ingestion_service.run_graph_if_needed(
-                        doc_id=doc_id,
-                        tenant_id=tenant_id,
-                        result=result,
-                    )
+                        # 10. Graph Enrichment (Optional)
+                        await self.post_ingestion_service.run_graph_if_needed(
+                            doc_id=doc_id,
+                            tenant_id=tenant_id,
+                            result=result,
+                        )
 
                 # 11. Success Handler
-                await self.state_manager.handle_success(doc_id, persisted_count, current_meta, tenant_id)
+                await self.state_manager.handle_success(
+                    doc_id, persisted_count, current_meta, tenant_id
+                )
 
             finally:
                 await self.post_ingestion_service.cleanup_source(source)
 
         except Exception as e:
             # 11. Atomic Error Handling
-            tenant_safe = record.get('institution_id') or record.get('metadata', {}).get('institution_id')
-            await self.state_manager.handle_error(doc_id, e, record.get('metadata', {}), tenant_id=tenant_safe)
+            tenant_safe = record.get("institution_id") or record.get("metadata", {}).get(
+                "institution_id"
+            )
+            await self.state_manager.handle_error(
+                doc_id, e, record.get("metadata", {}), tenant_id=tenant_safe
+            )
 
     @staticmethod
     def _resolve_collection_id(record: Dict[str, Any], metadata: Dict[str, Any]) -> Optional[str]:
@@ -219,7 +287,9 @@ class ProcessDocumentWorkerUseCase:
             visual_integrator=self.visual_integrator,
         )
 
-    def _build_post_ingestion_service(self, raptor_repo: SupabaseRaptorRepository) -> PostIngestionPipelineService:
+    def _build_post_ingestion_service(
+        self, raptor_repo: SupabaseRaptorRepository
+    ) -> PostIngestionPipelineService:
         return PostIngestionPipelineService(
             content_repo=self.content_repo,
             state_manager=self.state_manager,
@@ -227,7 +297,11 @@ class ProcessDocumentWorkerUseCase:
             raptor_repo=raptor_repo,
         )
 
-    async def _run_visual_anchor_if_needed(self, doc_id: str, tenant_id: Optional[str], result: Any) -> Dict[str, Any]:
+    async def _run_visual_anchor_if_needed(
+        self, doc_id: str, tenant_id: Optional[str], result: Any
+    ) -> Dict[str, Any]:
         self.visual_anchor_service.visual_parser = self.visual_parser
         self.visual_anchor_service.visual_integrator = self.visual_integrator
-        return await self.visual_anchor_service.run_if_needed(doc_id=doc_id, tenant_id=tenant_id, result=result)
+        return await self.visual_anchor_service.run_if_needed(
+            doc_id=doc_id, tenant_id=tenant_id, result=result
+        )

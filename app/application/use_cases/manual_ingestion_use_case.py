@@ -21,6 +21,7 @@ from app.infrastructure.repositories.supabase_source_repository import SupabaseS
 from uuid import uuid4
 from app.infrastructure.services.manual_ingestion_query_service import ManualIngestionQueryService
 from app.core.settings import settings
+from app.core.utils.filename_utils import sanitize_filename
 
 class ManualIngestionUseCase:
     TERMINAL_SUCCESS_STATES = {"success", "processed", "completed", "ready"}
@@ -314,8 +315,9 @@ class ManualIngestionUseCase:
                 raise ValueError(f"INVALID_METADATA_JSON: {e}")
 
         safe_filename = file.filename or f"document_{uuid4()}.bin"
+        sanitized_filename = sanitize_filename(safe_filename)
         doc_id = str(uuid4())
-        storage_path = f"{batch['tenant_id']}/{collection['collection_key']}/{batch_id}/{doc_id}_{safe_filename}"
+        storage_path = f"{batch['tenant_id']}/{collection['collection_key']}/{batch_id}/{doc_id}_{sanitized_filename}"
 
         content_bytes = await file.read()
         if not content_bytes:
