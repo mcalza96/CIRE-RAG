@@ -9,6 +9,7 @@ Ensures paridad with TypeScript PersistenceMapper.
 from typing import Dict, Any, List
 from uuid import UUID
 
+
 class PersistenceMapper:
     """
     Standardized mapper for all persistent entities in the RAG system.
@@ -25,7 +26,7 @@ class PersistenceMapper:
             return PersistenceMapper._map_regulatory_node_to_sql(domain_obj)
         elif table == "regulatory_edges":
             return PersistenceMapper._map_regulatory_edge_to_sql(domain_obj)
-        
+
         # Fallback for generic dicts
         if isinstance(domain_obj, dict):
             return domain_obj
@@ -51,26 +52,26 @@ class PersistenceMapper:
         """Maps Content Chunk to 'content_chunks' table schema."""
         # Handles both camelCase (Domain) and snake_case (Infrastructure)
         # Supports both Pydantic objects and Dicts
-        
+
         # Helper aliases
         get = PersistenceMapper._get_val
-        
+
         # IDs safely converted to string only if they exist
         source_id = get(chunk, ["sourceId", "source_id"])
-        institution_id = get(chunk, ["institutionId", "institution_id"]) or get(chunk, ["metadata"], {}).get("institution_id")
-        collection_id = get(chunk, ["collectionId", "collection_id"]) or get(chunk, ["metadata"], {}).get("collection_id")
+        chunk_id = get(chunk, ["id", "chunkId", "chunk_id"])
+        institution_id = get(chunk, ["institutionId", "institution_id"]) or get(
+            chunk, ["metadata"], {}
+        ).get("institution_id")
+        collection_id = get(chunk, ["collectionId", "collection_id"]) or get(
+            chunk, ["metadata"], {}
+        ).get("collection_id")
         # CIRE-ORCH expects metadata -> row -> metadata structure for advanced filtering.
         # However, Supabase RPC (hybrid_search) expects filters at the TOP level of metadata.
         # We duplicate critical fields to satisfy both.
         raw_metadata = get(chunk, ["metadata"], {})
-        
-        nested_metadata = {
-            "row": {
-                "metadata": raw_metadata,
-                "source_layer": "content_chunk" 
-            }
-        }
-        
+
+        nested_metadata = {"row": {"metadata": raw_metadata, "source_layer": "content_chunk"}}
+
         # Merge top-level filterable fields into the final metadata object
         final_metadata = nested_metadata.copy()
         for key in ["source_standard", "clause_id", "scope"]:
@@ -87,12 +88,12 @@ class PersistenceMapper:
             "institution_id": str(institution_id) if institution_id else None,
             "collection_id": str(collection_id) if collection_id else None,
             "is_global": get(chunk, ["isGlobal", "is_global"], False),
-            "semantic_context": get(chunk, ["semanticContext", "semantic_context"], None)
+            "semantic_context": get(chunk, ["semanticContext", "semantic_context"], None),
         }
 
         if chunk_id:
             result["id"] = str(chunk_id)
-            
+
         return result
 
     @staticmethod
@@ -101,11 +102,13 @@ class PersistenceMapper:
         return {
             "id": str(getattr(node, "id")),
             "tenant_id": str(getattr(node, "tenant_id") or getattr(node, "tenantId")),
-            "node_type": getattr(node, "node_type").value if hasattr(getattr(node, "node_type"), "value") else getattr(node, "node_type"),
+            "node_type": getattr(node, "node_type").value
+            if hasattr(getattr(node, "node_type"), "value")
+            else getattr(node, "node_type"),
             "title": getattr(node, "title"),
             "content": getattr(node, "content"),
             "properties": getattr(node, "properties", {}),
-            "embedding": getattr(node, "embedding", None)
+            "embedding": getattr(node, "embedding", None),
         }
 
     @staticmethod
@@ -114,9 +117,11 @@ class PersistenceMapper:
         return {
             "source_id": str(getattr(edge, "source_id")),
             "target_id": str(getattr(edge, "target_id")),
-            "edge_type": getattr(edge, "edge_type").value if hasattr(getattr(edge, "edge_type"), "value") else getattr(edge, "edge_type"),
+            "edge_type": getattr(edge, "edge_type").value
+            if hasattr(getattr(edge, "edge_type"), "value")
+            else getattr(edge, "edge_type"),
             "weight": getattr(edge, "weight", 1.0),
-            "metadata": getattr(edge, "metadata", {})
+            "metadata": getattr(edge, "metadata", {}),
         }
 
     @staticmethod
