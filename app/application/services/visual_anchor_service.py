@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import math
+import struct
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -70,16 +72,30 @@ class VisualAnchorService:
         cache_hit = 0
         cache_miss = 0
         parse_durations_ms: list[float] = []
-        prepared_cache_inputs: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+        prepared_cache_inputs, prepare_stats = await self._prepare_cache_inputs(
+            visual_tasks=visual_tasks
+        )
+        skipped += int(prepare_stats.get("skipped_small", 0))
+        skipped += int(prepare_stats.get("skipped_duplicate", 0))
+
         prefetched_cache: dict[str, dict[str, Any]] = {}
-        if bool(settings.VISUAL_CACHE_BATCH_PREFETCH_ENABLED):
-            prepared_cache_inputs = await self._prepare_cache_inputs(visual_tasks=visual_tasks)
+        if bool(settings.VISUAL_CACHE_BATCH_PREFETCH_ENABLED) and prepared_cache_inputs:
             prefetched_cache = await self._prefetch_visual_cache(prepared_cache_inputs)
+
+        candidate_entries: list[dict[str, Any]] = []
         for task in visual_tasks:
             page = int(task.get("page", 0) or 0)
             content_type = str(task.get("content_type", "table"))
             image_path = task.get("image_path")
             if not isinstance(image_path, str) or not image_path:
+                skipped += 1
+                continue
+
+            task_metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+            prepared_key = (image_path, content_type, self._source_metadata_key(task_metadata))
+            prepared = prepared_cache_inputs.get(prepared_key)
+            if prepared is None:
                 skipped += 1
                 continue
 
@@ -129,67 +145,85 @@ class VisualAnchorService:
                 parent_chunk_id = str(persisted_parent.get("id"))
                 parent_chunk_content = str(persisted_parent.get("content") or "")
 
-            parse_result: Any | None = None
+            candidate_entries.append(
+                {
+                    "page": page,
+                    "content_type": content_type,
+                    "image_path": image_path,
+                    "task_metadata": task_metadata,
+                    "prepared": prepared,
+                    "parent_chunk": parent_chunk,
+                    "parent_chunk_id": str(parent_chunk_id),
+                    "parent_chunk_content": str(parent_chunk_content),
+                }
+            )
+
+        parsed_entries = await self._parse_visual_entries_concurrently(
+            candidate_entries=candidate_entries,
+            prefetched_cache=prefetched_cache,
+        )
+
+        parent_content_state: dict[str, str] = {
+            str(entry.get("parent_chunk_id") or ""): str(entry.get("parent_chunk_content") or "")
+            for entry in candidate_entries
+            if str(entry.get("parent_chunk_id") or "")
+        }
+
+        for parsed in parsed_entries:
+            entry = parsed.get("entry") if isinstance(parsed, dict) else None
+            if not isinstance(entry, dict):
+                skipped += 1
+                continue
+
+            parent_chunk = (
+                entry.get("parent_chunk") if isinstance(entry.get("parent_chunk"), dict) else {}
+            )
+            parent_chunk_id = str(entry.get("parent_chunk_id") or "")
+            page = int(entry.get("page") or 0)
+            content_type = str(entry.get("content_type") or "table")
+            image_path = str(entry.get("image_path") or "")
+            task_metadata = (
+                entry.get("task_metadata") if isinstance(entry.get("task_metadata"), dict) else {}
+            )
+            parse_result = parsed.get("parse_result")
+            parse_error = parsed.get("parse_error")
+
+            raw_cache_hit = parsed.get("cache_hit")
+            if isinstance(raw_cache_hit, bool):
+                if raw_cache_hit:
+                    cache_hit += 1
+                else:
+                    cache_miss += 1
+
+            raw_duration = parsed.get("parse_duration_ms")
+            try:
+                if raw_duration is not None:
+                    parse_durations_ms.append(float(raw_duration))
+            except (TypeError, ValueError):
+                pass
+
+            raw_mode = task_metadata.get("embedding_mode") or task_metadata.get("jina_mode")
+            embedding_mode = str(raw_mode).upper() if raw_mode else None
+            if embedding_mode not in {"LOCAL", "CLOUD"}:
+                embedding_mode = None
+            raw_provider = task_metadata.get("embedding_provider")
+            embedding_provider = str(raw_provider).strip().lower() if raw_provider else None
+            if embedding_provider == "jina" and embedding_mode is None:
+                embedding_mode = str(settings.JINA_MODE or "CLOUD").upper()
+
+            parent_chunk_content = parent_content_state.get(
+                parent_chunk_id,
+                str(entry.get("parent_chunk_content") or ""),
+            )
 
             try:
-                task_metadata = (
-                    task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-                )
-                raw_mode = task_metadata.get("embedding_mode") or task_metadata.get("jina_mode")
-                embedding_mode = str(raw_mode).upper() if raw_mode else None
-                if embedding_mode not in {"LOCAL", "CLOUD"}:
-                    embedding_mode = None
-                raw_provider = task_metadata.get("embedding_provider")
-                embedding_provider = str(raw_provider).strip().lower() if raw_provider else None
-                if embedding_provider == "jina" and embedding_mode is None:
-                    embedding_mode = str(settings.JINA_MODE or "CLOUD").upper()
-                source_metadata_key = self._source_metadata_key(task_metadata)
-                prepared_key = (image_path, content_type, source_metadata_key)
-                prepared = prepared_cache_inputs.get(prepared_key)
-                parse_result = None
-
-                if prepared is not None:
-                    prefetched_row = prefetched_cache.get(
-                        self._cache_key(
-                            image_hash=prepared["image_hash"],
-                            content_type=content_type,
-                        )
-                    )
-                    if prefetched_row is not None:
-                        parse_result = self._parse_result_from_cache_row(
-                            row=prefetched_row,
-                            image_hash=str(prepared["image_hash"]),
-                            content_type=content_type,
-                        )
-                        logger.info(
-                            "visual_extraction_cache_hit_prefetch",
-                            image_hash=str(prepared["image_hash"]),
-                            content_type=content_type,
-                            image_path=image_path,
-                        )
-
+                if parse_error is not None:
+                    raise RuntimeError(str(parse_error))
                 if parse_result is None:
-                    parse_result = await self.visual_parser.parse_image(
-                        image_path=image_path,
-                        image_bytes=(prepared["image_bytes"] if prepared is not None else None),
-                        content_type=content_type,
-                        source_metadata=task_metadata,
-                    )
-                if isinstance(getattr(parse_result, "visual_metadata", None), dict):
-                    parse_meta = parse_result.visual_metadata
-                    if parse_meta.get("cache_hit") is True:
-                        cache_hit += 1
-                    elif parse_meta.get("cache_hit") is False:
-                        cache_miss += 1
-                    raw_duration = parse_meta.get("parse_duration_ms")
-                    try:
-                        if raw_duration is not None:
-                            parse_durations_ms.append(float(raw_duration))
-                    except (TypeError, ValueError):
-                        pass
+                    raise RuntimeError("visual_parse_missing_result")
 
                 integration = await self.visual_integrator.integrate_visual_node(
-                    parent_chunk_id=str(parent_chunk_id),
+                    parent_chunk_id=parent_chunk_id,
                     parent_chunk_text=parent_chunk_content,
                     image_path=image_path,
                     parse_result=parse_result,
@@ -203,7 +237,9 @@ class VisualAnchorService:
                     embedding_provider=embedding_provider,
                 )
 
-                parent_chunk["content"] = parent_chunk_content + "\n\n" + integration.anchor_token
+                updated_content = parent_chunk_content + "\n\n" + integration.anchor_token
+                parent_content_state[parent_chunk_id] = updated_content
+                parent_chunk["content"] = updated_content
                 stitched += 1
             except Exception as integration_exc:
                 if parse_result is None:
@@ -215,13 +251,11 @@ class VisualAnchorService:
                         or "copyright" in err_text
                     ):
                         parse_failed_copyright += 1
-                        image_name = (
-                            image_path.rsplit("/", 1)[-1] if isinstance(image_path, str) else ""
-                        )
+                        image_name = image_path.rsplit("/", 1)[-1] if image_path else ""
                         parse_failed_copyright_refs.append(
                             {
                                 "page": page,
-                                "parent_chunk_id": str(parent_chunk_id),
+                                "parent_chunk_id": parent_chunk_id,
                                 "image": image_name,
                             }
                         )
@@ -229,7 +263,7 @@ class VisualAnchorService:
                 logger.warning(
                     "visual_anchor_stitch_failed_inline_fallback",
                     doc_id=doc_id,
-                    parent_chunk_id=str(parent_chunk_id),
+                    parent_chunk_id=parent_chunk_id,
                     page=page,
                     stage="parse" if parse_result is None else "integrate",
                     error=str(integration_exc),
@@ -241,9 +275,10 @@ class VisualAnchorService:
                     parse_result=parse_result,
                 )
                 await self._persist_chunk_content_fallback(
-                    chunk_id=str(parent_chunk_id),
+                    chunk_id=parent_chunk_id,
                     content=fallback_content,
                 )
+                parent_content_state[parent_chunk_id] = fallback_content
                 parent_chunk["content"] = fallback_content
                 degraded_inline += 1
 
@@ -378,8 +413,11 @@ class VisualAnchorService:
 
     async def _prepare_cache_inputs(
         self, visual_tasks: list[dict[str, Any]]
-    ) -> dict[tuple[str, str, str], dict[str, Any]]:
+    ) -> tuple[dict[tuple[str, str, str], dict[str, Any]], dict[str, int]]:
         prepared: dict[tuple[str, str, str], dict[str, Any]] = {}
+        stats = {"skipped_small": 0, "skipped_duplicate": 0}
+        dedupe_enabled = bool(getattr(settings, "VISUAL_DEDUP_IN_DOCUMENT", True))
+        seen_hash_content: set[tuple[str, str]] = set()
         for task in visual_tasks:
             image_path = task.get("image_path")
             if not isinstance(image_path, str) or not image_path:
@@ -394,16 +432,180 @@ class VisualAnchorService:
 
             try:
                 image_bytes = await asyncio.to_thread(Path(image_path).read_bytes)
+                if self._is_small_image(image_bytes):
+                    stats["skipped_small"] = int(stats.get("skipped_small", 0)) + 1
+                    continue
+
+                image_hash = ImageHasher.sha256_bytes(image_bytes)
+                dedupe_key = (image_hash, content_type)
+                if dedupe_enabled and dedupe_key in seen_hash_content:
+                    stats["skipped_duplicate"] = int(stats.get("skipped_duplicate", 0)) + 1
+                    continue
+                seen_hash_content.add(dedupe_key)
+
                 prepared[key] = {
                     "image_bytes": image_bytes,
-                    "image_hash": ImageHasher.sha256_bytes(image_bytes),
+                    "image_hash": image_hash,
                     "content_type": content_type,
                 }
             except Exception as exc:
                 logger.warning(
                     "visual_cache_input_prepare_failed", image_path=image_path, error=str(exc)
                 )
-        return prepared
+        return prepared, stats
+
+    async def _parse_visual_entries_concurrently(
+        self,
+        *,
+        candidate_entries: list[dict[str, Any]],
+        prefetched_cache: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if not candidate_entries:
+            return []
+
+        max_parallel = max(1, int(getattr(settings, "VISUAL_PIPELINE_MAX_PARALLEL", 3) or 3))
+        semaphore = asyncio.Semaphore(max_parallel)
+
+        async def parse_one(entry: dict[str, Any]) -> dict[str, Any]:
+            prepared = entry.get("prepared") if isinstance(entry.get("prepared"), dict) else {}
+            content_type = str(entry.get("content_type") or "table")
+            image_path = str(entry.get("image_path") or "")
+            task_metadata = (
+                entry.get("task_metadata") if isinstance(entry.get("task_metadata"), dict) else {}
+            )
+            image_hash = str(prepared.get("image_hash") or "")
+
+            prefetched_row = (
+                prefetched_cache.get(
+                    self._cache_key(image_hash=image_hash, content_type=content_type)
+                )
+                if image_hash
+                else None
+            )
+            if prefetched_row is not None:
+                parse_result = self._parse_result_from_cache_row(
+                    row=prefetched_row,
+                    image_hash=image_hash,
+                    content_type=content_type,
+                )
+                return {
+                    "entry": entry,
+                    "parse_result": parse_result,
+                    "parse_error": None,
+                    "cache_hit": True,
+                    "parse_duration_ms": 0.0,
+                }
+
+            try:
+                async with semaphore:
+                    parse_result = await self.visual_parser.parse_image(
+                        image_path=image_path,
+                        image_bytes=(
+                            prepared.get("image_bytes")
+                            if isinstance(prepared.get("image_bytes"), bytes)
+                            else None
+                        ),
+                        content_type=content_type,
+                        source_metadata=task_metadata,
+                    )
+                parse_meta = (
+                    parse_result.visual_metadata
+                    if isinstance(parse_result.visual_metadata, dict)
+                    else {}
+                )
+                return {
+                    "entry": entry,
+                    "parse_result": parse_result,
+                    "parse_error": None,
+                    "cache_hit": parse_meta.get("cache_hit"),
+                    "parse_duration_ms": parse_meta.get("parse_duration_ms"),
+                }
+            except Exception as exc:
+                return {
+                    "entry": entry,
+                    "parse_result": None,
+                    "parse_error": str(exc),
+                    "cache_hit": None,
+                    "parse_duration_ms": None,
+                }
+
+        return await asyncio.gather(*(parse_one(entry) for entry in candidate_entries))
+
+    @staticmethod
+    def _is_small_image(image_bytes: bytes) -> bool:
+        min_bytes = max(0, int(getattr(settings, "VISUAL_MIN_IMAGE_BYTES", 16384) or 16384))
+        if len(image_bytes) < min_bytes:
+            return True
+
+        min_w = max(1, int(getattr(settings, "VISUAL_MIN_IMAGE_WIDTH", 200) or 200))
+        min_h = max(1, int(getattr(settings, "VISUAL_MIN_IMAGE_HEIGHT", 200) or 200))
+        dims = VisualAnchorService._read_image_dimensions(image_bytes)
+        if dims is None:
+            return False
+        width, height = dims
+        return width < min_w or height < min_h
+
+    @staticmethod
+    def _read_image_dimensions(image_bytes: bytes) -> tuple[int, int] | None:
+        if not image_bytes:
+            return None
+
+        try:
+            from PIL import Image  # type: ignore
+
+            with Image.open(BytesIO(image_bytes)) as img:
+                return int(img.width), int(img.height)
+        except Exception:
+            pass
+
+        if image_bytes.startswith(b"\x89PNG\r\n\x1a\n") and len(image_bytes) >= 24:
+            try:
+                width = struct.unpack(">I", image_bytes[16:20])[0]
+                height = struct.unpack(">I", image_bytes[20:24])[0]
+                return int(width), int(height)
+            except Exception:
+                return None
+
+        if image_bytes.startswith(b"\xff\xd8"):
+            idx = 2
+            total = len(image_bytes)
+            sof_markers = {
+                0xC0,
+                0xC1,
+                0xC2,
+                0xC3,
+                0xC5,
+                0xC6,
+                0xC7,
+                0xC9,
+                0xCA,
+                0xCB,
+                0xCD,
+                0xCE,
+                0xCF,
+            }
+            while idx + 9 < total:
+                if image_bytes[idx] != 0xFF:
+                    idx += 1
+                    continue
+                marker = image_bytes[idx + 1]
+                idx += 2
+                if marker in {0xD8, 0xD9}:
+                    continue
+                if idx + 2 > total:
+                    break
+                segment_len = int.from_bytes(image_bytes[idx : idx + 2], "big")
+                if segment_len < 2 or idx + segment_len > total:
+                    break
+                if marker in sof_markers:
+                    if idx + 7 <= total:
+                        height = int.from_bytes(image_bytes[idx + 3 : idx + 5], "big")
+                        width = int.from_bytes(image_bytes[idx + 5 : idx + 7], "big")
+                        return int(width), int(height)
+                    break
+                idx += segment_len
+
+        return None
 
     async def _prefetch_visual_cache(
         self,

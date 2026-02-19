@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import random
 from typing import Dict, Any, Optional
 from uuid import UUID
 from datetime import datetime, timedelta, timezone
@@ -10,7 +11,10 @@ from app.domain.policies.ingestion_policy import IngestionPolicy
 from app.application.use_cases.process_document_worker_use_case import ProcessDocumentWorkerUseCase
 from app.services.database.taxonomy_manager import TaxonomyManager
 from app.infrastructure.adapters.supabase_metadata_adapter import SupabaseMetadataAdapter
-from app.infrastructure.supabase.client import get_async_supabase_client
+from app.infrastructure.supabase.client import (
+    get_async_supabase_client,
+    reset_async_supabase_client,
+)
 from app.services.knowledge.clustering_service import ClusteringService
 from app.core.settings import settings
 import app.workflows.ingestion.strategies  # Trigger strategy registration
@@ -183,13 +187,82 @@ class IngestionWorker:
             return False
 
     async def _fetch_next_job(self, job_type: str) -> Optional[Dict[str, Any]]:
-        client = await self.get_client()
-        response = await client.rpc("fetch_next_job", {"p_job_type": str(job_type)}).execute()
-        jobs = response.data if isinstance(response.data, list) else []
-        if not jobs:
-            return None
-        first = jobs[0]
-        return first if isinstance(first, dict) else None
+        max_retries = max(
+            0,
+            int(getattr(settings, "WORKER_SUPABASE_TRANSIENT_MAX_RETRIES", 3) or 3),
+        )
+        base_delay = max(
+            0.05,
+            float(getattr(settings, "WORKER_SUPABASE_TRANSIENT_BASE_DELAY_SECONDS", 0.4) or 0.4),
+        )
+
+        for attempt in range(max_retries + 1):
+            try:
+                client = await self.get_client()
+                response = await client.rpc(
+                    "fetch_next_job", {"p_job_type": str(job_type)}
+                ).execute()
+                jobs = response.data if isinstance(response.data, list) else []
+                if not jobs:
+                    return None
+                first = jobs[0]
+                return first if isinstance(first, dict) else None
+            except Exception as exc:
+                if not self._is_transient_supabase_transport_error(exc):
+                    raise
+                await self._reset_supabase_client_after_transport_error(
+                    error=exc,
+                    operation="fetch_next_job",
+                    attempt=attempt + 1,
+                    max_attempts=max_retries + 1,
+                    job_type=job_type,
+                )
+                if attempt >= max_retries:
+                    raise
+                delay = min(base_delay * (2**attempt), 3.0) + random.uniform(0.0, 0.12)
+                await asyncio.sleep(delay)
+
+        return None
+
+    async def _reset_supabase_client_after_transport_error(
+        self,
+        *,
+        error: Exception,
+        operation: str,
+        attempt: int,
+        max_attempts: int,
+        job_type: str,
+    ) -> None:
+        logger.warning(
+            "worker_supabase_transport_error operation=%s job_type=%s attempt=%s/%s error=%s",
+            operation,
+            job_type,
+            attempt,
+            max_attempts,
+            str(error),
+        )
+        self._client = None
+        reset_async_supabase_client()
+
+    @staticmethod
+    def _is_transient_supabase_transport_error(exc: Exception) -> bool:
+        name = exc.__class__.__name__.lower()
+        text = str(exc or "").lower()
+        transient_markers = (
+            "readerror",
+            "connecterror",
+            "remoteprotocolerror",
+            "timeouterror",
+            "pooltimeout",
+            "temporarily unavailable",
+            "connection reset",
+            "broken pipe",
+        )
+        if any(marker in name for marker in transient_markers):
+            return True
+        if any(marker in text for marker in transient_markers):
+            return True
+        return False
 
     async def _load_source_document(self, source_document_id: str) -> Optional[Dict[str, Any]]:
         client = await self.get_client()
@@ -350,25 +423,75 @@ class IngestionWorker:
 
     async def _poller_loop(self, poller_id: int) -> None:
         logger.info("Ingestion poller started id=%s", poller_id)
+        consecutive_errors = 0
         while self.is_running:
             try:
                 processed = await self._run_single_ingestion_job(poller_id=poller_id)
+                if processed:
+                    consecutive_errors = 0
                 if not processed:
                     await asyncio.sleep(self.worker_poll_interval_seconds)
             except Exception as exc:
                 logger.error("poller=%s ingestion_loop_error=%s", poller_id, exc, exc_info=True)
+                consecutive_errors += 1
+                await self._maybe_cooldown_after_transport_errors(
+                    poller_id=poller_id,
+                    loop_name="ingestion",
+                    consecutive_errors=consecutive_errors,
+                    error=exc,
+                )
                 await asyncio.sleep(self.worker_poll_interval_seconds)
 
     async def _enrichment_poller_loop(self, poller_id: int) -> None:
         logger.info("Enrichment poller started id=%s", poller_id)
+        consecutive_errors = 0
         while self.is_running:
             try:
                 processed = await self._run_single_enrichment_job(poller_id=poller_id)
+                if processed:
+                    consecutive_errors = 0
                 if not processed:
                     await asyncio.sleep(self.worker_poll_interval_seconds)
             except Exception as exc:
                 logger.error("poller=%s enrichment_loop_error=%s", poller_id, exc, exc_info=True)
+                consecutive_errors += 1
+                await self._maybe_cooldown_after_transport_errors(
+                    poller_id=poller_id,
+                    loop_name="enrichment",
+                    consecutive_errors=consecutive_errors,
+                    error=exc,
+                )
                 await asyncio.sleep(self.worker_poll_interval_seconds)
+
+    async def _maybe_cooldown_after_transport_errors(
+        self,
+        *,
+        poller_id: int,
+        loop_name: str,
+        consecutive_errors: int,
+        error: Exception,
+    ) -> None:
+        if not self._is_transient_supabase_transport_error(error):
+            return
+        threshold = max(
+            1,
+            int(getattr(settings, "WORKER_SUPABASE_ERROR_COOLDOWN_THRESHOLD", 4) or 4),
+        )
+        if consecutive_errors < threshold:
+            return
+        cooldown_seconds = max(
+            0.5,
+            float(getattr(settings, "WORKER_SUPABASE_ERROR_COOLDOWN_SECONDS", 6.0) or 6.0),
+        )
+        logger.warning(
+            "worker_transport_circuit_cooldown poller=%s loop=%s consecutive_errors=%s threshold=%s cooldown_seconds=%s",
+            poller_id,
+            loop_name,
+            consecutive_errors,
+            threshold,
+            cooldown_seconds,
+        )
+        await asyncio.sleep(cooldown_seconds)
 
     async def _get_tenant_semaphore(self, tenant_key: str) -> asyncio.Semaphore:
         async with self._tenant_semaphores_lock:

@@ -6,7 +6,9 @@ logger = structlog.get_logger(__name__)
 
 PATTERNS = {
     "exercise_id": re.compile(r"(?:Ejercicio|Problema|Actividad)\s+(\d+(?:\.\d+)?)", re.IGNORECASE),
-    "theorem_id": re.compile(r"(?:Teorema|Lema|Corolario|Proposición)\s+(\d+(?:\.\d+)?)", re.IGNORECASE),
+    "theorem_id": re.compile(
+        r"(?:Teorema|Lema|Corolario|Proposición)\s+(\d+(?:\.\d+)?)", re.IGNORECASE
+    ),
     "definition_id": re.compile(r"(?:Definición)\s+(\d+(?:\.\d+)?)", re.IGNORECASE),
     "example_id": re.compile(r"(?:Ejemplo)\s+(\d+(?:\.\d+)?)", re.IGNORECASE),
     "section_id": re.compile(r"(?:Sección)\s+(\d+(?:\.\d+)?)", re.IGNORECASE),
@@ -22,6 +24,16 @@ CLAUSE_TITLE_PATTERN = re.compile(
 )
 
 
+def _canonical_standard(raw: str) -> str:
+    value = str(raw or "").strip()
+    if not value:
+        return ""
+    match = re.search(r"\b(?:ISO\s*[-:]?\s*)?(\d{4,5})\b", value, flags=re.IGNORECASE)
+    if not match:
+        return value.upper()
+    return f"ISO {match.group(1)}"
+
+
 def enrich_metadata(text: str, current_metadata: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     """Scan text patterns and enrich metadata deterministically."""
     updates: Dict[str, Any] = {}
@@ -34,20 +46,24 @@ def enrich_metadata(text: str, current_metadata: Dict[str, Any]) -> Tuple[str, D
             updates[key] = value
             found_tags.append(f"[{key.upper()}: {value}]")
 
-    iso_match = ISO_PATTERN.search(text)
-    if iso_match:
-        standard = f"ISO {iso_match.group(1)}"
-        updates["source_standard"] = standard
-        updates["scope"] = standard
+    iso_matches = [f"ISO {m}" for m in ISO_PATTERN.findall(text)]
+    standards = list(dict.fromkeys(_canonical_standard(s) for s in iso_matches if s))
+    if standards:
+        updates["source_standard"] = standards[0]
+        updates["scope"] = standards[0]
+        if len(standards) > 1:
+            updates["source_standards"] = standards
 
     clause_refs = list(dict.fromkeys(CLAUSE_PATTERN.findall(text)))
     if clause_refs:
         updates["clause_refs"] = clause_refs[:20]
+        updates.setdefault("clause_id", clause_refs[0])
 
     clause_title_match = CLAUSE_TITLE_PATTERN.search(text)
     if clause_title_match:
         updates["clause_anchor"] = clause_title_match.group(1)
         updates["clause_title"] = clause_title_match.group(2).strip()
+        updates.setdefault("clause_id", clause_title_match.group(1))
 
     new_metadata = current_metadata.copy()
     new_metadata.update(updates)

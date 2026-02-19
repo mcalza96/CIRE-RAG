@@ -59,9 +59,24 @@ class CohereCloudProvider(IEmbeddingProvider):
             return []
         inputs = [str(text or "") for text in texts]
         input_type = "search_query" if str(task or "") == "retrieval.query" else "search_document"
+        max_texts = max(
+            1,
+            min(
+                96,
+                int(getattr(settings, "COHERE_MAX_TEXTS_PER_REQUEST", 96) or 96),
+            ),
+        )
+        vectors: List[List[float]] = []
+        for idx in range(0, len(inputs), max_texts):
+            batch = inputs[idx : idx + max_texts]
+            batch_vectors = await self._embed_batch(batch, input_type=input_type)
+            vectors.extend(batch_vectors)
+        return vectors
+
+    async def _embed_batch(self, texts: List[str], *, input_type: str) -> List[List[float]]:
         payload = {
             "model": self._model_name,
-            "texts": inputs,
+            "texts": texts,
             "input_type": input_type,
             "embedding_types": ["float"],
             "truncate": "END",
@@ -72,7 +87,7 @@ class CohereCloudProvider(IEmbeddingProvider):
             async with session.post(self.base_url, json=payload) as response:
                 if response.status >= 400:
                     body = await response.text()
-                    raise RuntimeError(f"cohere_embed_error:{response.status}:{body[:240]}")
+                    raise RuntimeError(f"cohere_embed_error:{response.status}:{body[:320]}")
                 data = await response.json()
 
         embeddings_obj = data.get("embeddings") if isinstance(data, dict) else None
@@ -85,19 +100,19 @@ class CohereCloudProvider(IEmbeddingProvider):
         for vec in float_vectors:
             if isinstance(vec, list):
                 vectors.append([float(v) for v in vec])
-        if len(vectors) == len(inputs):
+        if len(vectors) == len(texts):
             return vectors
 
         logger.warning(
             "cohere_embed_unexpected_shape",
-            requested=len(inputs),
+            requested=len(texts),
             received=len(vectors),
         )
         if vectors:
             return vectors + [
-                [0.0] * self._dimensions for _ in range(max(0, len(inputs) - len(vectors)))
+                [0.0] * self._dimensions for _ in range(max(0, len(texts) - len(vectors)))
             ]
-        return [[0.0] * self._dimensions for _ in inputs]
+        return [[0.0] * self._dimensions for _ in texts]
 
     async def chunk_and_encode(self, text: str) -> List[Dict[str, Any]]:
         chunks = self._split_text_simple(str(text or ""), limit=1000)

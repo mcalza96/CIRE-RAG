@@ -24,6 +24,9 @@ logger = structlog.get_logger(__name__)
 HYBRID_RPC_SIGNATURE_MISMATCH_HNSW = "HYBRID_RPC_SIGNATURE_MISMATCH_HNSW"
 _QUERY_STANDARD_RE = re.compile(r"\biso\s*[-:]?\s*(\d{4,5})\b", flags=re.IGNORECASE)
 _CLAUSE_RE = re.compile(r"\b\d+(?:\.\d+)+\b")
+_CLAUSE_HINT_RE = re.compile(
+    r"\b(cl(?:a|á)usula|clause|numeral|apartado|secci[oó]n)\b", flags=re.IGNORECASE
+)
 
 
 class AtomicRetrievalEngine:
@@ -385,7 +388,20 @@ class AtomicRetrievalEngine:
     ) -> list[dict[str, Any]]:
         client = await self._get_client()
         effective_query_text = query_text if settings.ATOMIC_ENABLE_FTS else ""
-        effective_fts_weight = settings.ATOMIC_RRF_FTS_WEIGHT if settings.ATOMIC_ENABLE_FTS else 0.0
+        vector_weight = float(settings.ATOMIC_RRF_VECTOR_WEIGHT)
+        effective_fts_weight = (
+            float(settings.ATOMIC_RRF_FTS_WEIGHT) if settings.ATOMIC_ENABLE_FTS else 0.0
+        )
+        if settings.ATOMIC_ENABLE_FTS and self._is_clause_heavy_query(query_text):
+            if bool(getattr(settings, "ATOMIC_CLAUSE_QUERY_WEIGHT_BOOST_ENABLED", True)):
+                vector_weight = float(
+                    getattr(settings, "ATOMIC_CLAUSE_QUERY_RRF_VECTOR_WEIGHT", vector_weight)
+                    or vector_weight
+                )
+                effective_fts_weight = float(
+                    getattr(settings, "ATOMIC_CLAUSE_QUERY_RRF_FTS_WEIGHT", effective_fts_weight)
+                    or effective_fts_weight
+                )
         rpc_payload: dict[str, Any] = {
             "query_embedding": query_vector,
             "query_text": effective_query_text,
@@ -393,7 +409,7 @@ class AtomicRetrievalEngine:
             "match_threshold": settings.ATOMIC_MATCH_THRESHOLD,
             "match_count": max(fetch_k, 1),
             "rrf_k": settings.ATOMIC_RRF_K,
-            "vector_weight": settings.ATOMIC_RRF_VECTOR_WEIGHT,
+            "vector_weight": vector_weight,
             "fts_weight": effective_fts_weight,
         }
         if include_hnsw_ef_search:
@@ -424,6 +440,18 @@ class AtomicRetrievalEngine:
                 }
             )
         return normalized
+
+    @staticmethod
+    def _is_clause_heavy_query(query_text: str) -> bool:
+        text = str(query_text or "")
+        if not text:
+            return False
+        clause_count = len(_CLAUSE_RE.findall(text))
+        if clause_count >= 2:
+            return True
+        if clause_count >= 1 and _CLAUSE_HINT_RE.search(text):
+            return True
+        return False
 
     async def retrieve_context_from_plan(
         self,

@@ -36,16 +36,16 @@ class JinaEmbeddingService:
 
             self.local_provider: Optional[IEmbeddingProvider] = None
             self.is_deployed_environment = settings.is_deployed_environment
+            jina_key = str(settings.JINA_API_KEY or "")
+            cohere_key = str(getattr(settings, "COHERE_API_KEY", "") or "")
 
             # Providers
             self.jina_cloud_provider: Optional[IEmbeddingProvider] = (
-                JinaCloudProvider(api_key=settings.JINA_API_KEY) if settings.JINA_API_KEY else None
+                JinaCloudProvider(api_key=jina_key) if jina_key else None
             )
             self.cloud_provider = self.jina_cloud_provider
             self.cohere_cloud_provider: Optional[IEmbeddingProvider] = (
-                CohereCloudProvider(api_key=settings.COHERE_API_KEY)
-                if getattr(settings, "COHERE_API_KEY", None)
-                else None
+                CohereCloudProvider(api_key=cohere_key) if cohere_key else None
             )
 
             # Default behavior from env
@@ -55,14 +55,13 @@ class JinaEmbeddingService:
                 .strip()
                 .lower()
             )
-            self.ingest_default_provider = (
-                str(
-                    getattr(settings, "INGEST_EMBED_PROVIDER_DEFAULT", self.default_provider)
-                    or self.default_provider
-                )
-                .strip()
-                .lower()
-            )
+            ingest_override = getattr(settings, "INGEST_EMBED_PROVIDER_DEFAULT", None)
+            if ingest_override:
+                self.ingest_default_provider = str(ingest_override).strip().lower()
+            elif self.cohere_cloud_provider is not None:
+                self.ingest_default_provider = "cohere"
+            else:
+                self.ingest_default_provider = self.default_provider
             allowlist_raw = str(
                 getattr(settings, "EMBEDDING_PROVIDER_ALLOWLIST", "jina,cohere") or ""
             )
@@ -132,6 +131,44 @@ class JinaEmbeddingService:
             selected = self.default_provider
         return selected
 
+    @staticmethod
+    def _is_technical_provider_error(exc: Exception) -> bool:
+        name = exc.__class__.__name__.lower()
+        text = str(exc or "").lower()
+        markers = (
+            "timeout",
+            "timed out",
+            "connection",
+            "readerror",
+            "connecterror",
+            "429",
+            "rate limit",
+            "503",
+            "502",
+            "504",
+            "temporarily unavailable",
+        )
+        if any(marker in name for marker in markers):
+            return True
+        if any(marker in text for marker in markers):
+            return True
+        return False
+
+    def _resolve_ingest_fallback_provider(self, requested_provider: Optional[str]) -> Optional[str]:
+        if not bool(getattr(settings, "INGEST_EMBED_FALLBACK_ON_TECHNICAL_ERROR", True)):
+            return None
+        primary = self._resolve_provider_name(requested_provider)
+        fallback = (
+            str(getattr(settings, "INGEST_EMBED_FALLBACK_PROVIDER", "jina") or "jina")
+            .strip()
+            .lower()
+        )
+        if fallback == primary:
+            return None
+        if fallback not in self.allowed_providers:
+            return None
+        return fallback
+
     def _get_provider(
         self, mode: Optional[str] = None, provider: Optional[str] = None
     ) -> IEmbeddingProvider:
@@ -186,10 +223,18 @@ class JinaEmbeddingService:
             or self.default_provider
         )
         requested_mode = meta.get("embedding_mode") or meta.get("jina_mode")
-        return self.resolve_embedding_profile(
+        profile = self.resolve_embedding_profile(
             provider=str(requested_provider) if requested_provider else None,
             mode=str(requested_mode) if requested_mode else None,
         )
+        fallback_provider = self._resolve_ingest_fallback_provider(
+            str(requested_provider) if requested_provider else None
+        )
+        profile["fallback_provider"] = fallback_provider
+        profile["fallback_on_technical_error"] = bool(
+            getattr(settings, "INGEST_EMBED_FALLBACK_ON_TECHNICAL_ERROR", True)
+        )
+        return profile
 
     def ensure_profile_compatibility(
         self,
@@ -268,6 +313,7 @@ class JinaEmbeddingService:
 
         # Delegate to provider
         runtime_provider = self._get_provider(mode=mode, provider=provider)
+        requested_provider_name = self._resolve_provider_name(provider)
         try:
             async with self._embedding_semaphore:
                 embeddings = await runtime_provider.embed(unique_texts, task=task)
@@ -287,6 +333,46 @@ class JinaEmbeddingService:
 
             return cast(List[List[float]], final_embeddings)
         except Exception as e:
+            fallback_provider = self._resolve_ingest_fallback_provider(provider)
+            should_try_fallback = (
+                task != "retrieval.query"
+                and fallback_provider is not None
+                and requested_provider_name == "cohere"
+                and self._is_technical_provider_error(e)
+            )
+            if should_try_fallback:
+                logger.warning(
+                    "embedding_provider_fallback_attempt",
+                    primary_provider=requested_provider_name,
+                    fallback_provider=fallback_provider,
+                    error=str(e),
+                    texts_count=len(texts),
+                    task=task,
+                )
+                fallback_runtime_provider = self._get_provider(
+                    mode=mode, provider=fallback_provider
+                )
+                async with self._embedding_semaphore:
+                    embeddings = await fallback_runtime_provider.embed(unique_texts, task=task)
+                for key, emb in zip(unique_keys, embeddings):
+                    for idx in key_to_indices.get(key, []):
+                        final_embeddings[idx] = emb
+                    if is_query_task:
+                        with self._cache_lock:
+                            expires_at = time.monotonic() + float(self._cache_ttl_seconds)
+                            self._cache[key] = (emb, expires_at)
+                            self._cache.move_to_end(key)
+                            while len(self._cache) > self._cache_max_size:
+                                self._cache.popitem(last=False)
+                logger.warning(
+                    "embedding_provider_fallback_succeeded",
+                    primary_provider=requested_provider_name,
+                    applied_provider=fallback_provider,
+                    texts_count=len(texts),
+                    task=task,
+                )
+                return cast(List[List[float]], final_embeddings)
+
             logger.error("embedding_generation_failed", error=str(e), texts_count=len(texts))
             raise e
 
@@ -298,9 +384,34 @@ class JinaEmbeddingService:
         provider: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         runtime_provider = self._get_provider(mode=mode, provider=provider)
+        requested_provider_name = self._resolve_provider_name(provider)
         try:
             async with self._embedding_semaphore:
                 return await runtime_provider.chunk_and_encode(text)
         except Exception as e:
+            fallback_provider = self._resolve_ingest_fallback_provider(provider)
+            should_try_fallback = (
+                fallback_provider is not None
+                and requested_provider_name == "cohere"
+                and self._is_technical_provider_error(e)
+            )
+            if should_try_fallback:
+                logger.warning(
+                    "chunk_and_encode_provider_fallback_attempt",
+                    primary_provider=requested_provider_name,
+                    fallback_provider=fallback_provider,
+                    error=str(e),
+                )
+                fallback_runtime_provider = self._get_provider(
+                    mode=mode, provider=fallback_provider
+                )
+                async with self._embedding_semaphore:
+                    chunks = await fallback_runtime_provider.chunk_and_encode(text)
+                logger.warning(
+                    "chunk_and_encode_provider_fallback_succeeded",
+                    primary_provider=requested_provider_name,
+                    applied_provider=fallback_provider,
+                )
+                return chunks
             logger.error(f"Error in chunk_and_encode: {e}")
             raise e

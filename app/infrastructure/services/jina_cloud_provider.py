@@ -28,6 +28,20 @@ class JinaCloudProvider(IEmbeddingProvider):
         )
         self._rate_limited_until: float = 0.0
         self._rate_limit_lock = asyncio.Lock()
+        self._configured_batch_size = max(1, min(32, int(settings.JINA_BATCH_SIZE or 8)))
+        self._batch_min_size = max(
+            1,
+            min(self._configured_batch_size, int(getattr(settings, "JINA_BATCH_MIN_SIZE", 4) or 4)),
+        )
+        self._dynamic_batch_size = self._configured_batch_size
+        self._adaptive_batching_enabled = bool(
+            getattr(settings, "JINA_ADAPTIVE_BATCHING_ENABLED", True)
+        )
+        self._batch_recovery_step = max(
+            1,
+            int(getattr(settings, "JINA_BATCH_RECOVERY_STEP", 1) or 1),
+        )
+        self._batch_lock = asyncio.Lock()
         if self._model_name != AIModelConfig.JINA_MODEL_NAME:
             logger.info(
                 "jina_cloud_model_name_normalized",
@@ -121,13 +135,15 @@ class JinaCloudProvider(IEmbeddingProvider):
                 indices_map.append(idx)
 
         # 2. Batching (Reducido para evitar rate limits)
-        batch_size = max(1, min(32, int(settings.JINA_BATCH_SIZE or 8)))
+        batch_size = await self._get_current_batch_size()
         batch_delay = float(settings.JINA_BATCH_RATE_LIMIT_DELAY_SECONDS or 1.0)
         all_embeddings = []
 
         session = await self._get_session()
 
-        for i in range(0, len(processed_texts), batch_size):
+        i = 0
+        while i < len(processed_texts):
+            batch_size = await self._get_current_batch_size()
             batch = processed_texts[i : i + batch_size]
 
             # Rate limiting entre batches (excepto el primero)
@@ -153,6 +169,8 @@ class JinaCloudProvider(IEmbeddingProvider):
             ]
             sorted_data = sorted(entries, key=lambda x: int(x.get("index", 0)))
             all_embeddings.extend([item["embedding"] for item in sorted_data])
+            await self._register_batch_success()
+            i += len(batch)
 
         # 3. Reconstrucción (Mean Pooling para textos divididos)
         # Si tuviste que dividir un texto gigante, promedias sus vectores
@@ -255,8 +273,9 @@ class JinaCloudProvider(IEmbeddingProvider):
         chunks = self._split_text_simple(text)
         embeddings = []
 
-        batch_size = 32
-        for i in range(0, len(chunks), batch_size):
+        i = 0
+        while i < len(chunks):
+            batch_size = await self._get_current_batch_size()
             batch = chunks[i : i + batch_size]
             try:
                 payload = await self._post_with_retry(
@@ -274,9 +293,11 @@ class JinaCloudProvider(IEmbeddingProvider):
                 ]
                 sorted_d = sorted(entries, key=lambda x: int(x.get("index", 0)))
                 embeddings.extend([x["embedding"] for x in sorted_d])
+                await self._register_batch_success()
             except Exception as exc:
                 logger.error("cloud_embedding_fallback_failed", error=str(exc))
                 embeddings.extend([[0.0] * self._dimensions] * len(batch))
+            i += len(batch)
 
         results = []
         offset = 0
@@ -335,6 +356,9 @@ class JinaCloudProvider(IEmbeddingProvider):
                                     base_delay * (backoff_429_multiplier ** (attempt - 1)),
                                 ),
                             )
+                            await self._register_batch_rate_limit(
+                                current_batch_size=len(data.get("input", []))
+                            )
                             await self._register_rate_limit_delay(delay)
                             logger.warning(
                                 "jina_embed_rate_limit_retry",
@@ -342,6 +366,7 @@ class JinaCloudProvider(IEmbeddingProvider):
                                 attempt=attempt,
                                 delay_seconds=delay,
                                 batch_size=len(data.get("input", [])),
+                                next_batch_size=self._dynamic_batch_size,
                             )
                         else:
                             delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
@@ -362,6 +387,36 @@ class JinaCloudProvider(IEmbeddingProvider):
         if last_error is not None:
             raise last_error
         raise Exception("Jina API Error: retry exhausted")
+
+    async def _get_current_batch_size(self) -> int:
+        if not self._adaptive_batching_enabled:
+            return self._configured_batch_size
+        async with self._batch_lock:
+            return int(self._dynamic_batch_size)
+
+    async def _register_batch_rate_limit(self, *, current_batch_size: int) -> None:
+        if not self._adaptive_batching_enabled:
+            return
+        async with self._batch_lock:
+            target = max(self._batch_min_size, current_batch_size // 2)
+            if target < self._dynamic_batch_size:
+                logger.warning(
+                    "jina_embed_adaptive_batch_reduce",
+                    from_batch_size=self._dynamic_batch_size,
+                    to_batch_size=target,
+                )
+                self._dynamic_batch_size = target
+
+    async def _register_batch_success(self) -> None:
+        if not self._adaptive_batching_enabled:
+            return
+        async with self._batch_lock:
+            if self._dynamic_batch_size >= self._configured_batch_size:
+                return
+            self._dynamic_batch_size = min(
+                self._configured_batch_size,
+                self._dynamic_batch_size + self._batch_recovery_step,
+            )
 
     async def _register_rate_limit_delay(self, delay_seconds: float) -> None:
         cooldown_floor = max(0.0, float(settings.JINA_RATE_LIMIT_COOLDOWN_SECONDS or 0.0))

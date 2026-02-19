@@ -164,12 +164,19 @@ class CurriculumContentStrategy(IngestionStrategy):
         )
         embedding_engine = JinaEmbeddingService.get_instance()
         embedding_profile = embedding_engine.resolve_ingestion_profile(metadata.metadata)
+        embedding_provider_applied = str(embedding_profile.get("provider") or "jina")
+        logger.info(
+            "embedding_provider_applied",
+            provider=embedding_provider_applied,
+            model=embedding_profile.get("model"),
+            source_id=metadata.source_id,
+        )
         chunking_service = ChunkingService(parser)
 
         late_chunks = await chunking_service.chunk_document_with_late_chunking(
             full_text=full_text,
             embedding_mode=embedding_mode,
-            embedding_provider=embedding_provider,
+            embedding_provider=embedding_provider_applied,
             max_chars=AIModelConfig.MAX_CHARACTERS_PER_CHUNKING_BLOCK,
         )
 
@@ -200,6 +207,7 @@ class CurriculumContentStrategy(IngestionStrategy):
             metadata={
                 "parser": "hybrid_router_text_extraction",
                 "embedding_provider": embedding_profile.get("provider"),
+                "embedding_provider_applied": embedding_provider_applied,
                 "embedding_model": embedding_profile.get("model"),
                 "embedding_dimensions": embedding_profile.get("dimensions"),
                 "embedding_profile": embedding_profile,
@@ -218,6 +226,7 @@ class CurriculumContentStrategy(IngestionStrategy):
                                 **(task.metadata or {}),
                                 "embedding_mode": embedding_mode,
                                 "embedding_provider": embedding_profile.get("provider"),
+                                "embedding_provider_applied": embedding_provider_applied,
                                 "embedding_profile": embedding_profile,
                             },
                         }
@@ -330,13 +339,20 @@ class FastCurriculumContentStrategy(CurriculumContentStrategy):
             else None
         )
         embedding_profile = chunker.resolve_ingestion_profile(metadata.metadata)
+        embedding_provider_applied = str(embedding_profile.get("provider") or "jina")
+        logger.info(
+            "embedding_provider_applied",
+            provider=embedding_provider_applied,
+            model=embedding_profile.get("model"),
+            source_id=metadata.source_id,
+        )
         logger.info("requesting_batch_embeddings", count=len(text_chunks), mode=embedding_mode)
 
         # FIXED: Calling embed_texts which was missing in original implementation
         embeddings = await chunker.embed_texts(
             text_chunks,
             mode=embedding_mode,
-            provider=embedding_provider,
+            provider=embedding_provider_applied,
         )
 
         all_chunks_data = []
@@ -368,6 +384,7 @@ class FastCurriculumContentStrategy(CurriculumContentStrategy):
             metadata={
                 "parser": "PdfParserService",
                 "embedding_provider": embedding_profile.get("provider"),
+                "embedding_provider_applied": embedding_provider_applied,
                 "embedding_model": embedding_profile.get("model"),
                 "embedding_dimensions": embedding_profile.get("dimensions"),
                 "embedding_profile": embedding_profile,
@@ -435,10 +452,17 @@ class PreProcessedContentStrategy(IngestionStrategy):
         )
         embedding_engine = JinaEmbeddingService.get_instance()
         embedding_profile = embedding_engine.resolve_ingestion_profile(metadata.metadata)
+        embedding_provider_applied = str(embedding_profile.get("provider") or "jina")
+        logger.info(
+            "embedding_provider_applied",
+            provider=embedding_provider_applied,
+            model=embedding_profile.get("model"),
+            source_id=metadata.source_id,
+        )
         late_chunks = await chunking_service.chunk_document_with_late_chunking(
             full_text=full_text,
             embedding_mode=embedding_mode,
-            embedding_provider=embedding_provider,
+            embedding_provider=embedding_provider_applied,
             max_chars=4000,
         )
 
@@ -480,6 +504,7 @@ class PreProcessedContentStrategy(IngestionStrategy):
             metadata={
                 "parser": "pre_processed_structural",
                 "embedding_provider": embedding_profile.get("provider"),
+                "embedding_provider_applied": embedding_provider_applied,
                 "embedding_model": embedding_profile.get("model"),
                 "embedding_dimensions": embedding_profile.get("dimensions"),
                 "embedding_profile": embedding_profile,
