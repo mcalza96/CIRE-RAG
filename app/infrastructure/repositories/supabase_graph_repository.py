@@ -29,6 +29,28 @@ class SupabaseGraphRepository:
         return (text or "").strip().casefold()
 
     @staticmethod
+    def _uuid_text(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text or text.lower() == "none":
+            return None
+        try:
+            return str(UUID(text))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _is_pg_code(error: Exception, code: str) -> bool:
+        text = str(error or "")
+        if f"'code': '{code}'" in text:
+            return True
+        if f'"code": "{code}"' in text:
+            return True
+        value = getattr(error, "code", None)
+        return str(value or "") == str(code)
+
+    @staticmethod
     def _merge_description(existing: Optional[str], incoming: Optional[str]) -> str:
         existing_clean = (existing or "").strip()
         incoming_clean = (incoming or "").strip()
@@ -113,12 +135,20 @@ class SupabaseGraphRepository:
                         "target_entity_id": row.get("target_entity_id"),
                         "relation_type": row.get("relation_type"),
                     }
-                    logger.error(
-                        "Fallo insercion fila en %s: %s | row_preview=%s",
-                        table,
-                        row_error,
-                        row_preview,
-                    )
+                    if self._is_pg_code(row_error, "23505") or self._is_pg_code(row_error, "23514"):
+                        logger.warning(
+                            "Insercion fila omitida en %s (constraint): %s | row_preview=%s",
+                            table,
+                            row_error,
+                            row_preview,
+                        )
+                    else:
+                        logger.error(
+                            "Fallo insercion fila en %s: %s | row_preview=%s",
+                            table,
+                            row_error,
+                            row_preview,
+                        )
             return inserted
 
     async def _bulk_upsert_with_fallback(
@@ -441,7 +471,13 @@ class SupabaseGraphRepository:
         )
 
         for row in updated_entities + inserted_entities:
-            entity_id_by_name[self._norm(row.get("name", ""))] = str(row.get("id"))
+            if not isinstance(row, dict):
+                continue
+            entity_name = str(row.get("name") or "").strip()
+            entity_id = self._uuid_text(row.get("id"))
+            if not entity_name or not entity_id:
+                continue
+            entity_id_by_name[self._norm(entity_name)] = entity_id
 
         stats["nodes_upserted"] = len(updated_entities) + len(inserted_entities)
         stats["entities_merged"] = len(updated_entities)
@@ -461,7 +497,13 @@ class SupabaseGraphRepository:
                     .execute()
                 )
                 for row in resolve_resp.data or []:
-                    entity_id_by_name[self._norm(row.get("name", ""))] = str(row.get("id"))
+                    if not isinstance(row, dict):
+                        continue
+                    entity_name = str(row.get("name") or "").strip()
+                    entity_id = self._uuid_text(row.get("id"))
+                    if not entity_name or not entity_id:
+                        continue
+                    entity_id_by_name[self._norm(entity_name)] = entity_id
             except Exception as resolve_err:
                 logger.warning(
                     "No se pudieron resolver entidades faltantes post-upsert: %s", resolve_err
@@ -483,6 +525,8 @@ class SupabaseGraphRepository:
                 stats["errors"].append(
                     f"relation_missing_entity:{relation.source}->{relation.target}:{relation.relation_type}"
                 )
+                continue
+            if source_id == target_id:
                 continue
 
             key = (source_id, target_id, relation_type)
@@ -580,13 +624,18 @@ class SupabaseGraphRepository:
         stats["relations_inserted"] = len(inserted_relations)
 
         if chunk_str:
+            valid_entity_ids = {
+                entity_id
+                for entity_id in set(entity_id_by_name.values())
+                if self._uuid_text(entity_id)
+            }
             provenance_rows = [
                 {
                     "tenant_id": tenant_str,
                     "entity_id": entity_id,
                     "chunk_id": chunk_str,
                 }
-                for entity_id in set(entity_id_by_name.values())
+                for entity_id in valid_entity_ids
             ]
 
             linked = await self._bulk_upsert_with_fallback(
