@@ -186,6 +186,11 @@ class GraphExtractor(IGraphExtractor):
             source_key = relation.source.casefold().strip()
             target_key = relation.target.casefold().strip()
 
+            if not source_key or not target_key:
+                continue
+            if source_key == target_key:
+                continue
+
             if source_key not in valid_entity_keys or target_key not in valid_entity_keys:
                 continue
 

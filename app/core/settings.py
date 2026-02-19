@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     INGEST_EMBED_FALLBACK_ON_TECHNICAL_ERROR: bool = True
     EMBEDDING_PROVIDER_ALLOWLIST: str = "jina,cohere"
     OPENAI_FALLBACK_MODEL: str = "gpt-4o-mini"
-    STRICT_ENGINE_MAX_TOKENS: Optional[int] = 8192
+    STRICT_ENGINE_MAX_TOKENS: Optional[int] = 3072
     JINA_BASE_URL: str = "https://api.jina.ai/v1/embeddings"
     JINA_MODEL_NAME: str = "jinaai/jina-embeddings-v3"
     JINA_EMBEDDING_DIMENSIONS: int = 1024
@@ -85,8 +85,8 @@ class Settings(BaseSettings):
     FORENSIC_LOGGING_LEVEL: str = "METADATA_ONLY"
 
     # Worker / Throughput controls
-    WORKER_CONCURRENCY: int = 3
-    WORKER_PER_TENANT_CONCURRENCY: int = 5
+    WORKER_CONCURRENCY: int = 4
+    WORKER_PER_TENANT_CONCURRENCY: int = 6
     WORKER_POLL_INTERVAL_SECONDS: int = 2
     WORKER_SUPABASE_TRANSIENT_MAX_RETRIES: int = 3
     WORKER_SUPABASE_TRANSIENT_BASE_DELAY_SECONDS: float = 0.4
@@ -189,7 +189,7 @@ class Settings(BaseSettings):
     INGESTION_VISUAL_ASYNC_ENABLED: bool = True
     METRICS_EMBEDDING_SPAN_MIN_MS: float = 800.0
     INGESTION_GRAPH_CHUNK_LOG_EVERY_N: int = 25
-    ENRICHMENT_WORKER_CONCURRENCY: int = 2
+    ENRICHMENT_WORKER_CONCURRENCY: int = 4
     ENRICHMENT_JOB_TIMEOUT_SECONDS: int = 900
 
     @field_validator("JINA_MODE", mode="before")

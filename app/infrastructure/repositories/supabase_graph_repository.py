@@ -117,6 +117,7 @@ class SupabaseGraphRepository:
         except Exception as batch_error:
             logger.warning("Fallo insercion batch en %s, fallback por fila: %s", table, batch_error)
             inserted: list[dict] = []
+            constraint_skips = 0
             for row in rows:
                 try:
                     query = client.table(table).insert(row)
@@ -136,12 +137,14 @@ class SupabaseGraphRepository:
                         "relation_type": row.get("relation_type"),
                     }
                     if self._is_pg_code(row_error, "23505") or self._is_pg_code(row_error, "23514"):
-                        logger.warning(
-                            "Insercion fila omitida en %s (constraint): %s | row_preview=%s",
-                            table,
-                            row_error,
-                            row_preview,
-                        )
+                        constraint_skips += 1
+                        if constraint_skips <= 3:
+                            logger.warning(
+                                "Insercion fila omitida en %s (constraint): %s | row_preview=%s",
+                                table,
+                                row_error,
+                                row_preview,
+                            )
                     else:
                         logger.error(
                             "Fallo insercion fila en %s: %s | row_preview=%s",
@@ -149,6 +152,12 @@ class SupabaseGraphRepository:
                             row_error,
                             row_preview,
                         )
+            if constraint_skips > 3:
+                logger.warning(
+                    "Insercion fila omitida en %s (constraint): %d filas adicionales suprimidas",
+                    table,
+                    constraint_skips - 3,
+                )
             return inserted
 
     async def _bulk_upsert_with_fallback(
@@ -253,6 +262,35 @@ class SupabaseGraphRepository:
     def _normalize_relation_type(value: str) -> str:
         return value.strip().replace(" ", "_").replace("-", "_").upper()
 
+    @classmethod
+    def _normalize_relations(cls, relations: list[Relation]) -> list[Relation]:
+        normalized: list[Relation] = []
+        seen: set[tuple[str, str, str]] = set()
+        for relation in relations:
+            source = str(getattr(relation, "source", "") or "").strip()
+            target = str(getattr(relation, "target", "") or "").strip()
+            if not source or not target:
+                continue
+            if cls._norm(source) == cls._norm(target):
+                continue
+            relation_type = cls._normalize_relation_type(getattr(relation, "relation_type", ""))
+            if not relation_type:
+                continue
+            key = (cls._norm(source), cls._norm(target), relation_type)
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(
+                Relation(
+                    source=source,
+                    target=target,
+                    relation_type=relation_type,
+                    description=str(getattr(relation, "description", "") or ""),
+                    weight=max(1, min(10, int(getattr(relation, "weight", 1) or 1))),
+                )
+            )
+        return normalized
+
     async def _upsert_subgraph_atomic_rpc(
         self,
         extraction: ChunkGraphExtraction,
@@ -347,16 +385,7 @@ class SupabaseGraphRepository:
             return stats
 
         entities = self._dedupe_entities(extraction.entities)
-        normalized_relations = [
-            Relation(
-                source=relation.source,
-                target=relation.target,
-                relation_type=self._normalize_relation_type(relation.relation_type),
-                description=relation.description,
-                weight=max(1, min(10, int(relation.weight))),
-            )
-            for relation in extraction.relations
-        ]
+        normalized_relations = self._normalize_relations(extraction.relations)
         normalized_extraction = ChunkGraphExtraction(
             entities=entities, relations=normalized_relations
         )

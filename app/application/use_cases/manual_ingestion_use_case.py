@@ -476,6 +476,7 @@ class ManualIngestionUseCase:
         nested.setdefault(
             "collection_name", str(collection.get("name") or collection.get("collection_key"))
         )
+        nested.setdefault("filename", safe_filename)
         merged_metadata["metadata"] = nested
 
         insert_payload = {

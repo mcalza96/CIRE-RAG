@@ -13,6 +13,50 @@ import re
 logger = structlog.get_logger(__name__)
 
 
+_ISO_DOC_PATTERN = re.compile(r"\bISO\s*[-:_]?\s*(\d{4,5})\b", re.IGNORECASE)
+_NOM_ISO_DOC_PATTERN = re.compile(r"\bNOM\s*[-_ ]?ISO\s*[-_ ]?(\d{4,5})\b", re.IGNORECASE)
+
+
+def _infer_document_standards(metadata: IngestionMetadata) -> list[str]:
+    candidates: list[str] = []
+    nested = metadata.metadata if isinstance(metadata.metadata, dict) else {}
+    for key in ("source_standard", "standard", "scope"):
+        raw = nested.get(key)
+        if isinstance(raw, str) and raw.strip():
+            candidates.append(raw.strip())
+    raw_many = nested.get("source_standards")
+    if isinstance(raw_many, list):
+        for item in raw_many:
+            if isinstance(item, str) and item.strip():
+                candidates.append(item.strip())
+
+    for text in (
+        metadata.title,
+        str(nested.get("filename") or ""),
+        str(nested.get("storage_path") or ""),
+    ):
+        if not text:
+            continue
+        for match in _ISO_DOC_PATTERN.findall(text):
+            candidates.append(f"ISO {match}")
+        for match in _NOM_ISO_DOC_PATTERN.findall(text):
+            candidates.append(f"ISO {match}")
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        m = re.search(r"\b(?:ISO\s*[-:_]?\s*)?(\d{4,5})\b", item, flags=re.IGNORECASE)
+        if m:
+            canon = f"ISO {m.group(1)}"
+        else:
+            canon = item.strip().upper()
+        if not canon or canon in seen:
+            continue
+        seen.add(canon)
+        normalized.append(canon)
+    return normalized
+
+
 class LateChunkResult(BaseModel):
     """
     Validated late/contextual chunk output.
@@ -404,6 +448,14 @@ class ChunkingService:
             "structure_context": structure_context,
         }
         base_metadata.update(enriched_metadata)
+
+        inferred_standards = _infer_document_standards(metadata)
+        if inferred_standards and not str(base_metadata.get("source_standard") or "").strip():
+            base_metadata["source_standard"] = inferred_standards[0]
+            base_metadata.setdefault("scope", inferred_standards[0])
+            base_metadata.setdefault("standard", inferred_standards[0])
+            if len(inferred_standards) > 1:
+                base_metadata["source_standards"] = inferred_standards
 
         return {
             "source_id": str(metadata.source_id) if metadata.source_id else None,
