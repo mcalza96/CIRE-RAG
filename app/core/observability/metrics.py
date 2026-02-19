@@ -5,16 +5,20 @@ import structlog
 from typing import Any, Callable, Dict, List, Optional
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.outputs import LLMResult
+from app.core.settings import settings
 
 logger = structlog.get_logger("metrics")
+
 
 def track_span(name: str):
     """
     Decorator to track execution time and metrics for a function.
     Supports both sync and async functions.
     """
+
     def decorator(func: Callable):
         if asyncio.iscoroutinefunction(func):
+
             @functools.wraps(func)
             async def wrapper(*args, **kwargs):
                 start_time = time.perf_counter()
@@ -26,8 +30,10 @@ def track_span(name: str):
                 except Exception as e:
                     _log_span_error(name, (time.perf_counter() - start_time) * 1000, e)
                     raise
+
             return wrapper
         else:
+
             @functools.wraps(func)
             def wrapper(*args, **kwargs):
                 start_time = time.perf_counter()
@@ -39,17 +45,25 @@ def track_span(name: str):
                 except Exception as e:
                     _log_span_error(name, (time.perf_counter() - start_time) * 1000, e)
                     raise
+
             return wrapper
+
     return decorator
 
+
 def _log_span(name: str, duration_ms: float, result: Any, kwargs: Dict):
+    if str(name) == "span:embedding_generation":
+        min_ms = float(getattr(settings, "METRICS_EMBEDDING_SPAN_MIN_MS", 800.0) or 800.0)
+        if float(duration_ms) < min_ms:
+            return
+
     metrics = {"duration_ms": round(duration_ms, 2)}
     meta = {}
 
     # 1. Extraction of Token Usage (LangChain / LLM Result)
     # Different providers return usage in different attributes
     usage = None
-    
+
     # Try usage_metadata (LangChain >= 0.2 style)
     if hasattr(result, "usage_metadata") and result.usage_metadata:
         usage = result.usage_metadata
@@ -63,12 +77,18 @@ def _log_span(name: str, duration_ms: float, result: Any, kwargs: Dict):
     if usage:
         if isinstance(usage, dict):
             metrics["tokens_prompt"] = usage.get("prompt_tokens") or usage.get("input_tokens")
-            metrics["tokens_completion"] = usage.get("completion_tokens") or usage.get("output_tokens")
+            metrics["tokens_completion"] = usage.get("completion_tokens") or usage.get(
+                "output_tokens"
+            )
             metrics["tokens_total"] = usage.get("total_tokens")
         else:
             # Pydantic or NamedTuple style
-            metrics["tokens_prompt"] = getattr(usage, "prompt_tokens", getattr(usage, "input_tokens", None))
-            metrics["tokens_completion"] = getattr(usage, "completion_tokens", getattr(usage, "output_tokens", None))
+            metrics["tokens_prompt"] = getattr(
+                usage, "prompt_tokens", getattr(usage, "input_tokens", None)
+            )
+            metrics["tokens_completion"] = getattr(
+                usage, "completion_tokens", getattr(usage, "output_tokens", None)
+            )
             metrics["tokens_total"] = getattr(usage, "total_tokens", None)
 
     # 2. Extract Metadata from kwargs
@@ -78,14 +98,15 @@ def _log_span(name: str, duration_ms: float, result: Any, kwargs: Dict):
 
     # If it's a class method, 'self' is args[0]
     # We could try to extract model from self if it has a .model attribute
-    
+
     logger.info(
         "span_complete",
         type="metric_span",
         span_name=name,
         metrics={k: v for k, v in metrics.items() if v is not None},
-        meta={k: v for k, v in meta.items() if v is not None}
+        meta={k: v for k, v in meta.items() if v is not None},
     )
+
 
 def _log_span_error(name: str, duration_ms: float, error: Exception):
     logger.error(
@@ -94,13 +115,15 @@ def _log_span_error(name: str, duration_ms: float, error: Exception):
         span_name=name,
         metrics={"duration_ms": round(duration_ms, 2)},
         error_type=type(error).__name__,
-        error_message=str(error)
+        error_message=str(error),
     )
+
 
 class MetricsCallbackHandler(BaseCallbackHandler):
     """
     LangChain Callback for automatic span metrics.
     """
+
     def __init__(self, span_name: str = "span:llm_inference"):
         self.span_name = span_name
         self._start_time = None

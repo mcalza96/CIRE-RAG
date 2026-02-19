@@ -20,8 +20,10 @@ from app.infrastructure.repositories.supabase_content_repository import Supabase
 from app.infrastructure.repositories.supabase_source_repository import SupabaseSourceRepository
 from uuid import uuid4
 from app.infrastructure.services.manual_ingestion_query_service import ManualIngestionQueryService
+from app.infrastructure.supabase.client import get_async_supabase_client
 from app.core.settings import settings
 from app.core.utils.filename_utils import sanitize_filename
+
 
 class ManualIngestionUseCase:
     TERMINAL_SUCCESS_STATES = {"success", "processed", "completed", "ready"}
@@ -45,11 +47,11 @@ class ManualIngestionUseCase:
         self.content_repo = SupabaseContentRepository()
         self.source_repo = SupabaseSourceRepository()
         self.query_service = ManualIngestionQueryService()
-        # Lazy init for Raptor to avoid async issues in init if needed, 
+        # Lazy init for Raptor to avoid async issues in init if needed,
         # but here we can just init repositories.
-        # We need a client for RaptorRepo. 
+        # We need a client for RaptorRepo.
         # Ideally we inject, but for now we'll do safe init inside methods or use singleton.
-        self.raptor_processor = None 
+        self.raptor_processor = None
 
     async def _get_pending_snapshot(self, tenant_id: Optional[str]) -> Dict[str, Optional[int]]:
         max_pending = int(getattr(settings, "INGESTION_MAX_PENDING_PER_TENANT", 0) or 0)
@@ -72,10 +74,14 @@ class ManualIngestionUseCase:
                 IngestionStatus.PROCESSING_V2.value,
             ],
         )
-        docs_per_minute_per_worker = max(1, int(getattr(settings, "INGESTION_DOCS_PER_MINUTE_PER_WORKER", 2) or 2))
+        docs_per_minute_per_worker = max(
+            1, int(getattr(settings, "INGESTION_DOCS_PER_MINUTE_PER_WORKER", 2) or 2)
+        )
         worker_concurrency = max(1, int(getattr(settings, "WORKER_CONCURRENCY", 1) or 1))
         throughput_per_minute = docs_per_minute_per_worker * worker_concurrency
-        estimated_wait_seconds = int(math.ceil((pending_count / throughput_per_minute) * 60)) if pending_count > 0 else 0
+        estimated_wait_seconds = (
+            int(math.ceil((pending_count / throughput_per_minute) * 60)) if pending_count > 0 else 0
+        )
 
         return {
             "queue_depth": pending_count,
@@ -137,27 +143,140 @@ class ManualIngestionUseCase:
             raise ValueError(f"Document {doc_id} not found.")
 
         current_metadata = doc.get("metadata", {}) or {}
-        
+
         # 2. Increment Retry Count
         retry_count = current_metadata.get("retry_count", 0)
         new_retry_count = retry_count + 1
-        
+
         # 3. Update Metadata and Status
         current_metadata["retry_count"] = new_retry_count
-        
+
         # We also need to ensure the file is actually there if it's a local file.
         # But for 'retry', we rely on the worker to validate existence or fail again.
         # This keeps the API response fast.
-        
+
         logger.info(f"[ManualIngest] Retrying document {doc_id} (Attempt {new_retry_count})")
-        
+
         await self.source_repo.update_status_and_metadata(
-            doc_id, 
-            IngestionStatus.QUEUED.value, 
-            current_metadata
+            doc_id, IngestionStatus.QUEUED.value, current_metadata
         )
-        
+
         return doc_id
+
+    async def enqueue_deferred_enrichment(
+        self,
+        doc_id: str,
+        *,
+        tenant_id: str,
+        include_visual: bool = True,
+        include_graph: bool = True,
+        include_raptor: bool = True,
+    ) -> Dict[str, Any]:
+        tenant = str(tenant_id or "").strip()
+        if not tenant:
+            raise ValueError("INVALID_TENANT_ID")
+
+        doc = await self.source_repo.get_by_id(doc_id)
+        if not doc:
+            raise FileNotFoundError(f"Document {doc_id} not found.")
+
+        doc_tenant = str(doc.get("institution_id") or "").strip()
+        if doc_tenant and doc_tenant != tenant:
+            raise ValueError("TENANT_MISMATCH")
+
+        collection_id = doc.get("collection_id")
+        payload = {
+            "source_document_id": str(doc_id),
+            "collection_id": str(collection_id) if collection_id else None,
+            "include_visual": bool(include_visual),
+            "include_graph": bool(include_graph),
+            "include_raptor": bool(include_raptor),
+        }
+
+        client = await get_async_supabase_client()
+        existing = await (
+            client.table("job_queue")
+            .select("id")
+            .eq("job_type", "enrich_document")
+            .in_("status", ["pending", "processing"])
+            .contains("payload", {"source_document_id": str(doc_id)})
+            .limit(1)
+            .execute()
+        )
+        if isinstance(existing.data, list) and existing.data:
+            existing_id = str(existing.data[0].get("id") or "").strip()
+            return {
+                "accepted": True,
+                "already_queued": True,
+                "job_id": existing_id or None,
+                "source_document_id": str(doc_id),
+                "include_visual": bool(include_visual),
+                "include_graph": bool(include_graph),
+                "include_raptor": bool(include_raptor),
+            }
+
+        inserted = await (
+            client.table("job_queue")
+            .insert(
+                {
+                    "job_type": "enrich_document",
+                    "tenant_id": tenant,
+                    "payload": payload,
+                }
+            )
+            .execute()
+        )
+        inserted_rows = (
+            inserted.data if inserted is not None and isinstance(inserted.data, list) else []
+        )
+        inserted_job_id = (
+            str(inserted_rows[0].get("id") or "").strip()
+            if inserted_rows and isinstance(inserted_rows[0], dict)
+            else ""
+        )
+
+        if not inserted_job_id:
+            fallback = await (
+                client.table("job_queue")
+                .select("id")
+                .eq("job_type", "enrich_document")
+                .eq("tenant_id", tenant)
+                .in_("status", ["pending", "processing"])
+                .contains("payload", {"source_document_id": str(doc_id)})
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            fallback_rows = fallback.data if isinstance(fallback.data, list) else []
+            if fallback_rows and isinstance(fallback_rows[0], dict):
+                inserted_job_id = str(fallback_rows[0].get("id") or "").strip()
+
+        await self.source_repo.log_event(
+            doc_id=str(doc_id),
+            message=(
+                "Enrichment replay queued "
+                f"(visual={bool(include_visual)}, graph={bool(include_graph)}, raptor={bool(include_raptor)})"
+            ),
+            status="INFO",
+            tenant_id=tenant,
+            metadata={"phase": "enrichment_replay", **payload},
+        )
+
+        return {
+            "accepted": True,
+            "already_queued": False,
+            "job_id": inserted_job_id or None,
+            "source_document_id": str(doc_id),
+            "include_visual": bool(include_visual),
+            "include_graph": bool(include_graph),
+            "include_raptor": bool(include_raptor),
+        }
+
+    async def get_job_status(self, *, tenant_id: str, job_id: str) -> Dict[str, Any]:
+        tenant = str(tenant_id or "").strip()
+        if not tenant:
+            raise ValueError("INVALID_TENANT_ID")
+        return await self.query_service.get_job_status(tenant_id=tenant, job_id=job_id)
 
     async def execute(self, file: UploadFile, metadata: str):
         """
@@ -187,9 +306,9 @@ class ManualIngestionUseCase:
         temp_dir = tempfile.gettempdir()
         # FIX: Use unique filename to prevent collisions in concurrent uploads
         unique_id = uuid4()
-        safe_filename = f"ingest_{unique_id}_{file.filename}" 
+        safe_filename = f"ingest_{unique_id}_{file.filename}"
         file_path = os.path.join(temp_dir, safe_filename)
-        
+
         try:
             with open(file_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
@@ -201,7 +320,9 @@ class ManualIngestionUseCase:
         original_filename = file.filename or safe_filename
         return file_path, original_filename, parsed_metadata
 
-    async def process_background(self, file_path: str, original_filename: str, metadata: IngestionMetadata) -> Dict[str, Any]:
+    async def process_background(
+        self, file_path: str, original_filename: str, metadata: IngestionMetadata
+    ) -> Dict[str, Any]:
         """
         Registers document for async Worker processing.
         Does NOT execute ingestion locally.
@@ -213,20 +334,24 @@ class ManualIngestionUseCase:
             # 1. Enrich Metadata with storage path for the worker
             # Use top-level field now supported by schema
             metadata.storage_path = file_path
-            
+
             # 2. Register Document (Set to QUEUED to trigger Worker)
-            logger.info(f"[ManualIngest] Registering document {original_filename} via Worker (Path: {file_path})")
+            logger.info(
+                f"[ManualIngest] Registering document {original_filename} via Worker (Path: {file_path})"
+            )
             doc_id = await self.taxonomy_manager.register_document(
                 filename=original_filename,
                 metadata=metadata,
-                initial_status=IngestionStatus.QUEUED  # Use QUEUED to trigger policy
+                initial_status=IngestionStatus.QUEUED,  # Use QUEUED to trigger policy
             )
-            
-            logger.info(f"[ManualIngest] Document {doc_id} queued successfully. Worker should pick it up.")
-            
+
+            logger.info(
+                f"[ManualIngest] Document {doc_id} queued successfully. Worker should pick it up."
+            )
+
             # NOTE: We do NOT delete the temp file here. The worker needs it.
             # The Worker (ProcessDocumentWorkerUseCase) is responsible for deletion after processing.
-            
+
             queue = await self._get_pending_snapshot(tenant_id=tenant_id)
             return {"document_id": str(doc_id), "queue": queue}
 
@@ -348,7 +473,9 @@ class ManualIngestionUseCase:
         nested: Dict[str, Any] = nested_meta if isinstance(nested_meta, dict) else {}
         nested.setdefault("collection_id", str(collection["id"]))
         nested.setdefault("collection_key", str(collection["collection_key"]))
-        nested.setdefault("collection_name", str(collection.get("name") or collection.get("collection_key")))
+        nested.setdefault(
+            "collection_name", str(collection.get("name") or collection.get("collection_key"))
+        )
         merged_metadata["metadata"] = nested
 
         insert_payload = {
@@ -484,12 +611,34 @@ class ManualIngestionUseCase:
         skipped = 0
         docs_with_visual = 0
         docs_with_loss = 0
+        docs_with_enrichment_pending = 0
+        docs_searchable_ready = 0
         copyright_refs: list[Dict[str, Any]] = []
 
         for doc in docs:
             metadata = doc.get("metadata") if isinstance(doc, dict) else None
             if not isinstance(metadata, dict):
                 continue
+
+            searchable = metadata.get("searchable")
+            if (
+                isinstance(searchable, dict)
+                and str(searchable.get("status") or "").lower() == "ready"
+            ):
+                docs_searchable_ready += 1
+
+            enrichment_meta = metadata.get("enrichment")
+            visual_meta = metadata.get("visual_anchor")
+            pending_enrichment = False
+            if isinstance(enrichment_meta, dict):
+                if str(enrichment_meta.get("status") or "").lower() in {"queued", "already_queued"}:
+                    pending_enrichment = True
+            if isinstance(visual_meta, dict):
+                if str(visual_meta.get("status") or "").lower() == "queued":
+                    pending_enrichment = True
+            if pending_enrichment:
+                docs_with_enrichment_pending += 1
+
             visual = metadata.get("visual_anchor")
             if not isinstance(visual, dict):
                 continue
@@ -535,6 +684,8 @@ class ManualIngestionUseCase:
         visual_accounting = {
             "docs_with_visual": docs_with_visual,
             "docs_with_loss": docs_with_loss,
+            "docs_with_enrichment_pending": docs_with_enrichment_pending,
+            "docs_searchable_ready": docs_searchable_ready,
             "attempted": attempted,
             "stitched": stitched,
             "degraded_inline": degraded_inline,
@@ -551,7 +702,9 @@ class ManualIngestionUseCase:
             "sample_refs": sample_stage_refs,
         }
 
-        queue_snapshot = await self._get_pending_snapshot(tenant_id=str(batch.get("tenant_id") or ""))
+        queue_snapshot = await self._get_pending_snapshot(
+            tenant_id=str(batch.get("tenant_id") or "")
+        )
         observability = self._build_observability_projection(
             batch=batch,
             docs=docs,
@@ -586,7 +739,9 @@ class ManualIngestionUseCase:
         cursor: str | None = None,
         limit: int = 100,
     ) -> Dict[str, Any]:
-        payload = await self.query_service.get_batch_events(batch_id=str(batch_id), cursor=cursor, limit=limit)
+        payload = await self.query_service.get_batch_events(
+            batch_id=str(batch_id), cursor=cursor, limit=limit
+        )
         items = payload.get("items") if isinstance(payload.get("items"), list) else []
         enriched: list[Dict[str, Any]] = []
         for item in items:
@@ -604,7 +759,9 @@ class ManualIngestionUseCase:
         }
 
     async def list_active_batches(self, tenant_id: str, limit: int = 10) -> Dict[str, Any]:
-        rows = await self.query_service.list_active_batches(tenant_id=str(tenant_id), limit=int(limit))
+        rows = await self.query_service.list_active_batches(
+            tenant_id=str(tenant_id), limit=int(limit)
+        )
         items: list[Dict[str, Any]] = []
         for row in rows:
             if not isinstance(row, dict):
@@ -617,7 +774,14 @@ class ManualIngestionUseCase:
                 items.append(progress)
             except Exception as exc:
                 logger.warning("active_batch_progress_failed", batch_id=batch_id, error=str(exc))
-                items.append({"batch": row, "observability": {}, "worker_progress": {}, "visual_accounting": {}})
+                items.append(
+                    {
+                        "batch": row,
+                        "observability": {},
+                        "worker_progress": {},
+                        "visual_accounting": {},
+                    }
+                )
         return {"items": items}
 
     @staticmethod

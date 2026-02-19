@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 from uuid import UUID, uuid4
+import json
 
 import structlog
 
@@ -14,6 +15,8 @@ from app.infrastructure.supabase.client import get_async_supabase_client
 from app.infrastructure.repositories.supabase_graph_repository import SupabaseGraphRepository
 from app.infrastructure.repositories.supabase_raptor_repository import SupabaseRaptorRepository
 from app.services.knowledge.graph_extractor import GraphExtractor
+from app.application.services.visual_anchor_service import VisualAnchorService
+from app.core.observability.ingestion_logging import compact_error, emit_event
 
 logger = structlog.get_logger(__name__)
 
@@ -25,11 +28,13 @@ class PostIngestionPipelineService:
         state_manager: IngestionStateManager,
         raptor_processor: Any | None,
         raptor_repo: SupabaseRaptorRepository,
+        visual_anchor_service: VisualAnchorService | None = None,
     ) -> None:
         self.content_repo = content_repo
         self.state_manager = state_manager
         self.raptor_processor = raptor_processor
         self.raptor_repo = raptor_repo
+        self.visual_anchor_service = visual_anchor_service
 
     async def persist_chunks(
         self,
@@ -60,11 +65,18 @@ class PostIngestionPipelineService:
         doc_id: str,
         tenant_id: Optional[str],
         collection_id: Optional[str] = None,
+        *,
+        include_visual: bool = False,
+        include_graph: bool = True,
+        include_raptor: bool = True,
     ) -> bool:
         client = await get_async_supabase_client()
         payload = {
             "source_document_id": str(doc_id),
             "collection_id": str(collection_id) if collection_id else None,
+            "include_visual": bool(include_visual),
+            "include_graph": bool(include_graph),
+            "include_raptor": bool(include_raptor),
         }
 
         existing = await (
@@ -97,6 +109,10 @@ class PostIngestionPipelineService:
         doc_id: str,
         tenant_id: Optional[str],
         collection_id: Optional[str] = None,
+        *,
+        include_visual: bool = False,
+        include_graph: bool = True,
+        include_raptor: bool = True,
     ) -> Dict[str, Any]:
         chunks = await self._load_persisted_chunks(doc_id=doc_id)
         if not chunks:
@@ -106,29 +122,71 @@ class PostIngestionPipelineService:
                 "source_document_id": str(doc_id),
             }
 
-        result_obj = SimpleNamespace(chunks=chunks)
-        await self.run_raptor_if_needed(
-            doc_id=doc_id,
-            tenant_id=tenant_id,
-            result=result_obj,
-            collection_id=collection_id,
-        )
-        await self.run_graph_if_needed(
-            doc_id=doc_id,
-            tenant_id=tenant_id,
-            result=result_obj,
-        )
-        return {
+        source_metadata = await self._load_source_document_metadata(doc_id=doc_id)
+        visual_tasks = self._extract_visual_tasks(source_metadata)
+        routing = {"visual_tasks": visual_tasks} if visual_tasks else {}
+        result_obj = SimpleNamespace(chunks=chunks, metadata={"routing": routing})
+
+        visual_stats: Dict[str, Any] | None = None
+        if include_visual and self.visual_anchor_service is not None and visual_tasks:
+            try:
+                visual_stats = await self.visual_anchor_service.run_if_needed(
+                    doc_id=doc_id,
+                    tenant_id=tenant_id,
+                    result=result_obj,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "deferred_visual_enrichment_failed",
+                    doc_id=doc_id,
+                    error=str(exc),
+                )
+
+        if include_raptor:
+            await self.run_raptor_if_needed(
+                doc_id=doc_id,
+                tenant_id=tenant_id,
+                result=result_obj,
+                collection_id=collection_id,
+            )
+        if include_graph:
+            await self.run_graph_if_needed(
+                doc_id=doc_id,
+                tenant_id=tenant_id,
+                result=result_obj,
+            )
+        result_payload = {
             "ok": True,
             "source_document_id": str(doc_id),
             "chunks": len(chunks),
+            "visual_attempted": int(visual_stats.get("attempted", 0))
+            if isinstance(visual_stats, dict)
+            else 0,
+            "visual_stitched": int(visual_stats.get("stitched", 0))
+            if isinstance(visual_stats, dict)
+            else 0,
+            "include_visual": bool(include_visual),
+            "include_graph": bool(include_graph),
+            "include_raptor": bool(include_raptor),
         }
+        emit_event(
+            logger,
+            "deferred_enrichment_completed",
+            doc_id=doc_id,
+            tenant_id=tenant_id,
+            chunks=len(chunks),
+            include_visual=bool(include_visual),
+            include_graph=bool(include_graph),
+            include_raptor=bool(include_raptor),
+            visual_stitched=result_payload.get("visual_stitched"),
+        )
+        return result_payload
 
     async def _load_persisted_chunks(self, doc_id: str) -> list[dict[str, Any]]:
         client = await get_async_supabase_client()
         query = (
             client.table("content_chunks")
-            .select("id,content,embedding,metadata")
+            .select("id,content,embedding,metadata,file_page_number")
             .eq("source_id", str(doc_id))
         )
         try:
@@ -136,7 +194,81 @@ class PostIngestionPipelineService:
         except Exception:
             response = await query.execute()
         rows = response.data if isinstance(response.data, list) else []
-        return [row for row in rows if isinstance(row, dict)]
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            item = dict(row)
+            item["embedding"] = self._normalize_embedding(item.get("embedding"))
+            normalized.append(item)
+        return normalized
+
+    @staticmethod
+    def _normalize_embedding(raw_embedding: Any) -> list[float]:
+        if isinstance(raw_embedding, list):
+            out: list[float] = []
+            for value in raw_embedding:
+                try:
+                    out.append(float(value))
+                except (TypeError, ValueError):
+                    continue
+            return out
+
+        if isinstance(raw_embedding, str):
+            text = raw_embedding.strip()
+            if not text:
+                return []
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                out: list[float] = []
+                for value in parsed:
+                    try:
+                        out.append(float(value))
+                    except (TypeError, ValueError):
+                        continue
+                return out
+            if text.startswith("[") and text.endswith("]"):
+                inner = text[1:-1]
+                out: list[float] = []
+                for token in inner.split(","):
+                    token = token.strip()
+                    if not token:
+                        continue
+                    try:
+                        out.append(float(token))
+                    except (TypeError, ValueError):
+                        continue
+                return out
+
+        return []
+
+    async def _load_source_document_metadata(self, doc_id: str) -> Dict[str, Any]:
+        client = await get_async_supabase_client()
+        response = (
+            await client.table("source_documents")
+            .select("metadata")
+            .eq("id", str(doc_id))
+            .limit(1)
+            .execute()
+        )
+        rows = response.data if isinstance(response.data, list) else []
+        if not rows:
+            return {}
+        metadata = rows[0].get("metadata") if isinstance(rows[0], dict) else None
+        return metadata if isinstance(metadata, dict) else {}
+
+    @staticmethod
+    def _extract_visual_tasks(source_metadata: Dict[str, Any]) -> list[dict[str, Any]]:
+        routing = (
+            source_metadata.get("routing")
+            if isinstance(source_metadata.get("routing"), dict)
+            else {}
+        )
+        tasks = routing.get("visual_tasks") if isinstance(routing, dict) else []
+        return [task for task in tasks if isinstance(task, dict)]
 
     async def run_raptor_if_needed(
         self,
@@ -196,7 +328,15 @@ class PostIngestionPipelineService:
                 tenant_id=tenant_id,
             )
         except Exception as exc:
-            logger.error(f"RAPTOR processing failed for {doc_id}: {exc}")
+            emit_event(
+                logger,
+                "raptor_processing_failed",
+                level="warning",
+                doc_id=doc_id,
+                tenant_id=tenant_id,
+                error_code="RAPTOR_PROCESSING_FAILED",
+                error=compact_error(exc),
+            )
             await self.state_manager.log_step(
                 doc_id, f"Error en RAPTOR (no fatal): {str(exc)}", "WARNING", tenant_id=tenant_id
             )
@@ -246,7 +386,15 @@ class PostIngestionPipelineService:
                 )
                 return
 
-            logger.error(f"Graph extraction failed for {doc_id}: {exc}")
+            emit_event(
+                logger,
+                "graph_enrichment_failed",
+                level="warning",
+                doc_id=doc_id,
+                tenant_id=tenant_id,
+                error_code="GRAPH_ENRICHMENT_FAILED",
+                error=compact_error(exc),
+            )
             await self.state_manager.log_step(
                 doc_id, f"Error en GraphRAG (no fatal): {err_text}", "WARNING", tenant_id=tenant_id
             )
@@ -279,6 +427,10 @@ class PostIngestionPipelineService:
         graph_batch_size = max(
             1,
             int(getattr(settings, "INGESTION_GRAPH_BATCH_SIZE", 6) or 6),
+        )
+        graph_log_every_n = max(
+            1,
+            int(getattr(settings, "INGESTION_GRAPH_CHUNK_LOG_EVERY_N", 25) or 25),
         )
 
         totals = {
@@ -340,20 +492,27 @@ class PostIngestionPipelineService:
                 chunk_error_count = len(stats.get("errors", []))
                 totals["chunk_errors"] += chunk_error_count
 
-                logger.info(
-                    "GraphRAG chunk metrics",
-                    doc_id=doc_id,
-                    chunk_index=idx,
-                    chunk_id=str(chunk_uuid),
-                    entities_extracted=stats.get("entities_extracted", 0),
-                    relations_extracted=stats.get("relations_extracted", 0),
-                    entities_inserted=stats.get("entities_inserted", 0),
-                    entities_merged=stats.get("entities_merged", 0),
-                    relations_inserted=stats.get("relations_inserted", 0),
-                    relations_merged=stats.get("relations_merged", 0),
-                    links_upserted=stats.get("links_upserted", 0),
-                    errors=chunk_error_count,
+                should_log_chunk_detail = (
+                    chunk_error_count > 0 or idx == 1 or (idx % graph_log_every_n) == 0
                 )
+                if should_log_chunk_detail:
+                    emit_event(
+                        logger,
+                        "graphrag_chunk_metrics",
+                        doc_id=doc_id,
+                        chunk_index=idx,
+                        chunk_id=str(chunk_uuid),
+                        entities_extracted=stats.get("entities_extracted", 0),
+                        relations_extracted=stats.get("relations_extracted", 0),
+                        entities_inserted=stats.get("entities_inserted", 0),
+                        entities_merged=stats.get("entities_merged", 0),
+                        relations_inserted=stats.get("relations_inserted", 0),
+                        relations_merged=stats.get("relations_merged", 0),
+                        links_upserted=stats.get("links_upserted", 0),
+                        errors=chunk_error_count,
+                        sampled=(chunk_error_count == 0 and idx != 1),
+                        sample_every_n=graph_log_every_n,
+                    )
 
                 await self.state_manager.log_step(
                     doc_id,

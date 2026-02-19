@@ -99,7 +99,9 @@ class ManualIngestionQueryService:
             if not tenant_id or tenant_id in seen:
                 continue
             seen.add(tenant_id)
-            unique.append({"id": tenant_id, "name": tenant_id, "created_at": item.get("created_at")})
+            unique.append(
+                {"id": tenant_id, "name": tenant_id, "created_at": item.get("created_at")}
+            )
             if len(unique) >= capped:
                 break
         return unique
@@ -151,7 +153,9 @@ class ManualIngestionQueryService:
 
         await client.table("regulatory_nodes").delete().eq("collection_id", collection_id).execute()
         await client.table("source_documents").delete().eq("collection_id", collection_id).execute()
-        await client.table("ingestion_batches").delete().eq("collection_id", collection_id).execute()
+        await (
+            client.table("ingestion_batches").delete().eq("collection_id", collection_id).execute()
+        )
 
         return {
             "status": "cleaned",
@@ -164,6 +168,31 @@ class ManualIngestionQueryService:
                 "ingestion_batches": batches_count,
             },
         }
+
+    async def get_job_status(self, tenant_id: str, job_id: str) -> Dict[str, Any]:
+        tenant_scoped = self._enforce_tenant_match(tenant_id, "get_job_status")
+        job = str(job_id or "").strip()
+        if not job:
+            raise ValueError("INVALID_JOB_ID")
+
+        client = await get_async_supabase_client()
+        response = (
+            await client.table("job_queue")
+            .select(
+                "id,tenant_id,job_type,status,error_message,result,payload,created_at,updated_at"
+            )
+            .eq("id", job)
+            .maybe_single()
+            .execute()
+        )
+        row = response.data
+        if not isinstance(row, dict):
+            raise ValueError("JOB_NOT_FOUND")
+
+        row_tenant = str(row.get("tenant_id") or "").strip()
+        if row_tenant and row_tenant != str(tenant_scoped):
+            raise ValueError("TENANT_MISMATCH:get_job_status")
+        return row
 
     async def create_batch(
         self,
@@ -236,7 +265,12 @@ class ManualIngestionQueryService:
             raise ValueError("COLLECTION_NOT_FOUND")
 
         if str(collection.get("status", "open")).lower() == "sealed":
-            await client.table("collections").update({"status": "open"}).eq("id", collection["id"]).execute()
+            await (
+                client.table("collections")
+                .update({"status": "open"})
+                .eq("id", collection["id"])
+                .execute()
+            )
             collection["status"] = "open"
 
         docs_res = (
@@ -269,12 +303,19 @@ class ManualIngestionQueryService:
                 file_options={"content-type": content_type, "upsert": "false"},
             )
         except TypeError:
-            await storage.upload(path, content_bytes, {"content-type": content_type, "upsert": "false"})
+            await storage.upload(
+                path, content_bytes, {"content-type": content_type, "upsert": "false"}
+            )
 
     async def queue_source_document_for_batch(self, payload: Dict[str, Any], batch_id: str) -> None:
         client = await get_async_supabase_client()
         await client.table("source_documents").insert(payload).execute()
-        await client.table("ingestion_batches").update({"status": "processing"}).eq("id", str(batch_id)).execute()
+        await (
+            client.table("ingestion_batches")
+            .update({"status": "processing"})
+            .eq("id", str(batch_id))
+            .execute()
+        )
 
     async def get_batch_for_seal(self, batch_id: str) -> Dict[str, Any]:
         client = await get_async_supabase_client()
@@ -297,7 +338,12 @@ class ManualIngestionQueryService:
         if not collection_id:
             return
         client = await get_async_supabase_client()
-        await client.table("collections").update({"status": "sealed"}).eq("id", str(collection_id)).execute()
+        await (
+            client.table("collections")
+            .update({"status": "sealed"})
+            .eq("id", str(collection_id))
+            .execute()
+        )
 
     async def list_document_statuses_for_batch(self, batch_id: str) -> List[Dict[str, Any]]:
         client = await get_async_supabase_client()
@@ -309,22 +355,31 @@ class ManualIngestionQueryService:
         )
         return docs_res.data or []
 
-    async def update_batch_status_counters(self, batch_id: str, completed: int, failed: int, status: str) -> None:
+    async def update_batch_status_counters(
+        self, batch_id: str, completed: int, failed: int, status: str
+    ) -> None:
         client = await get_async_supabase_client()
-        await client.table("ingestion_batches").update(
-            {
-                "completed": int(completed),
-                "failed": int(failed),
-                "status": str(status),
-            }
-        ).eq("id", str(batch_id)).execute()
+        await (
+            client.table("ingestion_batches")
+            .update(
+                {
+                    "completed": int(completed),
+                    "failed": int(failed),
+                    "status": str(status),
+                }
+            )
+            .eq("id", str(batch_id))
+            .execute()
+        )
 
     async def get_batch_status_data(self, batch_id: str) -> Dict[str, Any]:
         client = await get_async_supabase_client()
 
         batch_res = (
             await client.table("ingestion_batches")
-            .select("id,tenant_id,collection_id,total_files,completed,failed,status,auto_seal,metadata,created_at,updated_at")
+            .select(
+                "id,tenant_id,collection_id,total_files,completed,failed,status,auto_seal,metadata,created_at,updated_at"
+            )
             .eq("id", str(batch_id))
             .maybe_single()
             .execute()
@@ -484,7 +539,9 @@ class ManualIngestionQueryService:
                     "filename": str(doc.get("filename") or ""),
                     "status": str(row.get("status") or ""),
                     "message": str(row.get("message") or ""),
-                    "phase_metadata": row.get("metadata") if isinstance(row.get("metadata"), dict) else {},
+                    "phase_metadata": row.get("metadata")
+                    if isinstance(row.get("metadata"), dict)
+                    else {},
                 }
             )
 
@@ -494,7 +551,9 @@ class ManualIngestionQueryService:
         next_cursor = cursor
         if page:
             tail = page[-1]
-            next_cursor = self._event_cursor(str(tail.get("created_at") or ""), str(tail.get("event_id") or ""))
+            next_cursor = self._event_cursor(
+                str(tail.get("created_at") or ""), str(tail.get("event_id") or "")
+            )
 
         return {
             "batch": batch,
@@ -509,7 +568,9 @@ class ManualIngestionQueryService:
         client = await get_async_supabase_client()
         response = (
             await client.table("ingestion_batches")
-            .select("id,tenant_id,collection_id,total_files,completed,failed,status,created_at,updated_at")
+            .select(
+                "id,tenant_id,collection_id,total_files,completed,failed,status,created_at,updated_at"
+            )
             .eq("tenant_id", str(tenant_scoped))
             .in_("status", ["pending", "processing"])
             .order("updated_at", desc=True)
@@ -543,13 +604,17 @@ class ManualIngestionQueryService:
             try:
                 upsert_payload["course_id"] = str(UUID(str(course_id)))
             except Exception:
-                logger.warning("Ignoring invalid course_id in institutional metadata: %s", course_id)
+                logger.warning(
+                    "Ignoring invalid course_id in institutional metadata: %s", course_id
+                )
 
         try:
             await client.table("source_documents").upsert(upsert_payload).execute()
         except Exception as exc:
             if "source_documents_course_id_fkey" in str(exc) and "course_id" in upsert_payload:
-                logger.warning("course_id FK failed; retrying source_document upsert without course_id")
+                logger.warning(
+                    "course_id FK failed; retrying source_document upsert without course_id"
+                )
                 upsert_payload.pop("course_id", None)
                 await client.table("source_documents").upsert(upsert_payload).execute()
             else:

@@ -4,6 +4,7 @@ from app.domain.repositories.content_repository import IContentRepository
 from app.core.observability.context_vars import get_tenant_id
 from app.core.settings import settings
 from app.infrastructure.supabase.client import get_async_supabase_client
+from app.core.observability.ingestion_logging import compact_error, emit_event
 
 logger = structlog.get_logger(__name__)
 
@@ -31,7 +32,7 @@ class SupabaseContentRepository(IContentRepository):
         tenant_id = self._tenant_from_context()
 
         client = await self.get_client()
-        logger.info(f"Cleaning up legacy chunks for source {source_id} (Batched)...")
+        emit_event(logger, "legacy_chunk_cleanup_started", source_id=source_id, tenant_id=tenant_id)
 
         try:
             # 1. Fetch all IDs for this source
@@ -42,26 +43,49 @@ class SupabaseContentRepository(IContentRepository):
             ids = [r["id"] for r in res.data]
 
             if not ids:
-                logger.info(f"No legacy chunks found for source {source_id}.")
+                emit_event(
+                    logger, "legacy_chunk_cleanup_skipped", source_id=source_id, reason="no_chunks"
+                )
                 return
 
             total = len(ids)
             batch_size = 500
-            logger.info(f"Purging {total} chunks in batches of {batch_size}...")
+            emit_event(
+                logger,
+                "legacy_chunk_cleanup_batch_plan",
+                source_id=source_id,
+                total_chunks=total,
+                batch_size=batch_size,
+            )
 
             for i in range(0, total, batch_size):
                 batch_ids = ids[i : i + batch_size]
                 await client.table("content_chunks").delete().in_("id", batch_ids).execute()
-                logger.info(
-                    f"Purged batch {int(i / batch_size) + 1}/{(total + batch_size - 1) // batch_size}"
+                emit_event(
+                    logger,
+                    "legacy_chunk_cleanup_batch_done",
+                    source_id=source_id,
+                    batch_index=int(i / batch_size) + 1,
+                    total_batches=(total + batch_size - 1) // batch_size,
                 )
                 import asyncio
 
                 await asyncio.sleep(0.1)  # Breather
 
-            logger.info(f"✅ Legacy chunks for source {source_id} purged successfully.")
+            emit_event(
+                logger,
+                "legacy_chunk_cleanup_completed",
+                source_id=source_id,
+                total_chunks=total,
+            )
         except Exception as e:
-            logger.error(f"❌ Failed to purge chunks for source {source_id}: {e}")
+            emit_event(
+                logger,
+                "legacy_chunk_cleanup_failed",
+                level="error",
+                source_id=source_id,
+                error=compact_error(e),
+            )
             raise e
 
     async def save_chunks(self, chunks: List[Any]) -> int:
@@ -78,7 +102,9 @@ class SupabaseContentRepository(IContentRepository):
             float(getattr(settings, "CONTENT_CHUNKS_INSERT_BATCH_SLEEP_SECONDS", 0.0) or 0.0),
         )
 
-        logger.info(f"Persisting {len(chunks)} chunks to Supabase...")
+        emit_event(
+            logger, "chunk_persistence_started", requested_chunks=len(chunks), tenant_id=tenant_id
+        )
 
         # Optimization (Pattern 5): Use list comprehension for faster processing
         # Resilience Guard: Filter out chunks with empty or None embeddings (Fix: 22000 dimension error)
@@ -104,16 +130,25 @@ class SupabaseContentRepository(IContentRepository):
                 valid_chunks.append(c)
 
         if chunks and not valid_chunks:
-            logger.error(
-                f"❌ Critical Failure: All {len(chunks)} chunks were filtered out due to missing embeddings."
+            emit_event(
+                logger,
+                "chunk_persistence_filtered_all",
+                level="error",
+                requested_chunks=len(chunks),
+                reason="missing_embeddings",
             )
             raise RuntimeError(
                 f"Audit Persistence Failure: document chunks lost due to empty embeddings."
             )
 
         if len(valid_chunks) < len(chunks):
-            logger.warning(
-                f"⚠️ Filtered {len(chunks) - len(valid_chunks)} chunks with empty embeddings."
+            emit_event(
+                logger,
+                "chunk_persistence_filtered_partial",
+                level="warning",
+                requested_chunks=len(chunks),
+                valid_chunks=len(valid_chunks),
+                filtered_chunks=len(chunks) - len(valid_chunks),
             )
 
         normalized_chunks = []
@@ -129,8 +164,12 @@ class SupabaseContentRepository(IContentRepository):
         total_chunks = len(normalized_chunks)
         total_batches = (total_chunks + batch_size - 1) // batch_size
 
-        logger.info(
-            f"🚀 Starting persistence of {total_chunks} chunks in {total_batches} batches..."
+        emit_event(
+            logger,
+            "chunk_persistence_batch_plan",
+            total_chunks=total_chunks,
+            total_batches=total_batches,
+            batch_size=batch_size,
         )
 
         for i in range(0, total_chunks, batch_size):
@@ -142,8 +181,12 @@ class SupabaseContentRepository(IContentRepository):
 
                 # Calculate progress
                 progress_pct = int((min(i + batch_size, total_chunks) / total_chunks) * 100)
-                logger.info(
-                    f"💾 [Persistence] Batch {current_batch_index}/{total_batches} uploaded ({progress_pct}%)."
+                emit_event(
+                    logger,
+                    "chunk_persistence_batch_done",
+                    batch_index=current_batch_index,
+                    total_batches=total_batches,
+                    progress_pct=progress_pct,
                 )
                 if inter_batch_sleep > 0:
                     import asyncio
@@ -151,8 +194,15 @@ class SupabaseContentRepository(IContentRepository):
                     await asyncio.sleep(inter_batch_sleep)
 
             except Exception as e:
-                logger.error(f"❌ Failed to insert batch {current_batch_index}: {e}")
+                emit_event(
+                    logger,
+                    "chunk_persistence_batch_failed",
+                    level="error",
+                    batch_index=current_batch_index,
+                    total_batches=total_batches,
+                    error=compact_error(e),
+                )
                 raise e
 
-        logger.info(f"✅ {total_chunks} chunks persisted successfully.")
+        emit_event(logger, "chunk_persistence_completed", persisted_chunks=total_chunks)
         return total_chunks

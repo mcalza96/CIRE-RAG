@@ -1,66 +1,46 @@
 import asyncio
 import logging
-import random
-from typing import Dict, Any, Optional
-from uuid import UUID
-from datetime import datetime, timedelta, timezone
-
-from app.infrastructure.container import CognitiveContainer
-from app.workflows.ingestion.dispatcher import IngestionDispatcher
-from app.domain.policies.ingestion_policy import IngestionPolicy
-from app.application.use_cases.process_document_worker_use_case import ProcessDocumentWorkerUseCase
-from app.services.database.taxonomy_manager import TaxonomyManager
-from app.infrastructure.adapters.supabase_metadata_adapter import SupabaseMetadataAdapter
-from app.infrastructure.supabase.client import (
-    get_async_supabase_client,
-    reset_async_supabase_client,
-)
-from app.services.knowledge.clustering_service import ClusteringService
-from app.core.settings import settings
-import app.workflows.ingestion.strategies  # Trigger strategy registration
+import time
+from typing import Any, Dict, Optional
 
 # Configure basic logging for worker visibility
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [WORKER] %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+# Reduce third-party noise during ingestion/enrichment loops.
+for noisy_logger in (
+    "google_genai",
+    "google.generativeai",
+    "httpx",
+    "httpcore",
+):
+    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
-async def rebuild_community_graph_task(tenant_id: str) -> Dict[str, Any]:
-    """
-    Offline task: rebuild GraphRAG communities for one tenant.
-    Safe to call from scheduler, worker hooks, or ad-hoc scripts.
-    """
-    try:
-        tenant_uuid = UUID(str(tenant_id))
-    except Exception as exc:
-        logger.error("Invalid tenant_id for community rebuild: %s | error=%s", tenant_id, exc)
-        return {"ok": False, "reason": "invalid_tenant_id", "tenant_id": tenant_id}
+from app.application.use_cases.process_document_worker_use_case import ProcessDocumentWorkerUseCase
+from app.core.observability.ingestion_logging import compact_error, emit_event
+from app.core.settings import settings
+from app.domain.policies.ingestion_policy import IngestionPolicy
+from app.infrastructure.adapters.supabase_metadata_adapter import SupabaseMetadataAdapter
+from app.infrastructure.container import CognitiveContainer
+from app.infrastructure.queue.supabase_job_store import SupabaseJobStore
+from app.services.database.taxonomy_manager import TaxonomyManager
+from app.workflows.ingestion.dispatcher import IngestionDispatcher
+import app.workflows.ingestion.strategies  # Trigger strategy registration
 
-    try:
-        service = ClusteringService()
-        result = await service.rebuild_communities(tenant_uuid)
-
-        if result.get("communities_detected", 0) == 0:
-            logger.warning("Community rebuild skipped (empty graph) tenant=%s", tenant_uuid)
-
-        payload = {"ok": True, "tenant_id": str(tenant_uuid), **result}
-        logger.info("Community rebuild completed: %s", payload)
-        return payload
-    except Exception as exc:
-        logger.error("Community rebuild failed tenant=%s error=%s", tenant_uuid, exc, exc_info=True)
-        return {
-            "ok": False,
-            "tenant_id": str(tenant_uuid),
-            "reason": "execution_error",
-            "error": str(exc),
-        }
+# Import and re-export for backward compatibility
+from app.schedules.community_scheduler import (
+    CommunityScheduler,
+    rebuild_community_graph_task as rebuild_community_graph_task,
+)
 
 
 class IngestionWorker:
     def __init__(self):
-        self._client = None
         self.is_running = True
         self._active_doc_ids = set()  # Memory Lock for concurrency control
         self._active_lock = asyncio.Lock()
+
+        # Load concurrency settings
         self.worker_concurrency = max(1, int(getattr(settings, "WORKER_CONCURRENCY", 3)))
         self.worker_per_tenant_concurrency = max(
             1,
@@ -70,15 +50,23 @@ class IngestionWorker:
             1,
             int(getattr(settings, "WORKER_POLL_INTERVAL_SECONDS", 2)),
         )
+        self.worker_source_lookup_max_requeues = max(
+            0,
+            int(getattr(settings, "WORKER_SOURCE_LOOKUP_MAX_REQUEUES", 3) or 3),
+        )
         self.enrichment_worker_concurrency = max(
             1,
             int(getattr(settings, "ENRICHMENT_WORKER_CONCURRENCY", 2)),
         )
+
         self._semaphore = asyncio.Semaphore(self.worker_concurrency)
         self._tenant_semaphores: dict[str, asyncio.Semaphore] = {}
         self._tenant_semaphores_lock = asyncio.Lock()
         self._tenant_active_jobs: dict[str, int] = {}
         self._tenant_active_jobs_lock = asyncio.Lock()
+        self._source_lookup_requeues_by_job: dict[str, int] = {}
+
+        # Queue Alerts configuration
         self.worker_tenant_queue_sample_limit = max(
             1,
             int(getattr(settings, "WORKER_TENANT_QUEUE_SAMPLE_LIMIT", 1000)),
@@ -91,8 +79,6 @@ class IngestionWorker:
             1,
             int(getattr(settings, "WORKER_TENANT_QUEUE_WAIT_ALERT_SECONDS", 300)),
         )
-        self._last_community_rebuild_at: datetime | None = None
-        self._community_rebuild_lock = asyncio.Lock()
 
         # 1. Use Container for all dependencies
         container = CognitiveContainer.get_instance()
@@ -129,18 +115,9 @@ class IngestionWorker:
 
         self.source_repository = container.source_repository
 
-        self.community_rebuild_enabled = settings.COMMUNITY_REBUILD_ENABLED
-        self.community_rebuild_interval_seconds = settings.COMMUNITY_REBUILD_INTERVAL_SECONDS
-        self.community_rebuild_tenants = [
-            token.strip()
-            for token in settings.COMMUNITY_REBUILD_TENANTS.split(",")
-            if token.strip()
-        ]
-
-    async def get_client(self):
-        if self._client is None:
-            self._client = await get_async_supabase_client()
-        return self._client
+        # 4. Infrastructure Components (New)
+        self.job_store = SupabaseJobStore()
+        self.community_scheduler = CommunityScheduler(source_repository=self.source_repository)
 
     async def _process_source_record(self, record: Dict[str, Any]) -> bool:
         doc_id = record.get("id")
@@ -168,9 +145,9 @@ class IngestionWorker:
                             tenant_key=tenant_key, trigger="start", doc_id=str(doc_id)
                         )
                         await self.process_use_case.execute(record)
-                        await self._update_batch_progress(record=record, success=True)
+                        await self.job_store.update_batch_progress(record=record, success=True)
             except Exception:
-                await self._update_batch_progress(record=record, success=False)
+                await self.job_store.update_batch_progress(record=record, success=False)
                 raise
             finally:
                 await self._decrement_active_jobs(tenant_key)
@@ -186,114 +163,11 @@ class IngestionWorker:
             logger.error(f"Error en Worker para documento {doc_id}: {e}", exc_info=True)
             return False
 
-    async def _fetch_next_job(self, job_type: str) -> Optional[Dict[str, Any]]:
-        max_retries = max(
-            0,
-            int(getattr(settings, "WORKER_SUPABASE_TRANSIENT_MAX_RETRIES", 3) or 3),
-        )
-        base_delay = max(
-            0.05,
-            float(getattr(settings, "WORKER_SUPABASE_TRANSIENT_BASE_DELAY_SECONDS", 0.4) or 0.4),
-        )
-
-        for attempt in range(max_retries + 1):
-            try:
-                client = await self.get_client()
-                response = await client.rpc(
-                    "fetch_next_job", {"p_job_type": str(job_type)}
-                ).execute()
-                jobs = response.data if isinstance(response.data, list) else []
-                if not jobs:
-                    return None
-                first = jobs[0]
-                return first if isinstance(first, dict) else None
-            except Exception as exc:
-                if not self._is_transient_supabase_transport_error(exc):
-                    raise
-                await self._reset_supabase_client_after_transport_error(
-                    error=exc,
-                    operation="fetch_next_job",
-                    attempt=attempt + 1,
-                    max_attempts=max_retries + 1,
-                    job_type=job_type,
-                )
-                if attempt >= max_retries:
-                    raise
-                delay = min(base_delay * (2**attempt), 3.0) + random.uniform(0.0, 0.12)
-                await asyncio.sleep(delay)
-
-        return None
-
-    async def _reset_supabase_client_after_transport_error(
-        self,
-        *,
-        error: Exception,
-        operation: str,
-        attempt: int,
-        max_attempts: int,
-        job_type: str,
-    ) -> None:
-        logger.warning(
-            "worker_supabase_transport_error operation=%s job_type=%s attempt=%s/%s error=%s",
-            operation,
-            job_type,
-            attempt,
-            max_attempts,
-            str(error),
-        )
-        self._client = None
-        reset_async_supabase_client()
-
-    @staticmethod
-    def _is_transient_supabase_transport_error(exc: Exception) -> bool:
-        name = exc.__class__.__name__.lower()
-        text = str(exc or "").lower()
-        transient_markers = (
-            "readerror",
-            "connecterror",
-            "remoteprotocolerror",
-            "timeouterror",
-            "pooltimeout",
-            "temporarily unavailable",
-            "connection reset",
-            "broken pipe",
-        )
-        if any(marker in name for marker in transient_markers):
-            return True
-        if any(marker in text for marker in transient_markers):
-            return True
-        return False
-
-    async def _load_source_document(self, source_document_id: str) -> Optional[Dict[str, Any]]:
-        client = await self.get_client()
-        response = (
-            await client.table("source_documents")
-            .select("*")
-            .eq("id", str(source_document_id))
-            .maybe_single()
-            .execute()
-        )
-        row = response.data
-        return row if isinstance(row, dict) else None
-
-    async def _mark_job_final(
-        self,
-        job_id: str,
-        status: str,
-        result: Optional[Dict[str, Any]] = None,
-        error_message: Optional[str] = None,
-    ) -> None:
-        client = await self.get_client()
-        payload: Dict[str, Any] = {
-            "status": status,
-            "result": result or {},
-        }
-        if error_message:
-            payload["error_message"] = error_message
-        await client.table("job_queue").update(payload).eq("id", str(job_id)).execute()
-
     async def _run_single_ingestion_job(self, poller_id: int) -> bool:
-        job = await self._fetch_next_job(job_type="ingest_document")
+        await self.job_store.maybe_requeue_stale_processing_jobs(
+            job_type="ingest_document", poller_id=poller_id
+        )
+        job = await self.job_store.fetch_next_job(job_type="ingest_document")
         if not job:
             return False
 
@@ -302,7 +176,7 @@ class IngestionWorker:
         source_document_id = str(payload.get("source_document_id") or "")
         if not source_document_id:
             logger.error("ingestion_job_invalid_payload job_id=%s payload=%s", job_id, payload)
-            await self._mark_job_final(
+            await self.job_store.mark_job_final(
                 job_id=job_id,
                 status="failed",
                 error_message="Missing source_document_id in payload",
@@ -316,49 +190,140 @@ class IngestionWorker:
             job_id,
             source_document_id,
         )
-        record = await self._load_source_document(source_document_id=source_document_id)
-        if not record:
-            await self._mark_job_final(
+        stop_signal, heartbeat_task = await self.job_store.with_job_heartbeat(job_id=job_id)
+        t0 = time.perf_counter()
+        try:
+            try:
+                record = await self.job_store.load_source_document(
+                    source_document_id=source_document_id
+                )
+                self._source_lookup_requeues_by_job.pop(job_id, None)
+            except Exception as exc:
+                is_transient = self.job_store.is_transient_supabase_transport_error(exc) or (
+                    "supabase_empty_response" in str(exc)
+                )
+                if not is_transient:
+                    raise
+                current = int(self._source_lookup_requeues_by_job.get(job_id, 0)) + 1
+                self._source_lookup_requeues_by_job[job_id] = current
+                if current > self.worker_source_lookup_max_requeues:
+                    await self.job_store.mark_job_final(
+                        job_id=job_id,
+                        status="failed",
+                        error_message=(
+                            f"source_document_lookup_transient_exhausted:{compact_error(exc)}"
+                        ),
+                        result={
+                            "ok": False,
+                            "reason": "source_document_lookup_transient_exhausted",
+                            "source_document_id": source_document_id,
+                            "attempts": current,
+                        },
+                    )
+                    self._source_lookup_requeues_by_job.pop(job_id, None)
+                    emit_event(
+                        logger,
+                        "ingestion_job_failed_transient_source_lookup_exhausted",
+                        level="error",
+                        poller_id=poller_id,
+                        job_id=job_id,
+                        source_document_id=source_document_id,
+                        attempts=current,
+                        max_requeues=self.worker_source_lookup_max_requeues,
+                        error=compact_error(exc),
+                    )
+                    return True
+                await self.job_store.requeue_job_for_retry(
+                    job_id=job_id,
+                    error_message=(
+                        "source_document_lookup_transient:"
+                        f"attempt={current}/{self.worker_source_lookup_max_requeues}:"
+                        f"{compact_error(exc)}"
+                    ),
+                )
+                emit_event(
+                    logger,
+                    "ingestion_job_requeued_transient_source_lookup",
+                    level="warning",
+                    poller_id=poller_id,
+                    job_id=job_id,
+                    source_document_id=source_document_id,
+                    attempts=current,
+                    max_requeues=self.worker_source_lookup_max_requeues,
+                    error=compact_error(exc),
+                )
+                return True
+            if not record:
+                await self.job_store.mark_job_final(
+                    job_id=job_id,
+                    status="failed",
+                    error_message=f"source_document_not_found:{source_document_id}",
+                    result={
+                        "ok": False,
+                        "reason": "source_document_not_found",
+                        "source_document_id": source_document_id,
+                    },
+                )
+                return True
+
+            processed = await self._process_source_record(record)
+            status = str(record.get("status") or "").lower()
+            if processed:
+                duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+                emit_event(
+                    logger,
+                    "ingestion_job_summary",
+                    poller_id=poller_id,
+                    job_id=job_id,
+                    source_document_id=source_document_id,
+                    ok=True,
+                    final_status=status,
+                    duration_ms=duration_ms,
+                )
+                await self.job_store.mark_job_final(
+                    job_id=job_id,
+                    status="completed",
+                    result={
+                        "ok": True,
+                        "source_document_id": source_document_id,
+                        "final_status": status,
+                    },
+                )
+                return True
+
+            await self.job_store.mark_job_final(
                 job_id=job_id,
                 status="failed",
-                error_message=f"source_document_not_found:{source_document_id}",
+                error_message=f"ingestion_processing_failed:{source_document_id}",
                 result={
                     "ok": False,
-                    "reason": "source_document_not_found",
-                    "source_document_id": source_document_id,
-                },
-            )
-            return True
-
-        processed = await self._process_source_record(record)
-        status = str(record.get("status") or "").lower()
-        if processed:
-            await self._mark_job_final(
-                job_id=job_id,
-                status="completed",
-                result={
-                    "ok": True,
+                    "reason": "processing_failed",
                     "source_document_id": source_document_id,
                     "final_status": status,
                 },
             )
+            duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+            emit_event(
+                logger,
+                "ingestion_job_summary",
+                level="warning",
+                poller_id=poller_id,
+                job_id=job_id,
+                source_document_id=source_document_id,
+                ok=False,
+                final_status=status,
+                duration_ms=duration_ms,
+                error_code="PROCESSING_FAILED",
+            )
             return True
-
-        await self._mark_job_final(
-            job_id=job_id,
-            status="failed",
-            error_message=f"ingestion_processing_failed:{source_document_id}",
-            result={
-                "ok": False,
-                "reason": "processing_failed",
-                "source_document_id": source_document_id,
-                "final_status": status,
-            },
-        )
-        return True
+        finally:
+            await self.job_store.stop_job_heartbeat(stop_signal=stop_signal, task=heartbeat_task)
 
     async def _run_single_enrichment_job(self, poller_id: int) -> bool:
-        job = await self._fetch_next_job(job_type="enrich_document")
+        await self.job_store.maybe_requeue_stale_processing_jobs(
+            job_type="enrich_document", poller_id=poller_id
+        )
+        job = await self.job_store.fetch_next_job(job_type="enrich_document")
         if not job:
             return False
 
@@ -366,7 +331,7 @@ class IngestionWorker:
         payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
         source_document_id = str(payload.get("source_document_id") or "")
         if not source_document_id:
-            await self._mark_job_final(
+            await self.job_store.mark_job_final(
                 job_id=job_id,
                 status="failed",
                 error_message="Missing source_document_id in payload",
@@ -374,9 +339,68 @@ class IngestionWorker:
             )
             return True
 
-        record = await self._load_source_document(source_document_id=source_document_id)
+        try:
+            record = await self.job_store.load_source_document(
+                source_document_id=source_document_id
+            )
+            self._source_lookup_requeues_by_job.pop(job_id, None)
+        except Exception as exc:
+            is_transient = self.job_store.is_transient_supabase_transport_error(exc) or (
+                "supabase_empty_response" in str(exc)
+            )
+            if not is_transient:
+                raise
+            current = int(self._source_lookup_requeues_by_job.get(job_id, 0)) + 1
+            self._source_lookup_requeues_by_job[job_id] = current
+            if current > self.worker_source_lookup_max_requeues:
+                await self.job_store.mark_job_final(
+                    job_id=job_id,
+                    status="failed",
+                    error_message=(
+                        f"source_document_lookup_transient_exhausted:{compact_error(exc)}"
+                    ),
+                    result={
+                        "ok": False,
+                        "reason": "source_document_lookup_transient_exhausted",
+                        "source_document_id": source_document_id,
+                        "attempts": current,
+                    },
+                )
+                self._source_lookup_requeues_by_job.pop(job_id, None)
+                emit_event(
+                    logger,
+                    "enrichment_job_failed_transient_source_lookup_exhausted",
+                    level="error",
+                    poller_id=poller_id,
+                    job_id=job_id,
+                    source_document_id=source_document_id,
+                    attempts=current,
+                    max_requeues=self.worker_source_lookup_max_requeues,
+                    error=compact_error(exc),
+                )
+                return True
+            await self.job_store.requeue_job_for_retry(
+                job_id=job_id,
+                error_message=(
+                    "source_document_lookup_transient:"
+                    f"attempt={current}/{self.worker_source_lookup_max_requeues}:"
+                    f"{compact_error(exc)}"
+                ),
+            )
+            emit_event(
+                logger,
+                "enrichment_job_requeued_transient_source_lookup",
+                level="warning",
+                poller_id=poller_id,
+                job_id=job_id,
+                source_document_id=source_document_id,
+                attempts=current,
+                max_requeues=self.worker_source_lookup_max_requeues,
+                error=compact_error(exc),
+            )
+            return True
         if not record:
-            await self._mark_job_final(
+            await self.job_store.mark_job_final(
                 job_id=job_id,
                 status="failed",
                 error_message=f"source_document_not_found:{source_document_id}",
@@ -390,25 +414,50 @@ class IngestionWorker:
 
         tenant_id = record.get("institution_id")
         collection_id = payload.get("collection_id") or record.get("collection_id")
+        include_visual = bool(payload.get("include_visual", False))
+        include_graph = bool(payload.get("include_graph", True))
+        include_raptor = bool(payload.get("include_raptor", True))
         logger.info(
-            "poller=%s processing_enrichment_job job_id=%s source_document_id=%s",
+            "poller=%s processing_enrichment_job job_id=%s source_document_id=%s visual=%s graph=%s raptor=%s",
             poller_id,
             job_id,
             source_document_id,
+            include_visual,
+            include_graph,
+            include_raptor,
         )
+        stop_signal, heartbeat_task = await self.job_store.with_job_heartbeat(job_id=job_id)
+        t0 = time.perf_counter()
         try:
             result = await self.process_use_case.post_ingestion_service.run_deferred_enrichment(
                 doc_id=source_document_id,
                 tenant_id=str(tenant_id) if tenant_id else None,
                 collection_id=str(collection_id) if collection_id else None,
+                include_visual=include_visual,
+                include_graph=include_graph,
+                include_raptor=include_raptor,
             )
-            await self._mark_job_final(
+            await self.job_store.mark_job_final(
                 job_id=job_id,
                 status="completed",
                 result=result,
             )
+            emit_event(
+                logger,
+                "enrichment_job_summary",
+                poller_id=poller_id,
+                job_id=job_id,
+                source_document_id=source_document_id,
+                ok=True,
+                duration_ms=round((time.perf_counter() - t0) * 1000.0, 2),
+                include_visual=include_visual,
+                include_graph=include_graph,
+                include_raptor=include_raptor,
+                chunks=result.get("chunks") if isinstance(result, dict) else None,
+                visual_stitched=result.get("visual_stitched") if isinstance(result, dict) else None,
+            )
         except Exception as exc:
-            await self._mark_job_final(
+            await self.job_store.mark_job_final(
                 job_id=job_id,
                 status="failed",
                 error_message=str(exc),
@@ -416,9 +465,26 @@ class IngestionWorker:
                     "ok": False,
                     "reason": "enrichment_failed",
                     "source_document_id": source_document_id,
-                    "error": str(exc),
+                    "error": compact_error(exc),
                 },
             )
+            emit_event(
+                logger,
+                "enrichment_job_summary",
+                level="error",
+                poller_id=poller_id,
+                job_id=job_id,
+                source_document_id=source_document_id,
+                ok=False,
+                duration_ms=round((time.perf_counter() - t0) * 1000.0, 2),
+                include_visual=include_visual,
+                include_graph=include_graph,
+                include_raptor=include_raptor,
+                error_code="ENRICHMENT_FAILED",
+                error=compact_error(exc),
+            )
+        finally:
+            await self.job_store.stop_job_heartbeat(stop_signal=stop_signal, task=heartbeat_task)
         return True
 
     async def _poller_loop(self, poller_id: int) -> None:
@@ -471,7 +537,7 @@ class IngestionWorker:
         consecutive_errors: int,
         error: Exception,
     ) -> None:
-        if not self._is_transient_supabase_transport_error(error):
+        if not self.job_store.is_transient_supabase_transport_error(error):
             return
         threshold = max(
             1,
@@ -520,19 +586,14 @@ class IngestionWorker:
             return int(self._tenant_active_jobs.get(tenant_key, 0))
 
     @staticmethod
-    def _parse_iso_datetime(value: Any) -> datetime | None:
-        if not value:
-            return None
-        try:
-            text = str(value).strip()
-            if text.endswith("Z"):
-                text = text[:-1] + "+00:00"
-            parsed = datetime.fromisoformat(text)
-            if parsed.tzinfo is None:
-                return parsed.replace(tzinfo=timezone.utc)
-            return parsed
-        except Exception:
-            return None
+    def _resolve_tenant_key(record: Dict[str, Any]) -> str:
+        tenant_id = record.get("institution_id")
+        if tenant_id:
+            return str(tenant_id)
+        metadata = record.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("institution_id"):
+            return str(metadata.get("institution_id"))
+        return "global"
 
     async def _emit_tenant_runtime_metrics(
         self, tenant_key: str, trigger: str, doc_id: str
@@ -547,37 +608,12 @@ class IngestionWorker:
 
         if tenant_key != "global":
             try:
-                client = await self.get_client()
-                queue_res = (
-                    await client.table("source_documents")
-                    .select("id,created_at")
-                    .eq("institution_id", tenant_key)
-                    .in_(
-                        "status",
-                        ["queued", "pending", "pending_ingestion", "processing", "processing_v2"],
-                    )
-                    .order("created_at", desc=False)
-                    .limit(self.worker_tenant_queue_sample_limit)
-                    .execute()
+                queue_metrics = await self.job_store.get_tenant_queue_metrics(
+                    tenant_key=tenant_key, sample_limit=self.worker_tenant_queue_sample_limit
                 )
-                rows = queue_res.data or []
-                queue_depth = len(rows)
-                oldest_created_at = (
-                    rows[0].get("created_at") if rows and isinstance(rows[0], dict) else None
-                )
-                oldest_dt = self._parse_iso_datetime(oldest_created_at)
-                wait_seconds = 0
-                if oldest_dt is not None:
-                    wait_seconds = max(
-                        0, int((datetime.now(timezone.utc) - oldest_dt).total_seconds())
-                    )
-
-                metrics["queue_depth"] = queue_depth
-                metrics["queue_wait_seconds"] = wait_seconds
-                metrics["queue_depth_sample_limit"] = self.worker_tenant_queue_sample_limit
-                metrics["queue_depth_truncated"] = (
-                    queue_depth >= self.worker_tenant_queue_sample_limit
-                )
+                metrics.update(queue_metrics)
+                queue_depth = int(queue_metrics.get("queue_depth", 0))
+                wait_seconds = int(queue_metrics.get("queue_wait_seconds", 0))
 
                 logger.info("worker_tenant_runtime_metrics %s", metrics)
 
@@ -606,32 +642,8 @@ class IngestionWorker:
         else:
             logger.info("worker_tenant_runtime_metrics %s", metrics)
 
-    @staticmethod
-    def _resolve_tenant_key(record: Dict[str, Any]) -> str:
-        tenant_id = record.get("institution_id")
-        if tenant_id:
-            return str(tenant_id)
-        metadata = record.get("metadata")
-        if isinstance(metadata, dict) and metadata.get("institution_id"):
-            return str(metadata.get("institution_id"))
-        return "global"
-
-    async def _update_batch_progress(self, record: Dict[str, Any], success: bool) -> None:
-        batch_id = record.get("batch_id")
-        if not batch_id:
-            return
-        try:
-            client = await self.get_client()
-            await client.rpc(
-                "update_batch_progress", {"p_batch_id": str(batch_id), "p_success": bool(success)}
-            ).execute()
-        except Exception as exc:
-            logger.warning(
-                f"batch_progress_update_failed batch_id={batch_id} success={success} error={exc}"
-            )
-
     async def start(self):
-        await self.get_client()
+        await self.job_store.get_client()
         logger.info("Starting RAG Ingestion Worker with pull model")
         logger.info(f"Worker concurrency configured: {self.worker_concurrency}")
         logger.info(f"Worker per-tenant concurrency: {self.worker_per_tenant_concurrency}")
@@ -644,12 +656,9 @@ class IngestionWorker:
             self.worker_tenant_queue_sample_limit,
         )
 
-        scheduler_task: Optional[asyncio.Task] = None
-
         async def scheduler_loop() -> None:
             while self.is_running:
-                if self.community_rebuild_enabled:
-                    await self._tick_community_rebuild_scheduler()
+                await self.community_scheduler.tick()
                 await asyncio.sleep(1)
 
         scheduler_task = asyncio.create_task(scheduler_loop())
@@ -672,143 +681,8 @@ class IngestionWorker:
             if scheduler_task:
                 scheduler_task.cancel()
 
-    async def _resolve_tenant_ids_for_rebuild(self) -> list[str]:
-        if self.community_rebuild_tenants:
-            return self.community_rebuild_tenants
-
-        client = await self.get_client()
-        try:
-            response = (
-                await client.table("knowledge_entities").select("tenant_id").limit(10000).execute()
-            )
-            rows = response.data or []
-            tenant_ids = sorted({str(row.get("tenant_id")) for row in rows if row.get("tenant_id")})
-            return tenant_ids
-        except Exception as exc:
-            logger.warning("Could not auto-resolve tenants for community rebuild: %s", exc)
-            return []
-
-    async def _pick_audit_document_id(self, tenant_id: str) -> str | None:
-        client = await self.get_client()
-        try:
-            response = (
-                await client.table("source_documents")
-                .select("id")
-                .eq("institution_id", tenant_id)
-                .order("created_at", desc=True)
-                .limit(1)
-                .execute()
-            )
-            rows = response.data or []
-            if not rows:
-                return None
-            return str(rows[0].get("id"))
-        except Exception as exc:
-            logger.warning("Could not resolve audit document for tenant=%s: %s", tenant_id, exc)
-            return None
-
-    async def _audit_community_run(
-        self, tenant_id: str, payload: Dict[str, Any], status: str
-    ) -> None:
-        doc_id = await self._pick_audit_document_id(tenant_id)
-        if not doc_id:
-            logger.warning(
-                "Skipping ingestion_events audit for tenant=%s (no source document found)",
-                tenant_id,
-            )
-            return
-
-        message = (
-            f"Community rebuild tenant={tenant_id}: "
-            f"ok={payload.get('ok', False)}, "
-            f"detected={payload.get('communities_detected', 0)}, "
-            f"persisted={payload.get('communities_persisted', 0)}"
-        )
-        await self.source_repository.log_event(
-            doc_id=doc_id,
-            message=message,
-            status=status,
-            tenant_id=tenant_id,
-            metadata={
-                "phase": "community_rebuild",
-                "tenant_id": tenant_id,
-                "run_at": datetime.now(timezone.utc).isoformat(),
-                "result": payload,
-            },
-        )
-
-    async def _run_community_rebuild_cycle(self) -> None:
-        tenant_ids = await self._resolve_tenant_ids_for_rebuild()
-        if not tenant_ids:
-            logger.info("Community scheduler: no tenants to rebuild")
-            return
-
-        logger.info("Community scheduler: starting cycle tenants=%s", len(tenant_ids))
-        for tenant_id in tenant_ids:
-            await self._enqueue_community_rebuild_job(tenant_id)
-
-    async def _enqueue_community_rebuild_job(self, tenant_id: str) -> None:
-        client = await self.get_client()
-        try:
-            existing = (
-                await client.table("job_queue")
-                .select("id,status")
-                .eq("job_type", "community_rebuild")
-                .eq("tenant_id", tenant_id)
-                .in_("status", ["pending", "processing"])
-                .limit(1)
-                .execute()
-            )
-
-            if existing.data:
-                logger.info(
-                    "community_rebuild_job_exists",
-                    tenant_id=tenant_id,
-                    job_id=existing.data[0].get("id"),
-                )
-                return
-
-            inserted = (
-                await client.table("job_queue")
-                .insert(
-                    {
-                        "job_type": "community_rebuild",
-                        "tenant_id": tenant_id,
-                        "payload": {"tenant_id": tenant_id, "scheduled_by": "ingestion_worker"},
-                    }
-                )
-                .execute()
-            )
-
-            job_id = (inserted.data or [{}])[0].get("id")
-            logger.info("community_rebuild_job_enqueued", tenant_id=tenant_id, job_id=job_id)
-        except Exception as exc:
-            logger.error(
-                "community_rebuild_job_enqueue_failed", tenant_id=tenant_id, error=str(exc)
-            )
-
-    async def _tick_community_rebuild_scheduler(self) -> None:
-        now = datetime.now(timezone.utc)
-        if self._last_community_rebuild_at is not None:
-            next_run = self._last_community_rebuild_at + timedelta(
-                seconds=self.community_rebuild_interval_seconds
-            )
-            if now < next_run:
-                return
-
-        if self._community_rebuild_lock.locked():
-            return
-
-        async with self._community_rebuild_lock:
-            self._last_community_rebuild_at = now
-            try:
-                await self._run_community_rebuild_cycle()
-            except Exception as exc:
-                logger.error("Community scheduler cycle failed: %s", exc, exc_info=True)
-
 
 if __name__ == "__main__":
-    # Ensure logs are visible
     worker = IngestionWorker()
     try:
         asyncio.run(worker.start())

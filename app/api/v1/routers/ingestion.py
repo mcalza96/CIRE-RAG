@@ -54,6 +54,12 @@ class CleanupCollectionRequest(BaseModel):
     collection_key: str
 
 
+class ReplayEnrichmentRequest(BaseModel):
+    include_visual: bool = True
+    include_graph: bool = True
+    include_raptor: bool = True
+
+
 # --- DEPENDENCIES ---
 
 
@@ -409,6 +415,103 @@ async def retry_ingestion_endpoint(
     except Exception as e:
         logger.error("retry_ingestion_failed", doc_id=doc_id, error=str(e))
         raise ApiError(status_code=500, code="RETRY_FAILED", message="Retry failed")
+
+
+@router.post("/enrich/{doc_id}")
+async def replay_enrichment_endpoint(
+    doc_id: str,
+    request: ReplayEnrichmentRequest,
+    use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
+):
+    """Enqueue deferred enrichment (visual/graph/raptor) without re-ingesting the file."""
+    try:
+        tenant_id = require_tenant_from_context()
+        result = await use_case.enqueue_deferred_enrichment(
+            doc_id=doc_id,
+            tenant_id=tenant_id,
+            include_visual=bool(request.include_visual),
+            include_graph=bool(request.include_graph),
+            include_raptor=bool(request.include_raptor),
+        )
+        return {"status": "accepted", **result}
+    except FileNotFoundError as e:
+        raise ApiError(
+            status_code=404,
+            code="DOCUMENT_NOT_FOUND",
+            message="Document not found",
+            details=str(e),
+        )
+    except ValueError as e:
+        detail = str(e)
+        if "TENANT_MISMATCH" in detail:
+            raise ApiError(
+                status_code=400,
+                code="TENANT_MISMATCH",
+                message="Tenant mismatch",
+                details=detail,
+            )
+        raise ApiError(
+            status_code=400,
+            code="INVALID_ENRICHMENT_REPLAY_REQUEST",
+            message="Invalid enrichment replay request",
+            details=detail,
+        )
+    except Exception as e:
+        logger.error("replay_enrichment_failed", doc_id=doc_id, error=str(e))
+        raise ApiError(
+            status_code=500,
+            code="REPLAY_ENRICHMENT_FAILED",
+            message="Replay enrichment failed",
+        )
+
+
+@router.get("/jobs/{job_id}")
+async def get_job_status_endpoint(
+    job_id: str,
+    use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
+):
+    try:
+        tenant_id = require_tenant_from_context()
+        row = await use_case.get_job_status(tenant_id=tenant_id, job_id=job_id)
+        return {
+            "id": row.get("id"),
+            "job_type": row.get("job_type"),
+            "status": row.get("status"),
+            "error_message": row.get("error_message"),
+            "result": row.get("result") if isinstance(row.get("result"), dict) else {},
+            "payload": row.get("payload") if isinstance(row.get("payload"), dict) else {},
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+        }
+    except ValueError as e:
+        detail = str(e)
+        if detail == "JOB_NOT_FOUND":
+            raise ApiError(
+                status_code=404,
+                code="JOB_NOT_FOUND",
+                message="Job not found",
+                details=detail,
+            )
+        if "TENANT_MISMATCH" in detail:
+            raise ApiError(
+                status_code=400,
+                code="TENANT_MISMATCH",
+                message="Tenant mismatch",
+                details=detail,
+            )
+        raise ApiError(
+            status_code=400,
+            code="INVALID_JOB_STATUS_REQUEST",
+            message="Invalid job status request",
+            details=detail,
+        )
+    except Exception as e:
+        logger.error("job_status_failed", job_id=job_id, error=str(e))
+        raise ApiError(
+            status_code=500,
+            code="JOB_STATUS_FAILED",
+            message="Failed to read job status",
+        )
 
 
 @router.post("/batches")

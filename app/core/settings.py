@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     INGEST_EMBED_FALLBACK_ON_TECHNICAL_ERROR: bool = True
     EMBEDDING_PROVIDER_ALLOWLIST: str = "jina,cohere"
     OPENAI_FALLBACK_MODEL: str = "gpt-4o-mini"
+    STRICT_ENGINE_MAX_TOKENS: Optional[int] = 8192
     JINA_BASE_URL: str = "https://api.jina.ai/v1/embeddings"
     JINA_MODEL_NAME: str = "jinaai/jina-embeddings-v3"
     JINA_EMBEDDING_DIMENSIONS: int = 1024
@@ -91,6 +92,10 @@ class Settings(BaseSettings):
     WORKER_SUPABASE_TRANSIENT_BASE_DELAY_SECONDS: float = 0.4
     WORKER_SUPABASE_ERROR_COOLDOWN_THRESHOLD: int = 4
     WORKER_SUPABASE_ERROR_COOLDOWN_SECONDS: float = 6.0
+    WORKER_SOURCE_LOOKUP_MAX_REQUEUES: int = 3
+    WORKER_JOB_HEARTBEAT_SECONDS: float = 20.0
+    WORKER_REQUEUE_STALE_INTERVAL_SECONDS: int = 15
+    WORKER_REQUEUE_STALE_PROCESSING_SECONDS: int = 120
     EMBEDDING_CONCURRENCY: int = 5
     EMBEDDING_CACHE_MAX_SIZE: int = 4000
     EMBEDDING_CACHE_TTL_SECONDS: int = 1800
@@ -181,7 +186,11 @@ class Settings(BaseSettings):
     # Deferred enrichment pipeline
     INGESTION_ENRICHMENT_ASYNC_ENABLED: bool = True
     INGESTION_GRAPH_BATCH_SIZE: int = 6
+    INGESTION_VISUAL_ASYNC_ENABLED: bool = True
+    METRICS_EMBEDDING_SPAN_MIN_MS: float = 800.0
+    INGESTION_GRAPH_CHUNK_LOG_EVERY_N: int = 25
     ENRICHMENT_WORKER_CONCURRENCY: int = 2
+    ENRICHMENT_JOB_TIMEOUT_SECONDS: int = 900
 
     @field_validator("JINA_MODE", mode="before")
     @classmethod

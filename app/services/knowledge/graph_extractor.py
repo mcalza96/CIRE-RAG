@@ -14,6 +14,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
 from app.core.structured_generation import StrictEngine, get_strict_engine
+from app.core.observability.ingestion_logging import compact_error
 
 try:
     from app.domain.graph_schemas import ExtractedNode, ExtractedEdge, GraphExtractionResult
@@ -340,14 +341,14 @@ class GraphExtractor(IGraphExtractor):
         except Exception as primary_err:
             logger.warning(
                 "Batch graph extraction failed via instructor; trying JSON fallback: %s",
-                primary_err,
+                compact_error(primary_err),
             )
             try:
                 extraction = await self._aextract_batch_with_json_fallback(batch_text=batch_text)
             except Exception as fallback_err:
                 logger.warning(
                     "Batch graph extraction fallback failed; reverting to per-chunk calls: %s",
-                    fallback_err,
+                    compact_error(fallback_err),
                 )
                 return await asyncio.gather(
                     *(self.extract_graph_from_chunk_async(text) for text in cleaned_texts)
@@ -387,7 +388,7 @@ class GraphExtractor(IGraphExtractor):
         except Exception as primary_err:
             logger.warning(
                 "Graph triple extraction failed via instructor; trying JSON fallback: %s",
-                primary_err,
+                compact_error(primary_err),
             )
             try:
                 extraction = self._extract_with_json_fallback(text)

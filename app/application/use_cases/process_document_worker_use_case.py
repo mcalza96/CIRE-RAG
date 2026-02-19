@@ -154,6 +154,15 @@ class ProcessDocumentWorkerUseCase:
                     source_id=doc_id,
                 )
 
+                result_metadata = result.metadata if isinstance(result.metadata, dict) else {}
+                routing_meta = (
+                    result_metadata.get("routing")
+                    if isinstance(result_metadata.get("routing"), dict)
+                    else {}
+                )
+                if routing_meta:
+                    current_meta["routing"] = routing_meta
+
                 if result.status != IngestionStatus.SUCCESS.value:
                     raise RuntimeError(
                         f"Ingestion pipeline returned non-success status='{result.status}' for doc_id={doc_id}"
@@ -175,23 +184,35 @@ class ProcessDocumentWorkerUseCase:
                         collection_id=collection_id,
                     )
 
-                    # 8. Visual Anchor stitching (strict for visual pages)
-                    visual_stats = await self._run_visual_anchor_if_needed(
-                        doc_id=doc_id,
-                        tenant_id=tenant_id,
-                        result=result,
+                    visual_async_enabled = bool(
+                        getattr(settings, "INGESTION_VISUAL_ASYNC_ENABLED", True)
                     )
-                    if visual_stats.get("attempted", 0) > 0:
-                        current_meta["visual_anchor"] = visual_stats
-                        loss_events = (
-                            int(visual_stats.get("degraded_inline", 0))
-                            + int(visual_stats.get("parse_failed", 0))
-                            + int(visual_stats.get("skipped", 0))
+                    if not visual_async_enabled:
+                        visual_stats = await self._run_visual_anchor_if_needed(
+                            doc_id=doc_id,
+                            tenant_id=tenant_id,
+                            result=result,
                         )
-                        current_meta["visual_loss_indicator"] = {
-                            "has_loss": loss_events > 0,
-                            "loss_events": loss_events,
-                            "copyright_blocks": int(visual_stats.get("parse_failed_copyright", 0)),
+                        if visual_stats.get("attempted", 0) > 0:
+                            current_meta["visual_anchor"] = visual_stats
+                            loss_events = (
+                                int(visual_stats.get("degraded_inline", 0))
+                                + int(visual_stats.get("parse_failed", 0))
+                                + int(visual_stats.get("skipped", 0))
+                            )
+                            current_meta["visual_loss_indicator"] = {
+                                "has_loss": loss_events > 0,
+                                "loss_events": loss_events,
+                                "copyright_blocks": int(
+                                    visual_stats.get("parse_failed_copyright", 0)
+                                ),
+                            }
+                    else:
+                        current_meta["visual_anchor"] = {
+                            "status": "queued",
+                            "async": True,
+                            "attempted": 0,
+                            "stitched": 0,
                         }
 
                     if bool(getattr(settings, "INGESTION_ENRICHMENT_ASYNC_ENABLED", True)):
@@ -201,11 +222,18 @@ class ProcessDocumentWorkerUseCase:
                                     doc_id=doc_id,
                                     tenant_id=tenant_id,
                                     collection_id=collection_id,
+                                    include_visual=visual_async_enabled,
+                                    include_graph=True,
+                                    include_raptor=True,
                                 )
                             )
                             current_meta["enrichment"] = {
                                 "status": "queued" if enqueued else "already_queued",
                                 "async": True,
+                            }
+                            current_meta["searchable"] = {
+                                "status": "ready",
+                                "chunks_persisted": int(persisted_count),
                             }
                             await self.state_manager.log_step(
                                 doc_id,
@@ -295,6 +323,7 @@ class ProcessDocumentWorkerUseCase:
             state_manager=self.state_manager,
             raptor_processor=self.raptor_processor,
             raptor_repo=raptor_repo,
+            visual_anchor_service=self.visual_anchor_service,
         )
 
     async def _run_visual_anchor_if_needed(

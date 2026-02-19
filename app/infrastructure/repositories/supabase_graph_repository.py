@@ -86,18 +86,39 @@ class SupabaseGraphRepository:
 
         client = await self._get_client()
         try:
-            response = await client.table(table).insert(rows).select(select_cols).execute()
-            return response.data or []
+            query = client.table(table).insert(rows)
+            if hasattr(query, "select"):
+                response = await query.select(select_cols).execute()
+                return response.data or []
+            await query.execute()
+            return [row for row in rows if isinstance(row, dict)]
         except Exception as batch_error:
             logger.warning("Fallo insercion batch en %s, fallback por fila: %s", table, batch_error)
             inserted: list[dict] = []
             for row in rows:
                 try:
-                    response = await client.table(table).insert(row).select(select_cols).execute()
-                    if response.data:
-                        inserted.extend(response.data)
+                    query = client.table(table).insert(row)
+                    if hasattr(query, "select"):
+                        response = await query.select(select_cols).execute()
+                        if response.data:
+                            inserted.extend(response.data)
+                    else:
+                        await query.execute()
+                        if isinstance(row, dict):
+                            inserted.append(row)
                 except Exception as row_error:
-                    logger.error("Fallo insercion fila en %s: %s | row=%s", table, row_error, row)
+                    row_preview = {
+                        "tenant_id": row.get("tenant_id"),
+                        "source_entity_id": row.get("source_entity_id"),
+                        "target_entity_id": row.get("target_entity_id"),
+                        "relation_type": row.get("relation_type"),
+                    }
+                    logger.error(
+                        "Fallo insercion fila en %s: %s | row_preview=%s",
+                        table,
+                        row_error,
+                        row_preview,
+                    )
             return inserted
 
     async def _bulk_upsert_with_fallback(
@@ -112,26 +133,31 @@ class SupabaseGraphRepository:
 
         client = await self._get_client()
         try:
-            response = (
-                await client.table(table)
-                .upsert(rows, on_conflict=on_conflict)
-                .select(select_cols)
-                .execute()
-            )
-            return response.data or []
+            query = client.table(table).upsert(rows, on_conflict=on_conflict)
+            if hasattr(query, "select"):
+                response = await query.select(select_cols).execute()
+                data = response.data if isinstance(response.data, list) else []
+                return data
+
+            # Compatibility path for SDK variants where upsert builder has no .select()
+            await query.execute()
+            return [row for row in rows if isinstance(row, dict)]
         except Exception as batch_error:
             logger.warning("Fallo upsert batch en %s, fallback por fila: %s", table, batch_error)
             upserted: list[dict] = []
             for row in rows:
                 try:
-                    response = (
-                        await client.table(table)
-                        .upsert(row, on_conflict=on_conflict)
-                        .select(select_cols)
-                        .execute()
-                    )
-                    if response.data:
-                        upserted.extend(response.data)
+                    query = client.table(table).upsert(row, on_conflict=on_conflict)
+                    if hasattr(query, "select"):
+                        response = await query.select(select_cols).execute()
+                        if isinstance(response.data, list):
+                            upserted.extend(response.data)
+                        elif isinstance(response.data, dict):
+                            upserted.append(response.data)
+                    else:
+                        await query.execute()
+                        if isinstance(row, dict):
+                            upserted.append(row)
                 except Exception as row_error:
                     logger.error("Fallo upsert fila en %s: %s | row=%s", table, row_error, row)
             return upserted
