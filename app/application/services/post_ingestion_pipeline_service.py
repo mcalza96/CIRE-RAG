@@ -461,7 +461,7 @@ class PostIngestionPipelineService:
         embedding_provider = self._resolve_embedding_provider(chunks)
         graph_batch_size = max(
             1,
-            int(getattr(settings, "INGESTION_GRAPH_BATCH_SIZE", 6) or 6),
+            int(getattr(settings, "INGESTION_GRAPH_BATCH_SIZE", 4) or 4),
         )
         graph_log_every_n = max(
             1,

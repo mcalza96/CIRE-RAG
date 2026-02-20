@@ -13,6 +13,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
+from app.core.settings import settings
 from app.core.structured_generation import StrictEngine, get_strict_engine
 from app.core.observability.ingestion_logging import compact_error
 
@@ -325,6 +326,49 @@ class GraphExtractor(IGraphExtractor):
             sections.append(f"[CHUNK {idx}]\\n{chunk_text}")
         return "\n\n".join(sections)
 
+    @staticmethod
+    def _estimate_tokens_from_chars(char_len: int) -> int:
+        return max(1, (int(char_len) + 3) // 4)
+
+    def _should_force_per_chunk(self, texts: list[str]) -> bool:
+        if len(texts) <= 1:
+            return False
+
+        max_batch_chars = max(
+            2000,
+            int(getattr(settings, "GRAPH_EXTRACTION_BATCH_MAX_CHARS", 24000) or 24000),
+        )
+        max_batch_estimated_tokens = max(
+            500,
+            int(getattr(settings, "GRAPH_EXTRACTION_BATCH_MAX_ESTIMATED_TOKENS", 6000) or 6000),
+        )
+        max_single_chunk_chars = max(
+            1000,
+            int(getattr(settings, "GRAPH_EXTRACTION_SINGLE_CHUNK_MAX_CHARS", 10000) or 10000),
+        )
+
+        total_chars = sum(len(str(text or "")) for text in texts)
+        estimated_tokens = self._estimate_tokens_from_chars(total_chars)
+        oversize_chunk = any(len(str(text or "")) > max_single_chunk_chars for text in texts)
+        exceeds_batch_chars = total_chars > max_batch_chars
+        exceeds_batch_tokens = estimated_tokens > max_batch_estimated_tokens
+
+        if oversize_chunk or exceeds_batch_chars or exceeds_batch_tokens:
+            logger.info(
+                "graphrag_batch_guardrail_forced_per_chunk",
+                chunks=len(texts),
+                total_chars=total_chars,
+                estimated_tokens=estimated_tokens,
+                max_batch_chars=max_batch_chars,
+                max_batch_estimated_tokens=max_batch_estimated_tokens,
+                max_single_chunk_chars=max_single_chunk_chars,
+                oversize_chunk=oversize_chunk,
+                exceeds_batch_chars=exceeds_batch_chars,
+                exceeds_batch_tokens=exceeds_batch_tokens,
+            )
+            return True
+        return False
+
     async def extract_graph_batch_async(self, texts: list[str]) -> list[ChunkGraphExtraction]:
         if not texts:
             return []
@@ -332,6 +376,10 @@ class GraphExtractor(IGraphExtractor):
         cleaned_texts = [text.strip() if isinstance(text, str) else "" for text in texts]
         if len(cleaned_texts) == 1:
             return [await self.extract_graph_from_chunk_async(cleaned_texts[0])]
+        if self._should_force_per_chunk(cleaned_texts):
+            return await asyncio.gather(
+                *(self.extract_graph_from_chunk_async(text) for text in cleaned_texts)
+            )
 
         batch_text = self._build_batch_text(cleaned_texts)
         if not batch_text.strip():

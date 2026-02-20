@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     INGEST_EMBED_FALLBACK_ON_TECHNICAL_ERROR: bool = True
     EMBEDDING_PROVIDER_ALLOWLIST: str = "jina,cohere"
     OPENAI_FALLBACK_MODEL: str = "gpt-4o-mini"
-    STRICT_ENGINE_MAX_TOKENS: Optional[int] = 3072
+    STRICT_ENGINE_MAX_TOKENS: Optional[int] = 4096
     JINA_BASE_URL: str = "https://api.jina.ai/v1/embeddings"
     JINA_MODEL_NAME: str = "jinaai/jina-embeddings-v3"
     JINA_EMBEDDING_DIMENSIONS: int = 1024
@@ -139,6 +139,7 @@ class Settings(BaseSettings):
     QUERY_DECOMPOSER_SKIP_SIMPLE_QUERIES: bool = True
     RETRIEVAL_ENGINE_MODE: str = "atomic"  # unified | atomic | hybrid
     SCOPE_STRICT_FILTERING: bool = False
+    RETRIEVAL_SCOPE_PENALTY_FACTOR: float = 0.25
     ATOMIC_ENABLE_FTS: bool = True
     ATOMIC_ENABLE_GRAPH_HOP: bool = True
     ATOMIC_USE_HYBRID_RPC: bool = True
@@ -188,7 +189,10 @@ class Settings(BaseSettings):
 
     # Deferred enrichment pipeline
     INGESTION_ENRICHMENT_ASYNC_ENABLED: bool = True
-    INGESTION_GRAPH_BATCH_SIZE: int = 6
+    INGESTION_GRAPH_BATCH_SIZE: int = 4
+    GRAPH_EXTRACTION_BATCH_MAX_CHARS: int = 24000
+    GRAPH_EXTRACTION_BATCH_MAX_ESTIMATED_TOKENS: int = 6000
+    GRAPH_EXTRACTION_SINGLE_CHUNK_MAX_CHARS: int = 10000
     INGEST_SKIP_STRUCTURAL_EMBEDDING: bool = True
     INGESTION_VISUAL_ASYNC_ENABLED: bool = True
     METRICS_EMBEDDING_SPAN_MIN_MS: float = 800.0

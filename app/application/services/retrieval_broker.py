@@ -139,7 +139,9 @@ class RetrievalBroker:
     def _apply_scope_penalty(
         self, results: List[Dict[str, Any]], requested_scopes: tuple[str, ...]
     ) -> List[Dict[str, Any]]:
-        return apply_scope_penalty(results, requested_scopes, penalty_factor=0.75)
+        penalty_factor = float(getattr(settings, "RETRIEVAL_SCOPE_PENALTY_FACTOR", 0.25) or 0.25)
+        penalty_factor = max(0.0, min(0.95, penalty_factor))
+        return apply_scope_penalty(results, requested_scopes, penalty_factor=penalty_factor)
 
     @staticmethod
     def _count_scope_penalized(results: List[Dict[str, Any]]) -> int:

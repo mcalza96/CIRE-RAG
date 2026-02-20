@@ -58,10 +58,20 @@ class PdfParserService:
             current_char = 0
             img_regex = re.compile(r"!\[\]\((.*?)\)")
 
+            extracted_pages: list[dict[str, Any]] = []
             for item in page_results:
                 page_data = item if isinstance(item, dict) else {}
                 page_num = int(page_data.get("metadata", {}).get("page", 0)) + 1
-                page_text = str(page_data.get("text", "")).strip()
+                page_text = str(page_data.get("text", "") or "")
+                extracted_pages.append({"page": page_num, "text": page_text})
+
+            cleaned_page_texts = self._strip_repeated_page_boilerplate(
+                [str(entry.get("text") or "") for entry in extracted_pages]
+            )
+
+            for entry, cleaned_text in zip(extracted_pages, cleaned_page_texts):
+                page_num = int(entry.get("page") or 1)
+                page_text = str(cleaned_text or "").strip()
                 if not page_text:
                     continue
 
@@ -196,6 +206,8 @@ class PdfParserService:
         full_text = ""
         current_char = 0
         page_map = []
+        page_texts_raw: list[str] = []
+        page_numbers: list[int] = []
 
         try:
             for page_num in range(doc.page_count):
@@ -205,13 +217,22 @@ class PdfParserService:
                 if not page_text.strip():
                     continue
 
+                page_texts_raw.append(page_text)
+                page_numbers.append(page_num + 1)
+
+            cleaned_page_texts = self._strip_repeated_page_boilerplate(page_texts_raw)
+            for page_num, cleaned_text in zip(page_numbers, cleaned_page_texts):
+                page_text = str(cleaned_text or "").strip()
+                if not page_text:
+                    continue
+
                 # Heuristic: ensure basic paragraph spacing if missing
                 if "\n\n" not in page_text:
                     page_text = page_text.replace("\n", "\n\n")
 
                 start = current_char
                 end = start + len(page_text)
-                page_map.append({"page": page_num + 1, "start": start, "end": end})
+                page_map.append({"page": page_num, "start": start, "end": end})
 
                 full_text += page_text + "\n\n"  # Safe separation between pages
                 current_char = len(full_text)
@@ -229,3 +250,75 @@ class PdfParserService:
             if char_idx >= p["start"] and char_idx < p["end"]:
                 return p["page"]
         return page_map[-1]["page"] if page_map else 1
+
+    @staticmethod
+    def _normalize_boilerplate_line(line: str) -> str:
+        normalized = str(line or "").strip().lower()
+        normalized = re.sub(r"\s+", " ", normalized)
+        normalized = re.sub(r"\d+", "#", normalized)
+        return normalized
+
+    @classmethod
+    def _strip_repeated_page_boilerplate(cls, page_texts: List[str]) -> List[str]:
+        if len(page_texts) < 2:
+            return [str(text or "") for text in page_texts]
+
+        hint_tokens = (
+            "norma internacional",
+            "international standard",
+            "traduccion oficial",
+            "traducción oficial",
+            "iso",
+        )
+        candidate_counts: dict[str, int] = {}
+        candidate_original: dict[str, str] = {}
+
+        for raw_text in page_texts:
+            lines = [line.strip() for line in str(raw_text or "").splitlines() if line.strip()]
+            boundary_lines = lines[:2] + lines[-2:]
+            seen_norm: set[str] = set()
+            for line in boundary_lines:
+                if len(line) < 4 or len(line) > 160:
+                    continue
+                norm = cls._normalize_boilerplate_line(line)
+                if norm in seen_norm:
+                    continue
+                seen_norm.add(norm)
+                candidate_counts[norm] = candidate_counts.get(norm, 0) + 1
+                candidate_original.setdefault(norm, line)
+
+        min_repetition = max(2, int(len(page_texts) * 0.35))
+        removable: set[str] = set()
+        for norm, count in candidate_counts.items():
+            if count < min_repetition:
+                continue
+            sample = candidate_original.get(norm, "").lower()
+            if any(token in sample for token in hint_tokens):
+                removable.add(norm)
+                continue
+            alpha_ratio = sum(ch.isalpha() for ch in sample) / max(1, len(sample))
+            if alpha_ratio >= 0.45:
+                removable.add(norm)
+
+        if not removable:
+            return [str(text or "") for text in page_texts]
+
+        cleaned_pages: list[str] = []
+        removed_lines = 0
+        for raw_text in page_texts:
+            out_lines: list[str] = []
+            for line in str(raw_text or "").splitlines():
+                norm = cls._normalize_boilerplate_line(line)
+                if norm in removable:
+                    removed_lines += 1
+                    continue
+                out_lines.append(line)
+            cleaned_pages.append("\n".join(out_lines))
+
+        logger.info(
+            "pdf_boilerplate_cleaning_applied",
+            pages=len(page_texts),
+            removable_patterns=len(removable),
+            removed_lines=removed_lines,
+        )
+        return cleaned_pages

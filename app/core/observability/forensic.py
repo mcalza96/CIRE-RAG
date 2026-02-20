@@ -8,21 +8,30 @@ from app.core.settings import settings
 
 logger = structlog.get_logger("forensic")
 
+
 class ForensicLevel:
     OFF = "OFF"
     FULL = "FULL"
     METADATA_ONLY = "METADATA_ONLY"
+
 
 class ForensicRecorder:
     """
     Records deep cognitive traces for RAG retrieval and LLM generation.
     Enables "Glass Box" observability to troubleshoot RAG issues.
     """
-    
+
     LEVEL = settings.FORENSIC_LOGGING_LEVEL or ForensicLevel.FULL
 
+    @staticmethod
+    def _estimate_tokens(value: str) -> int:
+        text = str(value or "")
+        return max(1, (len(text) + 3) // 4)
+
     @classmethod
-    def record_retrieval(cls, query: str, results: List[Dict[str, Any]], metadata: Optional[Dict[str, Any]] = None):
+    def record_retrieval(
+        cls, query: str, results: List[Dict[str, Any]], metadata: Optional[Dict[str, Any]] = None
+    ):
         """
         Logs what the RAG retrieved before sending to the LLM.
         """
@@ -39,8 +48,9 @@ class ForensicRecorder:
                 {
                     "id": str(r.get("id")),
                     "score": r.get("similarity") or r.get("score"),
-                    "source": (r.get("metadata") or {}).get("filename") or (r.get("metadata") or {}).get("source"),
-                    "snippet": (r.get("content") or "")[:100] + "..." if r.get("content") else None
+                    "source": (r.get("metadata") or {}).get("filename")
+                    or (r.get("metadata") or {}).get("source"),
+                    "snippet": (r.get("content") or "")[:100] + "..." if r.get("content") else None,
                 }
                 for r in results
             ]
@@ -52,11 +62,13 @@ class ForensicRecorder:
             type="forensic_trace",
             stage="retrieval",
             data=data,
-            **(metadata or {})
+            **(metadata or {}),
         )
 
     @classmethod
-    def record_generation(cls, prompt: Any, response: str, model_params: Optional[Dict[str, Any]] = None):
+    def record_generation(
+        cls, prompt: Any, response: str, model_params: Optional[Dict[str, Any]] = None
+    ):
         """
         Logs the final prompt (context + mandates) and the model's raw output.
         """
@@ -65,10 +77,11 @@ class ForensicRecorder:
 
         # Prompt can be a string (DSPy) or List[Dict] (OpenAI/LangChain)
         prompt_str = str(prompt)
-        
+
         data = {
             "response_length": len(response),
-            "model_params": model_params or {}
+            "response_estimated_tokens": cls._estimate_tokens(response),
+            "model_params": model_params or {},
         }
 
         if cls.LEVEL == ForensicLevel.FULL:
@@ -76,22 +89,18 @@ class ForensicRecorder:
             data["response"] = response
         else:
             data["prompt_length"] = len(prompt_str)
-            
-        logger.info(
-            "LLM Generation Trace",
-            type="forensic_trace",
-            stage="generation",
-            data=data
-        )
+            data["prompt_estimated_tokens"] = cls._estimate_tokens(prompt_str)
+
+        logger.info("LLM Generation Trace", type="forensic_trace", stage="generation", data=data)
+
 
 class ForensicCallbackHandler(BaseCallbackHandler):
     """
     LangChain Callback Handler for Forensic Observability.
     Captures prompts and responses from any LangChain LLM call.
     """
-    def on_llm_start(
-        self, serialized: Dict[str, Any], prompts: List[str], **kwargs: Any
-    ) -> Any:
+
+    def on_llm_start(self, serialized: Dict[str, Any], prompts: List[str], **kwargs: Any) -> Any:
         # Cache the current prompt for on_llm_end
         self.current_prompts = prompts
 
@@ -103,15 +112,22 @@ class ForensicCallbackHandler(BaseCallbackHandler):
 
     def on_llm_end(self, response: LLMResult, **kwargs: Any) -> Any:
         for i, generation in enumerate(response.generations):
-            prompt = self.current_prompts[i] if hasattr(self, "current_prompts") else self.current_messages[i] if hasattr(self, "current_messages") else "Unknown"
+            prompt = (
+                self.current_prompts[i]
+                if hasattr(self, "current_prompts")
+                else self.current_messages[i]
+                if hasattr(self, "current_messages")
+                else "Unknown"
+            )
             resp_text = generation[0].text
             ForensicRecorder.record_generation(
                 prompt=prompt,
                 response=resp_text,
                 model_params={
                     "model": (response.llm_output or {}).get("model_name"),
-                    "provider": "langchain_callback"
-                }
+                    "provider": "langchain_callback",
+                },
             )
+
 
 recorder = ForensicRecorder()
