@@ -2,12 +2,8 @@ import structlog
 import time
 import math
 from typing import List, Dict, Any, Optional
-from app.application.services.query_decomposer import (
-    QueryDecomposer,
-    QueryPlan,
-    is_simple_single_hop_query,
-)
 from app.core.settings import settings
+from app.domain.schemas.query_plan import PlannedSubQuery, QueryPlan
 from app.services.embedding_service import JinaEmbeddingService
 from app.services.knowledge.gravity_reranker import GravityReranker
 from app.services.knowledge.jina_reranker import JinaReranker
@@ -63,7 +59,6 @@ class RetrievalBroker:
         self.direct_strategy = DirectRetrievalStrategy(repository)
         self.iterative_strategy = IterativeRetrievalStrategy(repository)
         self.atomic_engine = atomic_engine or AtomicRetrievalEngine()
-        self.query_decomposer = QueryDecomposer()
 
     async def close(self) -> None:
         try:
@@ -211,25 +206,25 @@ class RetrievalBroker:
             else:
                 mode = self._engine_mode()
                 skip_planner_flag = bool(scope_context.get("_skip_planner"))
+                external_plan = self._coerce_query_plan(scope_context.get("retrieval_plan"))
                 planner_used = bool(
-                    settings.QUERY_DECOMPOSER_ENABLED
-                    and mode in {"atomic", "hybrid"}
+                    mode in {"atomic", "hybrid"}
                     and not skip_planner_flag
+                    and external_plan is not None
+                    and bool(external_plan.sub_queries)
                 )
-                if planner_used and bool(settings.QUERY_DECOMPOSER_SKIP_SIMPLE_QUERIES):
-                    if is_simple_single_hop_query(query):
-                        planner_used = False
-                        trace_payload["planner_skipped_reason"] = "simple_single_hop_query"
                 if skip_planner_flag:
                     trace_payload["planner_skipped_reason"] = "multi_query_subquery"
-                if planner_used:
-                    plan = await self.query_decomposer.decompose(query)
-                else:
-                    plan = QueryPlan(is_multihop=False, execution_mode="parallel", sub_queries=[])
+                plan = external_plan or QueryPlan(
+                    is_multihop=False,
+                    execution_mode="parallel",
+                    sub_queries=[],
+                )
                 trace_payload["engine_mode"] = mode
                 trace_payload["planner_used"] = planner_used
                 trace_payload["planner_multihop"] = bool(plan.is_multihop)
                 trace_payload["planner_subquery_count"] = len(plan.sub_queries)
+                trace_payload["planner_source"] = "request" if planner_used else "none"
                 planner_skipped_reason = trace_payload.get("planner_skipped_reason")
                 if plan.fallback_reason:
                     trace_payload["planner_fallback_reason"] = str(plan.fallback_reason)
@@ -443,6 +438,66 @@ class RetrievalBroker:
         except Exception as e:
             logger.error("broker_retrieval_failed", error=str(e), query=query)
             raise e
+
+    @staticmethod
+    def _coerce_query_plan(raw_plan: Any) -> QueryPlan | None:
+        if isinstance(raw_plan, QueryPlan):
+            return raw_plan
+        if not isinstance(raw_plan, dict):
+            return None
+
+        raw_items = raw_plan.get("sub_queries")
+        if not isinstance(raw_items, list):
+            return None
+
+        subqueries: list[PlannedSubQuery] = []
+        for idx, item in enumerate(raw_items, start=1):
+            if not isinstance(item, dict):
+                continue
+            query = str(item.get("query") or "").strip()
+            if not query:
+                continue
+            raw_id = item.get("id")
+            if isinstance(raw_id, int):
+                sq_id = raw_id
+            elif isinstance(raw_id, str) and raw_id.strip().isdigit():
+                sq_id = int(raw_id.strip())
+            else:
+                sq_id = idx
+            dep = item.get("dependency_id")
+            dep_id = dep if isinstance(dep, int) else None
+            rels = item.get("target_relations")
+            nodes = item.get("target_node_types")
+            target_relations = (
+                [str(x).strip() for x in rels if str(x).strip()] if isinstance(rels, list) else None
+            )
+            target_node_types = (
+                [str(x).strip() for x in nodes if str(x).strip()]
+                if isinstance(nodes, list)
+                else None
+            )
+            subqueries.append(
+                PlannedSubQuery(
+                    id=sq_id,
+                    query=query,
+                    dependency_id=dep_id,
+                    target_relations=target_relations or None,
+                    target_node_types=target_node_types or None,
+                    is_deep=bool(item.get("is_deep", False)),
+                )
+            )
+
+        if not subqueries:
+            return None
+
+        mode = str(raw_plan.get("execution_mode") or "parallel").strip().lower()
+        execution_mode = "sequential" if mode == "sequential" else "parallel"
+        return QueryPlan(
+            is_multihop=bool(raw_plan.get("is_multihop", len(subqueries) > 1)),
+            execution_mode=execution_mode,
+            sub_queries=subqueries,
+            fallback_reason=(str(raw_plan.get("fallback_reason") or "").strip() or None),
+        )
 
     async def retrieve_summaries(
         self,

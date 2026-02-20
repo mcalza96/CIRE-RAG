@@ -132,11 +132,6 @@ class Settings(BaseSettings):
     USE_TRICAMERAL: bool = False
     ENABLE_HEART_VERIFICATION: bool = False
     DAILY_VLM_LIMIT: Optional[int] = None
-    QUERY_DECOMPOSER_ENABLED: bool = True
-    QUERY_DECOMPOSER_TIMEOUT_MS: int = 8000
-    QUERY_DECOMPOSER_MAX_SUBQUERIES: int = 4
-    QUERY_DECOMPOSER_MULTIHOP_TOLERANCE: float = 0.55
-    QUERY_DECOMPOSER_SKIP_SIMPLE_QUERIES: bool = True
     RETRIEVAL_ENGINE_MODE: str = "atomic"  # unified | atomic | hybrid
     SCOPE_STRICT_FILTERING: bool = False
     RETRIEVAL_SCOPE_PENALTY_FACTOR: float = 0.25

@@ -5,7 +5,7 @@ import math
 import re
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 import structlog
 
@@ -843,6 +843,11 @@ class RetrievalContractService:
             )
 
         scope_context = self._build_scope_context(validated, collection_id=request.collection_id)
+        if request.retrieval_plan is not None:
+            scope_context["retrieval_plan"] = request.retrieval_plan.model_dump(
+                mode="python",
+                exclude_none=True,
+            )
         if skip_planner:
             scope_context["_skip_planner"] = True
         if skip_external_rerank:
@@ -850,6 +855,7 @@ class RetrievalContractService:
 
         if not self._retrieval_tools:
             from app.infrastructure.container import CognitiveContainer
+
             self._retrieval_tools = CognitiveContainer().retrieval_tools
 
         rerank_enabled = bool(request.rerank.enabled) if request.rerank is not None else True

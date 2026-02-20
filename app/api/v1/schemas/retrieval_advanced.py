@@ -36,6 +36,22 @@ class GraphOptions(BaseModel):
     max_hops: int | None = Field(default=None, ge=0, le=4)
 
 
+class PlannedSubQueryPayload(BaseModel):
+    id: int
+    query: str = Field(..., min_length=1)
+    dependency_id: int | None = None
+    target_relations: list[str] | None = None
+    target_node_types: list[str] | None = None
+    is_deep: bool = False
+
+
+class RetrievalPlanPayload(BaseModel):
+    is_multihop: bool = False
+    execution_mode: Literal["parallel", "sequential"] = "parallel"
+    sub_queries: list[PlannedSubQueryPayload] = Field(default_factory=list)
+    fallback_reason: str | None = None
+
+
 class HybridRetrievalRequest(BaseModel):
     query: str = Field(..., min_length=1)
     tenant_id: str = Field(..., min_length=1)
@@ -45,6 +61,7 @@ class HybridRetrievalRequest(BaseModel):
     filters: ScopeFilters | None = None
     rerank: RerankOptions | None = None
     graph: GraphOptions | None = None
+    retrieval_plan: RetrievalPlanPayload | None = None
 
 
 class CoverageRequirements(BaseModel):

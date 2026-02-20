@@ -1,12 +1,18 @@
 import asyncio
 import structlog
 from uuid import UUID
-from typing import Dict, Any, Optional
+from typing import Callable, Dict, Any, Optional
 
 from app.infrastructure.queue.supabase_job_store import SupabaseJobStore
 from app.infrastructure.queue.base_worker import BaseWorkerProcessor
 from app.infrastructure.repositories.community_job_repository import CommunityJobRepository
 from app.services.knowledge.clustering_service import ClusteringService
+from app.workflows.ingestion.contracts import (
+    CommunityClusteringServiceProtocol,
+    CommunityJobRepositoryProtocol,
+    JobLoopProcessorProtocol,
+    WorkerJobStoreProtocol,
+)
 from app.workflows.ingestion.job_processor import TenantScopedJobProcessor
 
 logger = structlog.get_logger(__name__)
@@ -15,15 +21,21 @@ logger = structlog.get_logger(__name__)
 class CommunityWorker:
     def __init__(
         self,
-        job_store: Optional[SupabaseJobStore] = None,
-        repository: Optional[CommunityJobRepository] = None,
-        clustering_service: Optional[ClusteringService] = None,
+        job_store: Optional[WorkerJobStoreProtocol] = None,
+        repository: Optional[CommunityJobRepositoryProtocol] = None,
+        clustering_service: Optional[CommunityClusteringServiceProtocol] = None,
+        processor_factory: Optional[
+            Callable[[WorkerJobStoreProtocol, int], JobLoopProcessorProtocol]
+        ] = None,
     ):
         self.job_store = job_store or SupabaseJobStore()
         self.repository = repository or CommunityJobRepository()
         self.clustering_service = clustering_service or ClusteringService()
         self.job_processor = TenantScopedJobProcessor()
         self.job_type = "community_rebuild"
+        self.processor_factory = processor_factory or (
+            lambda store, poller_id: BaseWorkerProcessor(store, poller_id=poller_id)
+        )
 
     async def handle_job(self, job: Dict[str, Any]) -> Dict[str, Any]:
         job_id, tenant_id, _ = self.job_processor.prepare_tenant_job(job)
@@ -63,7 +75,7 @@ class CommunityWorker:
 
     async def start(self):
         logger.info("starting_community_worker")
-        processor = BaseWorkerProcessor(self.job_store, poller_id=1)
+        processor = self.processor_factory(self.job_store, 1)
         await processor.run_job_loop(self.job_type, self.handle_job, poll_interval=5)
 
 

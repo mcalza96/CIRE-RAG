@@ -1,5 +1,4 @@
 from app.api.v1.routers.chat import ChatMessage, _build_retrieval_query
-from app.services.knowledge.grounded_answer_service import GroundedAnswerService
 
 
 def test_build_retrieval_query_includes_history() -> None:
@@ -16,17 +15,18 @@ def test_build_retrieval_query_includes_history() -> None:
     assert "PREGUNTA ACTUAL" in query
 
 
-def test_render_history_limits_turns_and_skips_empty() -> None:
-    rendered = GroundedAnswerService._render_history(
-        [
-            {"role": "user", "content": "a"},
-            {"role": "assistant", "content": "b"},
-            {"role": "user", "content": ""},
-            {"role": "assistant", "content": "c"},
+def test_build_retrieval_query_limits_turns_and_skips_empty() -> None:
+    query = _build_retrieval_query(
+        "pregunta actual",
+        history=[
+            ChatMessage(role="user", content="a"),
+            ChatMessage(role="assistant", content="b"),
+            ChatMessage(role="user", content=""),
+            ChatMessage(role="assistant", content="c"),
         ],
         max_turns=2,
     )
 
-    assert "USER: a" not in rendered
-    assert "ASSISTANT: b" not in rendered
-    assert "ASSISTANT: c" in rendered
+    assert "USER: a" not in query
+    assert "ASSISTANT: b" in query
+    assert "ASSISTANT: c" in query

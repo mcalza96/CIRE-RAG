@@ -1,6 +1,6 @@
 import asyncio
 import structlog
-from typing import Optional
+from typing import Any, Callable, Coroutine, Dict, Optional
 
 from app.application.use_cases.process_document_worker_use_case import ProcessDocumentWorkerUseCase
 from app.core.settings import settings
@@ -124,29 +124,20 @@ class IngestionWorker:
 
         # Poller tasks
         poller_tasks = []
-        for i in range(self.worker_concurrency):
-            p = BaseWorkerProcessor(self.job_store, poller_id=i + 1)
-            poller_tasks.append(
-                asyncio.create_task(
-                    p.run_job_loop(
-                        "ingest_document",
-                        self.job_dispatcher.handle_ingestion,
-                        self.worker_poll_interval,
-                    )
-                )
+        poller_tasks.extend(
+            self._build_poller_tasks(
+                job_type="ingest_document",
+                concurrency=self.worker_concurrency,
+                handler=self.job_dispatcher.handle_ingestion,
             )
-
-        for i in range(self.enrichment_concurrency):
-            p = BaseWorkerProcessor(self.job_store, poller_id=i + 1)
-            poller_tasks.append(
-                asyncio.create_task(
-                    p.run_job_loop(
-                        "enrich_document",
-                        self.job_dispatcher.handle_enrichment,
-                        self.worker_poll_interval,
-                    )
-                )
+        )
+        poller_tasks.extend(
+            self._build_poller_tasks(
+                job_type="enrich_document",
+                concurrency=self.enrichment_concurrency,
+                handler=self.job_dispatcher.handle_enrichment,
             )
+        )
 
         async def scheduler_loop():
             while self.is_running:
@@ -162,6 +153,23 @@ class IngestionWorker:
             for t in poller_tasks:
                 t.cancel()
             scheduler_task.cancel()
+
+    def _build_poller_tasks(
+        self,
+        *,
+        job_type: str,
+        concurrency: int,
+        handler: Callable[[Dict[str, Any]], Coroutine[Any, Any, Dict[str, Any]]],
+    ) -> list[asyncio.Task]:
+        tasks: list[asyncio.Task] = []
+        for i in range(concurrency):
+            processor = BaseWorkerProcessor(self.job_store, poller_id=i + 1)
+            tasks.append(
+                asyncio.create_task(
+                    processor.run_job_loop(job_type, handler, self.worker_poll_interval)
+                )
+            )
+        return tasks
 
 
 if __name__ == "__main__":

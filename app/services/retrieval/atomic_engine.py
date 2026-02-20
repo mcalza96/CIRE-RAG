@@ -8,14 +8,18 @@ from uuid import UUID
 
 import structlog
 
-from app.application.services.query_decomposer import QueryPlan
 from app.core.observability.retrieval_metrics import retrieval_metrics_store
 from app.core.observability.timing import elapsed_ms, perf_now
 from app.core.settings import settings
 from app.domain.interfaces.atomic_retrieval_repository import IAtomicRetrievalRepository
+from app.domain.schemas.query_plan import QueryPlan
 from app.domain.schemas.retrieval_payloads import RetrievalRow
-from app.infrastructure.repositories.supabase_graph_retrieval_repository import SupabaseGraphRetrievalRepository
-from app.infrastructure.repositories.supabase_atomic_retrieval_repository import SupabaseAtomicRetrievalRepository
+from app.infrastructure.repositories.supabase_graph_retrieval_repository import (
+    SupabaseGraphRetrievalRepository,
+)
+from app.infrastructure.repositories.supabase_atomic_retrieval_repository import (
+    SupabaseAtomicRetrievalRepository,
+)
 from app.services.embedding_service import JinaEmbeddingService
 
 from app.services.retrieval.retrieval_scope_service import RetrievalScopeService
@@ -47,11 +51,11 @@ class AtomicRetrievalEngine:
             supabase_client=supabase_client
         )
         self._graph_repo = SupabaseGraphRetrievalRepository(supabase_client=supabase_client)
-        
+
         # New Services
         self._scope = scope_service or RetrievalScopeService()
         self._executor = executor or RetrievalPlanExecutor(self, self._scope)
-        
+
         self.last_trace: dict[str, Any] = {}
         self._hybrid_rpc_contract_checked: bool = type(self)._global_hybrid_rpc_contract_checked
         self._hybrid_rpc_contract_status: str = type(self)._global_hybrid_rpc_contract_status
@@ -73,17 +77,22 @@ class AtomicRetrievalEngine:
 
         start = perf_now()
         await self._ensure_hybrid_rpc_contract()
-        
-        self.last_trace.update({
-            "hybrid_rpc_enabled": bool(settings.ATOMIC_USE_HYBRID_RPC and not self._runtime_disable_hybrid_rpc),
-            "hybrid_rpc_used": False,
-            "rpc_contract_status": self._hybrid_rpc_contract_status,
-        })
-        
+
+        self.last_trace.update(
+            {
+                "hybrid_rpc_enabled": bool(
+                    settings.ATOMIC_USE_HYBRID_RPC and not self._runtime_disable_hybrid_rpc
+                ),
+                "hybrid_rpc_used": False,
+                "rpc_contract_status": self._hybrid_rpc_contract_status,
+            }
+        )
+
         query_vector = await self._embed_query(query)
         source_ids = await self._resolve_source_ids(scope_context or {})
-        if not source_ids: return []
-        
+        if not source_ids:
+            return []
+
         tenant_id = str((scope_context or {}).get("tenant_id") or "").strip()
         allowed_source_ids = set(str(sid) for sid in source_ids if str(sid).strip())
 
@@ -92,13 +101,17 @@ class AtomicRetrievalEngine:
         hybrid_rpc_used = False
 
         if settings.ATOMIC_USE_HYBRID_RPC and not self._runtime_disable_hybrid_rpc:
-            fused, hybrid_rpc_used = await self._try_hybrid_rpc(query, query_vector, source_ids, fetch_k)
+            fused, hybrid_rpc_used = await self._try_hybrid_rpc(
+                query, query_vector, source_ids, fetch_k
+            )
 
         if not hybrid_rpc_used:
-            fused = await self._search_vectors(query_vector=query_vector, source_ids=source_ids, fetch_k=fetch_k)
+            fused = await self._search_vectors(
+                query_vector=query_vector, source_ids=source_ids, fetch_k=fetch_k
+            )
 
         vector_ms = elapsed_ms(vector_start)
-        
+
         graph_rows = await self._graph_hop(
             query_vector=query_vector,
             scope_context=scope_context or {},
@@ -109,34 +122,43 @@ class AtomicRetrievalEngine:
         )
 
         merged = self._dedupe_by_id(fused + graph_rows)
-        self._scope.stamp_tenant_context(rows=merged, tenant_id=tenant_id, allowed_source_ids=allowed_source_ids)
-        
+        self._scope.stamp_tenant_context(
+            rows=merged, tenant_id=tenant_id, allowed_source_ids=allowed_source_ids
+        )
+
         merged, structural_trace = self._scope.filter_structural_rows(merged)
-        
+
         logger.info("atomic_engine_total", duration_ms=elapsed_ms(start), merged_rows=len(merged))
-        
-        self.last_trace.update({
-            "hybrid_rpc_used": hybrid_rpc_used,
-            "structural_filter": structural_trace,
-            "timings_ms": {"total": round(elapsed_ms(start), 2), "vector": round(vector_ms, 2)}
-        })
-        
+
+        self.last_trace.update(
+            {
+                "hybrid_rpc_used": hybrid_rpc_used,
+                "structural_filter": structural_trace,
+                "timings_ms": {"total": round(elapsed_ms(start), 2), "vector": round(vector_ms, 2)},
+            }
+        )
+
         return merged[:k]
 
     async def _try_hybrid_rpc(self, query, query_vector, source_ids, fetch_k):
         include_hnsw = self._hybrid_rpc_contract_status != "compat_without_hnsw_ef_search"
         try:
-            rows = await self._search_hybrid_rpc(query, query_vector, source_ids, fetch_k, include_hnsw_ef_search=include_hnsw)
+            rows = await self._search_hybrid_rpc(
+                query, query_vector, source_ids, fetch_k, include_hnsw_ef_search=include_hnsw
+            )
             retrieval_metrics_store.record_hybrid_rpc_hit()
             return rows, True
         except Exception as e:
             if self._is_hnsw_signature_mismatch(e):
                 logger.warning("hybrid_rpc_retry_without_hnsw")
                 try:
-                    rows = await self._search_hybrid_rpc(query, query_vector, source_ids, fetch_k, include_hnsw_ef_search=False)
+                    rows = await self._search_hybrid_rpc(
+                        query, query_vector, source_ids, fetch_k, include_hnsw_ef_search=False
+                    )
                     retrieval_metrics_store.record_hybrid_rpc_hit()
                     return rows, True
-                except Exception: pass
+                except Exception:
+                    pass
             retrieval_metrics_store.record_hybrid_rpc_fallback()
             return [], False
 
@@ -151,7 +173,7 @@ class AtomicRetrievalEngine:
         scope_context: dict[str, Any] | None = None,
         k: int = 10,
         fetch_k: int = 40,
-        **kwargs
+        **kwargs,
     ) -> list[dict[str, Any]]:
         """Delegates plan execution to RetrievalPlanExecutor."""
         return await self._executor.execute_plan(
@@ -160,7 +182,7 @@ class AtomicRetrievalEngine:
             scope_context=scope_context,
             k=k,
             fetch_k=fetch_k,
-            graph_options=kwargs
+            graph_options=kwargs,
         )
 
     async def _ensure_hybrid_rpc_contract(self) -> None:
@@ -268,7 +290,6 @@ class AtomicRetrievalEngine:
             "pgrst202" in text and "retrieve_hybrid_optimized" in text and "hnsw_ef_search" in text
         )
 
-
     async def _search_hybrid_rpc(
         self,
         query_text: str,
@@ -327,7 +348,6 @@ class AtomicRetrievalEngine:
                 }
             )
         return normalized
-
 
     async def _search_vectors(
         self, query_vector: list[float], source_ids: list[str], fetch_k: int
@@ -540,7 +560,9 @@ class AtomicRetrievalEngine:
                 if row_scope and not any(target in row_scope for target in source_standards):
                     continue
 
-            if metadata_filters and not self._scope.matches_metadata_filters(metadata, metadata_filters):
+            if metadata_filters and not self._scope.matches_metadata_filters(
+                metadata, metadata_filters
+            ):
                 continue
 
             if time_range and not self._scope.matches_time_range(row, time_range):
@@ -550,7 +572,6 @@ class AtomicRetrievalEngine:
             if row_id:
                 source_ids.append(str(row_id))
         return source_ids
-
 
     @staticmethod
     def _dedupe_by_id(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

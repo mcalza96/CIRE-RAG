@@ -8,14 +8,10 @@ from uuid import UUID
 import structlog
 from langchain_core.language_models.chat_models import BaseChatModel
 
-from app.application.services.query_decomposer import (
-    QueryDecomposer,
-    QueryPlan,
-    is_simple_single_hop_query,
-)
 from app.core.llm import get_llm
 from app.core.settings import settings
 from app.core.observability.scope_metrics import scope_metrics_store
+from app.domain.schemas.query_plan import PlannedSubQuery, QueryPlan
 from app.domain.knowledge_schemas import (
     AgentRole,
     RAGSearchResult,
@@ -55,7 +51,6 @@ class RetrievalRouter:
         supabase_client=None,
         llm_provider: Optional[BaseChatModel] = None,
         embedding_service: Optional[JinaEmbeddingService] = None,
-        query_decomposer: Optional[QueryDecomposer] = None,
     ):
         self.vector_tools = vector_tools
         self.graph_service = graph_service
@@ -64,7 +59,6 @@ class RetrievalRouter:
         self._supabase = supabase_client
         self._llm = llm_provider or get_llm(temperature=0.0, capability="FORENSIC")
         self._embedding = embedding_service or JinaEmbeddingService.get_instance()
-        self._query_decomposer = query_decomposer or QueryDecomposer(llm_provider=self._llm)
 
         self.local_graph = LocalGraphSearch(
             supabase_client=supabase_client,
@@ -221,19 +215,6 @@ class RetrievalRouter:
                 return QueryMode.HYBRID
             return QueryMode.GENERAL
 
-    async def _safe_graph_search(self, intent: RetrievalIntent) -> list[dict[str, Any]]:
-        """Deprecated legacy constraints path; kept for compatibility."""
-        tags = (intent.metadata or {}).get("context_tags") or []
-        if not tags or not self.graph_service:
-            return []
-
-        try:
-            constraints = await self.graph_service.get_active_constraints(tags)
-            return constraints if isinstance(constraints, list) else []
-        except Exception as exc:
-            logger.warning("legacy_constraint_search_failed", error=str(exc))
-            return []
-
     async def _retrieve_raptor(
         self, intent: RetrievalIntent, limit: int = 8
     ) -> list[dict[str, Any]]:
@@ -349,16 +330,9 @@ class RetrievalRouter:
 
         scope_context = self._scope_from_intent(intent)
         planner_start = time.perf_counter()
-        planner_used = bool(settings.QUERY_DECOMPOSER_ENABLED)
-        planner_skipped_reason: str | None = None
-        if planner_used and bool(settings.QUERY_DECOMPOSER_SKIP_SIMPLE_QUERIES):
-            if is_simple_single_hop_query(intent.query):
-                planner_used = False
-                planner_skipped_reason = "simple_single_hop_query"
-        if planner_used:
-            plan = await self._query_decomposer.decompose(intent.query)
-        else:
-            plan = QueryPlan(is_multihop=False, execution_mode="parallel", sub_queries=[])
+        plan = self._plan_from_intent(intent)
+        planner_used = bool(plan.sub_queries)
+        planner_skipped_reason: str | None = None if planner_used else "no_external_plan"
         planner_ms = round((time.perf_counter() - planner_start) * 1000, 2)
 
         if plan.is_multihop:
@@ -570,3 +544,60 @@ class RetrievalRouter:
             "context": context,
             "citations": list(dict.fromkeys(citations)),
         }
+
+    @staticmethod
+    def _plan_from_intent(intent: RetrievalIntent) -> QueryPlan:
+        metadata = intent.metadata if isinstance(intent.metadata, dict) else {}
+        raw_plan = metadata.get("retrieval_plan")
+        if not isinstance(raw_plan, dict):
+            return QueryPlan(is_multihop=False, execution_mode="parallel", sub_queries=[])
+
+        raw_subqueries = raw_plan.get("sub_queries")
+        if not isinstance(raw_subqueries, list):
+            return QueryPlan(is_multihop=False, execution_mode="parallel", sub_queries=[])
+
+        subqueries: list[PlannedSubQuery] = []
+        for idx, item in enumerate(raw_subqueries, start=1):
+            if not isinstance(item, dict):
+                continue
+            query = str(item.get("query") or "").strip()
+            if not query:
+                continue
+            raw_id = item.get("id")
+            if isinstance(raw_id, int):
+                sq_id = raw_id
+            elif isinstance(raw_id, str) and raw_id.strip().isdigit():
+                sq_id = int(raw_id.strip())
+            else:
+                sq_id = idx
+            rels = item.get("target_relations")
+            nodes = item.get("target_node_types")
+            subqueries.append(
+                PlannedSubQuery(
+                    id=sq_id,
+                    query=query,
+                    dependency_id=(
+                        item.get("dependency_id")
+                        if isinstance(item.get("dependency_id"), int)
+                        else None
+                    ),
+                    target_relations=[str(v).strip() for v in rels if str(v).strip()]
+                    if isinstance(rels, list)
+                    else None,
+                    target_node_types=[str(v).strip() for v in nodes if str(v).strip()]
+                    if isinstance(nodes, list)
+                    else None,
+                    is_deep=bool(item.get("is_deep", False)),
+                )
+            )
+
+        if not subqueries:
+            return QueryPlan(is_multihop=False, execution_mode="parallel", sub_queries=[])
+
+        mode = str(raw_plan.get("execution_mode") or "parallel").strip().lower()
+        return QueryPlan(
+            is_multihop=bool(raw_plan.get("is_multihop", len(subqueries) > 1)),
+            execution_mode="sequential" if mode == "sequential" else "parallel",
+            sub_queries=subqueries,
+            fallback_reason=str(raw_plan.get("fallback_reason") or "").strip() or None,
+        )

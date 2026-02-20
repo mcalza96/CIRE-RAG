@@ -4,7 +4,7 @@ from typing import Any, cast
 
 import pytest
 
-from app.application.services.query_decomposer import PlannedSubQuery, QueryPlan
+from app.domain.schemas.query_plan import PlannedSubQuery, QueryPlan
 from app.core.settings import settings
 from app.services.retrieval.atomic_engine import AtomicRetrievalEngine
 
