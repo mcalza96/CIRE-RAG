@@ -53,8 +53,20 @@ class CoverageRequirements(BaseModel):
     min_clause_refs: int = Field(default=0, ge=0, le=6)
 
 
+class SearchHint(BaseModel):
+    term: str
+    expand_to: list[str] = Field(default_factory=list)
+
+
+class RetrievalPolicy(BaseModel):
+    min_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    search_hints: list[SearchHint] = Field(default_factory=list)
+    noise_reduction: bool = True
+
+
 class ComprehensiveRetrievalRequest(HybridRetrievalRequest):
     coverage_requirements: CoverageRequirements | None = None
+    retrieval_policy: RetrievalPolicy | None = None
 
 
 class SubQueryRequest(BaseModel):
@@ -121,6 +133,7 @@ class ComprehensiveTrace(HybridTrace):
     missing_clause_refs_before: list[str] = Field(default_factory=list)
     missing_clause_refs_after: list[str] = Field(default_factory=list)
     coverage_policy: dict[str, Any] = Field(default_factory=dict)
+    retrieval_policy: dict[str, Any] = Field(default_factory=dict)
 
 
 class ComprehensiveRetrievalResponse(BaseModel):

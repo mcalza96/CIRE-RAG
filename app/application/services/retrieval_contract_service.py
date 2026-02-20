@@ -23,6 +23,7 @@ from app.api.v1.schemas.retrieval_advanced import (
     HybridRetrievalResponse,
     HybridTrace,
     MatchedFilters,
+    MergeOptions,
     MultiQueryRetrievalRequest,
     MultiQueryRetrievalResponse,
     MultiQueryTrace,
@@ -32,6 +33,7 @@ from app.api.v1.schemas.retrieval_advanced import (
     RetrievalPath,
     ScopeIssue,
     ScoreComponents,
+    ScopeFilters,
     SubQueryExecution,
     SubQueryRequest,
     ValidateScopeRequest,
@@ -41,6 +43,11 @@ from app.core.middleware.security import LeakCanary, SecurityViolationError
 from app.core.settings import settings
 from app.domain.scope_utils import extract_requested_standards, normalize_scope_name
 from app.domain.scope_utils import extract_clause_refs, extract_row_scope
+from app.domain.retrieval_policy import (
+    apply_search_hints,
+    filter_rows_by_min_score,
+    reduce_structural_noise_rows,
+)
 from app.infrastructure.container import CognitiveContainer
 from app.services.knowledge.knowledge_service import KnowledgeService
 
@@ -491,6 +498,53 @@ class RetrievalContractService:
         )
         return merged[: max(1, int(top_k))]
 
+    @staticmethod
+    def _apply_retrieval_policy_to_items(
+        items: list[RetrievalItem],
+        *,
+        min_score: float | None,
+        noise_reduction: bool,
+    ) -> tuple[list[RetrievalItem], dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for item in items:
+            row = {
+                "source": item.source,
+                "content": item.content,
+                "score": float(item.score or 0.0),
+                "similarity": float(item.score or 0.0),
+                "metadata": dict(item.metadata or {}),
+            }
+            rows.append(row)
+
+        policy_trace: dict[str, Any] = {}
+        rows, min_score_trace = filter_rows_by_min_score(rows, min_score=min_score)
+        policy_trace["min_score"] = min_score_trace
+
+        if noise_reduction:
+            rows, noise_trace = reduce_structural_noise_rows(rows)
+            policy_trace["noise_reduction"] = noise_trace
+        else:
+            policy_trace["noise_reduction"] = {"applied": False, "reason": "disabled"}
+
+        out_items: list[RetrievalItem] = []
+        for idx, row in enumerate(rows):
+            if not isinstance(row, dict):
+                continue
+            content = str(row.get("content") or "").strip()
+            if not content:
+                continue
+            metadata_raw = row.get("metadata")
+            metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
+            out_items.append(
+                RetrievalItem(
+                    source=str(row.get("source") or f"C{idx + 1}"),
+                    content=content,
+                    score=_safe_float(row.get("score"), default=0.0),
+                    metadata=metadata,
+                )
+            )
+        return out_items, policy_trace
+
     @classmethod
     def _build_comprehensive_subqueries(
         cls,
@@ -510,13 +564,14 @@ class RetrievalContractService:
             scoped_filters = dict(filters_payload)
             scoped_filters["source_standard"] = scope
             scoped_filters.pop("source_standards", None)
+            scope_filters_model = ScopeFilters.model_validate(scoped_filters)
             subqueries.append(
                 SubQueryRequest(
                     id=f"repair_scope_{idx}",
                     query=f"{request.query} {scope}",
                     k=max(4, int(request.k)),
                     fetch_k=max(20, int(request.fetch_k)),
-                    filters=scoped_filters,
+                    filters=scope_filters_model,
                 )
             )
 
@@ -526,13 +581,14 @@ class RetrievalContractService:
             metadata = dict(metadata_raw) if isinstance(metadata_raw, dict) else {}
             metadata["clause_id"] = clause
             clause_filters["metadata"] = metadata
+            clause_filters_model = ScopeFilters.model_validate(clause_filters)
             subqueries.append(
                 SubQueryRequest(
                     id=f"repair_clause_{idx}",
                     query=f"{request.query} clausula {clause}",
                     k=max(4, int(request.k)),
                     fetch_k=max(20, int(request.fetch_k)),
-                    filters=clause_filters,
+                    filters=clause_filters_model,
                 )
             )
 
@@ -552,6 +608,13 @@ class RetrievalContractService:
     ) -> ComprehensiveRetrievalResponse:
         started = time.perf_counter()
         coverage = request.coverage_requirements
+        retrieval_policy = request.retrieval_policy
+        hints_payload = (
+            [hint.model_dump(mode="python") for hint in retrieval_policy.search_hints]
+            if retrieval_policy is not None
+            else []
+        )
+        expanded_query, hint_trace = apply_search_hints(request.query, hints_payload)
         query_scopes = list(extract_requested_standards(request.query))
         requested_scopes_raw = list(coverage.requested_standards) if coverage else []
         requested_scopes = [
@@ -566,7 +629,7 @@ class RetrievalContractService:
 
         hybrid = await self.run_hybrid(
             HybridRetrievalRequest(
-                query=request.query,
+                query=expanded_query,
                 tenant_id=request.tenant_id,
                 collection_id=request.collection_id,
                 k=request.k,
@@ -635,6 +698,16 @@ class RetrievalContractService:
             min_clause_refs_required=min_clause_refs_required,
         )
 
+        min_score = retrieval_policy.min_score if retrieval_policy is not None else None
+        noise_reduction = (
+            bool(retrieval_policy.noise_reduction) if retrieval_policy is not None else True
+        )
+        merged_items, policy_trace = self._apply_retrieval_policy_to_items(
+            merged_items,
+            min_score=min_score,
+            noise_reduction=noise_reduction,
+        )
+
         base_trace = hybrid.trace.model_dump()
         base_trace["score_space"] = (
             "mixed"
@@ -646,6 +719,7 @@ class RetrievalContractService:
             **dict(base_trace.get("timings_ms") or {}),
             "total": round((time.perf_counter() - started) * 1000, 2),
         }
+        base_trace["search_hint_expansions"] = hint_trace
 
         return ComprehensiveRetrievalResponse(
             items=merged_items,
@@ -661,6 +735,12 @@ class RetrievalContractService:
                     "requested_standards": requested_scopes,
                     "require_all_scopes": require_all_scopes,
                     "min_clause_refs": min_clause_refs_required,
+                },
+                retrieval_policy={
+                    "min_score": min_score,
+                    "noise_reduction": noise_reduction,
+                    "search_hints_applied": hint_trace,
+                    "filtering": policy_trace,
                 },
             ),
         )
