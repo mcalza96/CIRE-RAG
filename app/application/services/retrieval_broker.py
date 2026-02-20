@@ -150,7 +150,7 @@ class RetrievalBroker:
         query: str,
         scope_context: Dict[str, Any],
         k: int = 20,
-        fetch_k: int = 50,
+        fetch_k: int = 120,
         enable_reranking: bool = True,
         iterative: bool = False,
         return_trace: bool = False,

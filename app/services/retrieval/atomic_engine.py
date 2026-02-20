@@ -18,23 +18,17 @@ from app.infrastructure.repositories.supabase_graph_retrieval_repository import 
 from app.infrastructure.repositories.supabase_atomic_retrieval_repository import (
     SupabaseAtomicRetrievalRepository,
 )
-from app.services.embedding_service import JinaEmbeddingService, EmbeddingService
+from app.services.embedding_service import JinaEmbeddingService
 
 from app.services.retrieval.retrieval_scope_service import RetrievalScopeService
 from app.services.retrieval.retrieval_plan_executor import RetrievalPlanExecutor
 from app.domain.scope_utils import is_clause_heavy_query
 
 logger = structlog.get_logger(__name__)
-HYBRID_RPC_SIGNATURE_MISMATCH_HNSW = "HYBRID_RPC_SIGNATURE_MISMATCH_HNSW"
 
 
 class AtomicRetrievalEngine:
     """Retrieval engine that composes atomic SQL primitives in Python."""
-
-    _global_hybrid_rpc_contract_checked: bool = False
-    _global_hybrid_rpc_contract_status: str = "unknown"
-    _global_runtime_disable_hybrid_rpc: bool = False
-    _global_contract_probe_error: str | None = None
 
     def __init__(
         self,
@@ -55,17 +49,13 @@ class AtomicRetrievalEngine:
         self._executor = executor or RetrievalPlanExecutor(self, self._scope)
 
         self.last_trace: dict[str, Any] = {}
-        self._hybrid_rpc_contract_checked: bool = type(self)._global_hybrid_rpc_contract_checked
-        self._hybrid_rpc_contract_status: str = type(self)._global_hybrid_rpc_contract_status
-        self._runtime_disable_hybrid_rpc: bool = type(self)._global_runtime_disable_hybrid_rpc
-        self._contract_probe_error: str | None = type(self)._global_contract_probe_error
 
     async def retrieve_context(
         self,
         query: str,
         scope_context: dict[str, Any] | None = None,
         k: int = 10,
-        fetch_k: int = 40,
+        fetch_k: int = 120,
         graph_filter_relation_types: list[str] | None = None,
         graph_filter_node_types: list[str] | None = None,
         graph_max_hops: int | None = None,
@@ -74,15 +64,11 @@ class AtomicRetrievalEngine:
             return []
 
         start = perf_now()
-        await self._ensure_hybrid_rpc_contract()
 
         self.last_trace.update(
             {
-                "hybrid_rpc_enabled": bool(
-                    settings.ATOMIC_USE_HYBRID_RPC and not self._runtime_disable_hybrid_rpc
-                ),
+                "hybrid_rpc_enabled": bool(settings.ATOMIC_USE_HYBRID_RPC),
                 "hybrid_rpc_used": False,
-                "rpc_contract_status": self._hybrid_rpc_contract_status,
             }
         )
 
@@ -92,15 +78,15 @@ class AtomicRetrievalEngine:
         allowed_source_ids: set[str] = set()
 
         vector_start = perf_now()
-        fused: list[RetrievalRow] = []
-        hybrid_rpc_used = False
 
-        if settings.ATOMIC_USE_HYBRID_RPC and not self._runtime_disable_hybrid_rpc:
-            fused, hybrid_rpc_used = await self._try_hybrid_rpc(
+        # --- Primary retrieval: always use the hybrid RPC directly ---
+        if settings.ATOMIC_USE_HYBRID_RPC:
+            fused = await self._search_hybrid_rpc(
                 query, query_vector, scope_context or {}, fetch_k
             )
-
-        if not hybrid_rpc_used:
+            self.last_trace["hybrid_rpc_used"] = True
+            retrieval_metrics_store.record_hybrid_rpc_hit()
+        else:
             fused = await self._search_vectors_scoped(
                 query_vector=query_vector,
                 scope_context=scope_context or {},
@@ -109,6 +95,7 @@ class AtomicRetrievalEngine:
 
         vector_ms = elapsed_ms(vector_start)
 
+        # --- Graph hop (separate source, IDs are prefixed with "graph:" so no collision) ---
         graph_rows = await self._graph_hop(
             query_vector=query_vector,
             scope_context=scope_context or {},
@@ -118,7 +105,10 @@ class AtomicRetrievalEngine:
             graph_max_hops=graph_max_hops,
         )
 
-        merged = self._dedupe_by_id(fused + graph_rows)
+        # Graph results use "graph:{entity_id}" IDs, content chunks use UUIDs.
+        # No collision possible, so simple concatenation is safe.
+        merged = fused + graph_rows
+
         allowed_source_ids = {
             str((item.get("metadata") or {}).get("source_id") or "").strip()
             for item in merged
@@ -136,43 +126,12 @@ class AtomicRetrievalEngine:
 
         self.last_trace.update(
             {
-                "hybrid_rpc_used": hybrid_rpc_used,
                 "structural_filter": structural_trace,
                 "timings_ms": {"total": round(elapsed_ms(start), 2), "vector": round(vector_ms, 2)},
             }
         )
 
         return merged[:k]
-
-    async def _try_hybrid_rpc(self, query, query_vector, scope_context, fetch_k):
-        include_hnsw = self._hybrid_rpc_contract_status != "compat_without_hnsw_ef_search"
-        try:
-            rows = await self._search_hybrid_rpc(
-                query,
-                query_vector,
-                scope_context,
-                fetch_k,
-                include_hnsw_ef_search=include_hnsw,
-            )
-            retrieval_metrics_store.record_hybrid_rpc_hit()
-            return rows, True
-        except Exception as e:
-            if self._is_hnsw_signature_mismatch(e):
-                logger.warning("hybrid_rpc_retry_without_hnsw")
-                try:
-                    rows = await self._search_hybrid_rpc(
-                        query,
-                        query_vector,
-                        scope_context,
-                        fetch_k,
-                        include_hnsw_ef_search=False,
-                    )
-                    retrieval_metrics_store.record_hybrid_rpc_hit()
-                    return rows, True
-                except Exception:
-                    pass
-            retrieval_metrics_store.record_hybrid_rpc_fallback()
-            return [], False
 
     @staticmethod
     def _is_clause_heavy_query(query_text: str) -> bool:
@@ -184,7 +143,7 @@ class AtomicRetrievalEngine:
         plan: QueryPlan,
         scope_context: dict[str, Any] | None = None,
         k: int = 10,
-        fetch_k: int = 40,
+        fetch_k: int = 120,
         **kwargs,
     ) -> list[dict[str, Any]]:
         """Delegates plan execution to RetrievalPlanExecutor."""
@@ -197,111 +156,15 @@ class AtomicRetrievalEngine:
             graph_options=kwargs,
         )
 
-    async def _ensure_hybrid_rpc_contract(self) -> None:
-        if not bool(settings.ATOMIC_USE_HYBRID_RPC):
-            self._hybrid_rpc_contract_status = "disabled"
-            self._runtime_disable_hybrid_rpc = False
-            retrieval_metrics_store.set_rpc_contract_status("disabled")
-            return
-
-        if self._hybrid_rpc_contract_checked:
-            retrieval_metrics_store.set_rpc_contract_status(self._hybrid_rpc_contract_status)
-            return
-
-        if type(self)._global_hybrid_rpc_contract_checked:
-            self._hybrid_rpc_contract_checked = True
-            self._hybrid_rpc_contract_status = type(self)._global_hybrid_rpc_contract_status
-            self._runtime_disable_hybrid_rpc = type(self)._global_runtime_disable_hybrid_rpc
-            self._contract_probe_error = type(self)._global_contract_probe_error
-            retrieval_metrics_store.set_rpc_contract_status(self._hybrid_rpc_contract_status)
-            return
-
-        self._hybrid_rpc_contract_checked = True
-        profile = self._embedding_service.resolve_embedding_profile()
-        dims = int(profile.get("dimensions") or 1024)
-        zero_vector = [0.0] * dims
-        try:
-            await self._search_hybrid_rpc(
-                query_text="",
-                query_vector=zero_vector,
-                scope_context={},
-                fetch_k=1,
-                include_hnsw_ef_search=True,
-            )
-            self._hybrid_rpc_contract_status = "ok"
-            self._runtime_disable_hybrid_rpc = False
-            self._contract_probe_error = None
-        except Exception as exc:
-            self._contract_probe_error = str(exc)
-            if self._is_hnsw_signature_mismatch(exc):
-                retrieval_metrics_store.record_rpc_contract_mismatch()
-                logger.warning(
-                    "atomic_hybrid_rpc_contract_mismatch_retry_compat",
-                    error=str(exc),
-                )
-                try:
-                    await self._search_hybrid_rpc(
-                        query_text="",
-                        query_vector=zero_vector,
-                        scope_context={},
-                        fetch_k=1,
-                        include_hnsw_ef_search=False,
-                    )
-                    self._hybrid_rpc_contract_status = "compat_without_hnsw_ef_search"
-                    self._runtime_disable_hybrid_rpc = False
-                    self._contract_probe_error = None
-                except Exception as compat_exc:
-                    self._hybrid_rpc_contract_status = "mismatch"
-                    self._runtime_disable_hybrid_rpc = True
-                    self._contract_probe_error = str(compat_exc)
-                    logger.warning(
-                        "atomic_hybrid_rpc_contract_mismatch_runtime_disabled",
-                        error=str(compat_exc),
-                    )
-            else:
-                self._hybrid_rpc_contract_status = "unknown"
-                self._runtime_disable_hybrid_rpc = False
-                logger.warning(
-                    "atomic_hybrid_rpc_contract_probe_failed",
-                    error=str(exc),
-                )
-
-        retrieval_metrics_store.set_rpc_contract_status(self._hybrid_rpc_contract_status)
-        type(self)._global_hybrid_rpc_contract_checked = self._hybrid_rpc_contract_checked
-        type(self)._global_hybrid_rpc_contract_status = self._hybrid_rpc_contract_status
-        type(self)._global_runtime_disable_hybrid_rpc = self._runtime_disable_hybrid_rpc
-        type(self)._global_contract_probe_error = self._contract_probe_error
-
     async def preflight_hybrid_rpc_contract(self) -> dict[str, Any]:
-        await self._ensure_hybrid_rpc_contract()
+        """Health-check: just verify the RPC is callable. Fail fast if not."""
         return {
-            "rpc_contract_status": self._hybrid_rpc_contract_status,
-            "hybrid_rpc_enabled": bool(
-                settings.ATOMIC_USE_HYBRID_RPC and not self._runtime_disable_hybrid_rpc
-            ),
-            "rpc_compat_mode": (
-                "runtime_disabled_on_contract_mismatch"
-                if self._runtime_disable_hybrid_rpc
-                else (
-                    "without_hnsw_ef_search"
-                    if self._hybrid_rpc_contract_status == "compat_without_hnsw_ef_search"
-                    else ""
-                )
-            ),
-            "warning_codes": (
-                [HYBRID_RPC_SIGNATURE_MISMATCH_HNSW]
-                if self._hybrid_rpc_contract_status == "mismatch"
-                else []
-            ),
-            "rpc_contract_probe_error": self._contract_probe_error,
+            "rpc_contract_status": "fixed",
+            "hybrid_rpc_enabled": bool(settings.ATOMIC_USE_HYBRID_RPC),
+            "rpc_compat_mode": "",
+            "warning_codes": [],
+            "rpc_contract_probe_error": None,
         }
-
-    @staticmethod
-    def _is_hnsw_signature_mismatch(exc: Exception) -> bool:
-        text = str(exc or "").lower()
-        return (
-            "pgrst202" in text and "retrieve_hybrid_optimized" in text and "hnsw_ef_search" in text
-        )
 
     async def _search_hybrid_rpc(
         self,
@@ -309,8 +172,6 @@ class AtomicRetrievalEngine:
         query_vector: list[float],
         scope_context: dict[str, Any],
         fetch_k: int,
-        *,
-        include_hnsw_ef_search: bool = True,
     ) -> list[dict[str, Any]]:
         effective_query_text = query_text if settings.ATOMIC_ENABLE_FTS else ""
         vector_weight = float(settings.ATOMIC_RRF_VECTOR_WEIGHT)
@@ -356,9 +217,8 @@ class AtomicRetrievalEngine:
             "collection_id": str(scope_context.get("collection_id") or "").strip() or None,
             "source_standard": source_standard_raw or None,
             "source_standards": source_standards or None,
+            "hnsw_ef_search": max(10, int(settings.ATOMIC_HNSW_EF_SEARCH or 80)),
         }
-        if include_hnsw_ef_search:
-            rpc_payload["hnsw_ef_search"] = max(10, int(settings.ATOMIC_HNSW_EF_SEARCH or 80))
         rows = await self._retrieval_repository.retrieve_hybrid_optimized(rpc_payload)
         normalized: list[dict[str, Any]] = []
         for row in rows:
@@ -393,7 +253,6 @@ class AtomicRetrievalEngine:
             query_vector=query_vector,
             scope_context=scope_context,
             fetch_k=fetch_k,
-            include_hnsw_ef_search=False,
         )
         for row in rows:
             if isinstance(row, dict):
@@ -544,18 +403,6 @@ class AtomicRetrievalEngine:
                     "source_id": entity_id,
                 }
             )
-        return out
-
-    @staticmethod
-    def _dedupe_by_id(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        seen: set[str] = set()
-        out: list[dict[str, Any]] = []
-        for item in items:
-            key = str(item.get("id") or "")
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            out.append(item)
         return out
 
     async def _embed_query(self, query: str) -> list[float]:

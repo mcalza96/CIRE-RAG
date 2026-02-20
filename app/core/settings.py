@@ -155,7 +155,7 @@ class Settings(BaseSettings):
     INGEST_PARSER_MODE: str = "local"  # local | cloud
     JINA_READER_URL_TEMPLATE: Optional[str] = None  # e.g. https://r.jina.ai/http://host/{path}
     RERANK_MODE: str = "hybrid"  # local | jina | hybrid
-    RERANK_MAX_CANDIDATES: int = 10
+    RERANK_MAX_CANDIDATES: int = 50
     RETRIEVAL_MULTI_QUERY_MAX_PARALLEL: int = 4
     RETRIEVAL_MULTI_QUERY_SUBQUERY_TIMEOUT_MS: int = 8000
     RETRIEVAL_MULTI_QUERY_SUBQUERY_RERANK_ENABLED: bool = False
