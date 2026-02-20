@@ -14,22 +14,13 @@ from app.core.observability.timing import elapsed_ms, perf_now
 from app.core.settings import settings
 from app.domain.interfaces.atomic_retrieval_repository import IAtomicRetrievalRepository
 from app.domain.schemas.retrieval_payloads import RetrievalRow
-from app.infrastructure.repositories.supabase_graph_retrieval_repository import (
-    SupabaseGraphRetrievalRepository,
-)
-from app.infrastructure.repositories.supabase_atomic_retrieval_repository import (
-    SupabaseAtomicRetrievalRepository,
-)
+from app.infrastructure.repositories.supabase_graph_retrieval_repository import SupabaseGraphRetrievalRepository
+from app.infrastructure.repositories.supabase_atomic_retrieval_repository import SupabaseAtomicRetrievalRepository
 from app.services.embedding_service import JinaEmbeddingService
-from app.domain.scope_utils import (
-    clause_near_standard,
-    extract_clause_refs,
-    extract_requested_standards,
-    extract_row_scope,
-    is_clause_heavy_query,
-    requested_scopes_from_context,
-    scope_penalty_ratio,
-)
+
+from app.services.retrieval.retrieval_scope_service import RetrievalScopeService
+from app.services.retrieval.retrieval_plan_executor import RetrievalPlanExecutor
+from app.domain.scope_utils import is_clause_heavy_query
 
 logger = structlog.get_logger(__name__)
 HYBRID_RPC_SIGNATURE_MISMATCH_HNSW = "HYBRID_RPC_SIGNATURE_MISMATCH_HNSW"
@@ -48,12 +39,19 @@ class AtomicRetrievalEngine:
         embedding_service: JinaEmbeddingService | None = None,
         supabase_client: Any | None = None,
         retrieval_repository: IAtomicRetrievalRepository | None = None,
+        scope_service: Optional[RetrievalScopeService] = None,
+        executor: Optional[RetrievalPlanExecutor] = None,
     ):
         self._embedding_service = embedding_service or JinaEmbeddingService.get_instance()
         self._retrieval_repository = retrieval_repository or SupabaseAtomicRetrievalRepository(
             supabase_client=supabase_client
         )
         self._graph_repo = SupabaseGraphRetrievalRepository(supabase_client=supabase_client)
+        
+        # New Services
+        self._scope = scope_service or RetrievalScopeService()
+        self._executor = executor or RetrievalPlanExecutor(self, self._scope)
+        
         self.last_trace: dict[str, Any] = {}
         self._hybrid_rpc_contract_checked: bool = type(self)._global_hybrid_rpc_contract_checked
         self._hybrid_rpc_contract_status: str = type(self)._global_hybrid_rpc_contract_status
@@ -74,111 +72,33 @@ class AtomicRetrievalEngine:
             return []
 
         start = perf_now()
-        self.last_trace = {
-            "hybrid_rpc_enabled": bool(settings.ATOMIC_USE_HYBRID_RPC),
-            "hybrid_rpc_used": False,
-            "hybrid_rpc_compat_mode": None,
-            "rpc_compat_mode": None,
-            "rpc_contract_status": "unknown",
-            "warnings": [],
-            "warning_codes": [],
-        }
         await self._ensure_hybrid_rpc_contract()
-        self.last_trace["rpc_contract_status"] = self._hybrid_rpc_contract_status
-        self.last_trace["hybrid_rpc_enabled"] = bool(
-            settings.ATOMIC_USE_HYBRID_RPC and not self._runtime_disable_hybrid_rpc
-        )
-        if self._hybrid_rpc_contract_status == "mismatch":
-            self._append_warning("hybrid_rpc_preflight_signature_mismatch")
-            self._append_warning_code(HYBRID_RPC_SIGNATURE_MISMATCH_HNSW)
-            self.last_trace["rpc_compat_mode"] = "runtime_disabled_on_contract_mismatch"
-            self.last_trace["hybrid_rpc_compat_mode"] = "runtime_disabled_on_contract_mismatch"
-        if self._contract_probe_error:
-            self.last_trace["rpc_contract_probe_error"] = str(self._contract_probe_error)
+        
+        self.last_trace.update({
+            "hybrid_rpc_enabled": bool(settings.ATOMIC_USE_HYBRID_RPC and not self._runtime_disable_hybrid_rpc),
+            "hybrid_rpc_used": False,
+            "rpc_contract_status": self._hybrid_rpc_contract_status,
+        })
+        
         query_vector = await self._embed_query(query)
         source_ids = await self._resolve_source_ids(scope_context or {})
-        if not source_ids:
-            return []
+        if not source_ids: return []
+        
         tenant_id = str((scope_context or {}).get("tenant_id") or "").strip()
         allowed_source_ids = set(str(sid) for sid in source_ids if str(sid).strip())
 
         vector_start = perf_now()
-        vector_rows: list[RetrievalRow] = []
         fused: list[RetrievalRow] = []
-        vector_ms = 0.0
-        fts_ms = 0.0
         hybrid_rpc_used = False
 
         if settings.ATOMIC_USE_HYBRID_RPC and not self._runtime_disable_hybrid_rpc:
-            include_hnsw_ef_search = (
-                self._hybrid_rpc_contract_status != "compat_without_hnsw_ef_search"
-            )
-            try:
-                fused = await self._search_hybrid_rpc(
-                    query_text=query,
-                    query_vector=query_vector,
-                    source_ids=source_ids,
-                    fetch_k=fetch_k,
-                    include_hnsw_ef_search=include_hnsw_ef_search,
-                )
-                hybrid_rpc_used = True
-                self.last_trace["hybrid_rpc_used"] = True
-                vector_ms = elapsed_ms(vector_start)
-                retrieval_metrics_store.record_hybrid_rpc_hit()
-                logger.info(
-                    "atomic_hybrid_rpc_used",
-                    rows=len(fused),
-                    source_count=len(source_ids),
-                    include_hnsw_ef_search=include_hnsw_ef_search,
-                )
-            except Exception as hybrid_exc:
-                if self._is_hnsw_signature_mismatch(hybrid_exc):
-                    warning = (
-                        "hybrid_rpc_signature_mismatch_hnsw_ef_search;"
-                        "retrying_without_hnsw_ef_search"
-                    )
-                    self._append_warning(warning)
-                    self._append_warning_code(HYBRID_RPC_SIGNATURE_MISMATCH_HNSW)
-                    logger.warning("atomic_hybrid_rpc_signature_retry", warning=warning)
-                    try:
-                        fused = await self._search_hybrid_rpc(
-                            query_text=query,
-                            query_vector=query_vector,
-                            source_ids=source_ids,
-                            fetch_k=fetch_k,
-                            include_hnsw_ef_search=False,
-                        )
-                        hybrid_rpc_used = True
-                        self.last_trace["hybrid_rpc_used"] = True
-                        self.last_trace["hybrid_rpc_compat_mode"] = "without_hnsw_ef_search"
-                        self.last_trace["rpc_compat_mode"] = "without_hnsw_ef_search"
-                        vector_ms = elapsed_ms(vector_start)
-                        retrieval_metrics_store.record_hybrid_rpc_hit()
-                        logger.info(
-                            "atomic_hybrid_rpc_used_compat",
-                            rows=len(fused),
-                            source_count=len(source_ids),
-                            compat_mode="without_hnsw_ef_search",
-                        )
-                    except Exception as compat_exc:
-                        retrieval_metrics_store.record_hybrid_rpc_fallback()
-                        self._append_warning(f"hybrid_rpc_fallback:{compat_exc}")
-                        logger.warning("atomic_hybrid_rpc_failed_fallback", error=str(compat_exc))
-                else:
-                    retrieval_metrics_store.record_hybrid_rpc_fallback()
-                    self._append_warning(f"hybrid_rpc_fallback:{hybrid_exc}")
-                    logger.warning("atomic_hybrid_rpc_failed_fallback", error=str(hybrid_exc))
-        else:
-            retrieval_metrics_store.record_hybrid_rpc_disabled()
+            fused, hybrid_rpc_used = await self._try_hybrid_rpc(query, query_vector, source_ids, fetch_k)
 
-        # DB-first: if hybrid RPC is disabled or fails, we fall back to vector-only.
-        # We intentionally avoid Python-side fusion (RRF) to keep ranking logic inside Postgres.
         if not hybrid_rpc_used:
-            vector_rows = await self._search_vectors(
-                query_vector=query_vector, source_ids=source_ids, fetch_k=fetch_k
-            )
-            vector_ms = elapsed_ms(vector_start)
-            fused = vector_rows
+            fused = await self._search_vectors(query_vector=query_vector, source_ids=source_ids, fetch_k=fetch_k)
+
+        vector_ms = elapsed_ms(vector_start)
+        
         graph_rows = await self._graph_hop(
             query_vector=query_vector,
             scope_context=scope_context or {},
@@ -189,77 +109,59 @@ class AtomicRetrievalEngine:
         )
 
         merged = self._dedupe_by_id(fused + graph_rows)
-        self._stamp_tenant_context(
-            rows=merged, tenant_id=tenant_id, allowed_source_ids=allowed_source_ids
-        )
-        merged, structural_filter_trace = self._filter_structural_rows(merged)
-        self.last_trace["structural_filter"] = structural_filter_trace
-        logger.info(
-            "retrieval_pipeline_timing",
-            stage="atomic_engine_total",
-            duration_ms=elapsed_ms(start),
-            vector_duration_ms=vector_ms,
-            fts_duration_ms=fts_ms,
-            source_count=len(source_ids),
-            vector_rows=len(vector_rows),
-            fts_rows=0,
-            graph_rows=len(graph_rows),
-            merged_rows=len(merged),
-            hybrid_rpc_enabled=bool(
-                settings.ATOMIC_USE_HYBRID_RPC and not self._runtime_disable_hybrid_rpc
-            ),
-            hybrid_rpc_used=bool(hybrid_rpc_used),
-            query_preview=query[:50],
-        )
-        self.last_trace["hybrid_rpc_used"] = bool(hybrid_rpc_used)
-        self.last_trace["timings_ms"] = {
-            "total": round(elapsed_ms(start), 2),
-            "vector": round(vector_ms, 2),
-            "fts": round(fts_ms, 2),
-        }
+        self._scope.stamp_tenant_context(rows=merged, tenant_id=tenant_id, allowed_source_ids=allowed_source_ids)
+        
+        merged, structural_trace = self._scope.filter_structural_rows(merged)
+        
+        logger.info("atomic_engine_total", duration_ms=elapsed_ms(start), merged_rows=len(merged))
+        
+        self.last_trace.update({
+            "hybrid_rpc_used": hybrid_rpc_used,
+            "structural_filter": structural_trace,
+            "timings_ms": {"total": round(elapsed_ms(start), 2), "vector": round(vector_ms, 2)}
+        })
+        
         return merged[:k]
 
+    async def _try_hybrid_rpc(self, query, query_vector, source_ids, fetch_k):
+        include_hnsw = self._hybrid_rpc_contract_status != "compat_without_hnsw_ef_search"
+        try:
+            rows = await self._search_hybrid_rpc(query, query_vector, source_ids, fetch_k, include_hnsw_ef_search=include_hnsw)
+            retrieval_metrics_store.record_hybrid_rpc_hit()
+            return rows, True
+        except Exception as e:
+            if self._is_hnsw_signature_mismatch(e):
+                logger.warning("hybrid_rpc_retry_without_hnsw")
+                try:
+                    rows = await self._search_hybrid_rpc(query, query_vector, source_ids, fetch_k, include_hnsw_ef_search=False)
+                    retrieval_metrics_store.record_hybrid_rpc_hit()
+                    return rows, True
+                except Exception: pass
+            retrieval_metrics_store.record_hybrid_rpc_fallback()
+            return [], False
+
     @staticmethod
-    def _row_metadata(item: dict[str, Any]) -> dict[str, Any]:
-        raw = item.get("metadata")
-        metadata: dict[str, Any] = raw if isinstance(raw, dict) else {}
-        nested_row = metadata.get("row")
-        if not isinstance(nested_row, dict):
-            return metadata
-        nested_meta = nested_row.get("metadata")
-        if not isinstance(nested_meta, dict):
-            return metadata
-        merged = dict(nested_meta)
-        merged.update(metadata)
-        return merged
+    def _is_clause_heavy_query(query_text: str) -> bool:
+        return is_clause_heavy_query(query_text)
 
-    @classmethod
-    def _is_structural_only_row(cls, item: dict[str, Any]) -> bool:
-        metadata = cls._row_metadata(item)
-        if metadata.get("retrieval_eligible") is False:
-            return True
-        if metadata.get("is_toc") is True:
-            return True
-        if metadata.get("is_frontmatter") is True:
-            return True
-        return False
-
-    @classmethod
-    def _filter_structural_rows(
-        cls, items: list[dict[str, Any]]
-    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        if not items:
-            return [], {"applied": True, "dropped": 0, "kept": 0}
-        kept: list[dict[str, Any]] = []
-        dropped = 0
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            if cls._is_structural_only_row(item):
-                dropped += 1
-                continue
-            kept.append(item)
-        return kept, {"applied": True, "dropped": dropped, "kept": len(kept)}
+    async def retrieve_context_from_plan(
+        self,
+        query: str,
+        plan: QueryPlan,
+        scope_context: dict[str, Any] | None = None,
+        k: int = 10,
+        fetch_k: int = 40,
+        **kwargs
+    ) -> list[dict[str, Any]]:
+        """Delegates plan execution to RetrievalPlanExecutor."""
+        return await self._executor.execute_plan(
+            query=query,
+            plan=plan,
+            scope_context=scope_context,
+            k=k,
+            fetch_k=fetch_k,
+            graph_options=kwargs
+        )
 
     async def _ensure_hybrid_rpc_contract(self) -> None:
         if not bool(settings.ATOMIC_USE_HYBRID_RPC):
@@ -366,69 +268,6 @@ class AtomicRetrievalEngine:
             "pgrst202" in text and "retrieve_hybrid_optimized" in text and "hnsw_ef_search" in text
         )
 
-    def _append_warning(self, value: str) -> None:
-        text = str(value or "").strip()
-        if not text:
-            return
-        current = self.last_trace.get("warnings")
-        if not isinstance(current, list):
-            self.last_trace["warnings"] = [text]
-            return
-        if text not in current:
-            current.append(text)
-
-    def _append_warning_code(self, value: str) -> None:
-        text = str(value or "").strip().upper()
-        if not text:
-            return
-        current = self.last_trace.get("warning_codes")
-        if not isinstance(current, list):
-            self.last_trace["warning_codes"] = [text]
-            return
-        if text not in current:
-            current.append(text)
-
-    @staticmethod
-    def _stamp_tenant_context(
-        *, rows: list[RetrievalRow], tenant_id: str, allowed_source_ids: set[str]
-    ) -> None:
-        """Attach tenant ownership metadata for rows derived from tenant-filtered source_ids.
-
-        We do NOT blindly stamp every row, because that would mask cross-tenant leaks if a bug
-        ever returns foreign content. We only stamp rows that we can tie back to the tenant's
-        allowed source_ids, plus graph-derived rows (already tenant-scoped at query time).
-        """
-
-        if not tenant_id:
-            return
-
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            meta_raw = row.get("metadata")
-            metadata: dict[str, Any] = meta_raw if isinstance(meta_raw, dict) else {}
-            if meta_raw is None or not isinstance(meta_raw, dict):
-                row["metadata"] = metadata
-
-            source_layer = str(row.get("source_layer") or "").strip().lower()
-            source_id = str(metadata.get("source_id") or "").strip()
-            safe_to_stamp = False
-            if (
-                source_layer in {"vector", "fts", "hybrid"}
-                and source_id
-                and source_id in allowed_source_ids
-            ):
-                safe_to_stamp = True
-            if source_layer == "graph":
-                safe_to_stamp = True
-
-            if not safe_to_stamp:
-                continue
-
-            row.setdefault("institution_id", tenant_id)
-            row.setdefault("tenant_id", tenant_id)
-            metadata.setdefault("institution_id", tenant_id)
-            metadata.setdefault("tenant_id", tenant_id)
 
     async def _search_hybrid_rpc(
         self,
@@ -489,216 +328,6 @@ class AtomicRetrievalEngine:
             )
         return normalized
 
-    @staticmethod
-    def _is_clause_heavy_query(query_text: str) -> bool:
-        return is_clause_heavy_query(query_text)
-
-    async def retrieve_context_from_plan(
-        self,
-        query: str,
-        plan: QueryPlan,
-        scope_context: dict[str, Any] | None = None,
-        k: int = 10,
-        fetch_k: int = 40,
-        graph_filter_relation_types: list[str] | None = None,
-        graph_filter_node_types: list[str] | None = None,
-        graph_max_hops: int | None = None,
-    ) -> list[dict[str, Any]]:
-        if not plan.sub_queries:
-            return await self.retrieve_context(
-                query=query,
-                scope_context=scope_context,
-                k=k,
-                fetch_k=fetch_k,
-                graph_filter_relation_types=graph_filter_relation_types,
-                graph_filter_node_types=graph_filter_node_types,
-                graph_max_hops=graph_max_hops,
-            )
-
-        max_branch_expansions = max(
-            1,
-            int(getattr(settings, "RETRIEVAL_PLAN_MAX_BRANCH_EXPANSIONS", 2) or 2),
-        )
-        selected_sub_queries = list(plan.sub_queries[:max_branch_expansions])
-
-        try:
-            early_exit_scope_penalty = float(
-                getattr(settings, "RETRIEVAL_PLAN_EARLY_EXIT_SCOPE_PENALTY", 0.8) or 0.8
-            )
-        except (TypeError, ValueError):
-            early_exit_scope_penalty = 0.8
-        early_exit_scope_penalty = max(0.0, min(1.0, early_exit_scope_penalty))
-        requested_scopes = self._requested_scopes(scope_context)
-
-        self.last_trace = {
-            **(self.last_trace if isinstance(self.last_trace, dict) else {}),
-            "plan_branch_policy": {
-                "configured_subqueries": len(plan.sub_queries),
-                "applied_subqueries": len(selected_sub_queries),
-                "max_branch_expansions": max_branch_expansions,
-                "early_exit_scope_penalty": early_exit_scope_penalty,
-            },
-        }
-
-        if plan.execution_mode == "sequential":
-            merged: list[dict[str, Any]] = []
-            early_exit_state: dict[str, Any] | None = None
-            for sq in selected_sub_queries:
-                sq_scope_context = self._scope_context_for_subquery(
-                    scope_context=scope_context,
-                    subquery_text=sq.query,
-                )
-                rows = await self.retrieve_context(
-                    query=sq.query,
-                    scope_context=sq_scope_context,
-                    k=max(k, 12),
-                    fetch_k=fetch_k,
-                    graph_filter_relation_types=graph_filter_relation_types or sq.target_relations,
-                    graph_filter_node_types=graph_filter_node_types or sq.target_node_types,
-                    graph_max_hops=graph_max_hops
-                    if graph_max_hops is not None
-                    else (2 if sq.is_deep else 1),
-                )
-                merged.extend(rows)
-                branch_scope_penalty = self._scope_penalty_ratio(rows, requested_scopes)
-                if requested_scopes and rows and branch_scope_penalty >= early_exit_scope_penalty:
-                    early_exit_state = {
-                        "enabled": True,
-                        "triggered": True,
-                        "subquery_id": sq.id,
-                        "subquery_query": sq.query[:180],
-                        "scope_penalized_ratio": round(branch_scope_penalty, 4),
-                    }
-                    break
-            safety = await self.retrieve_context(
-                query=query,
-                scope_context=scope_context,
-                k=max(k, 12),
-                fetch_k=fetch_k,
-                graph_filter_relation_types=graph_filter_relation_types,
-                graph_filter_node_types=graph_filter_node_types,
-                graph_max_hops=0 if graph_max_hops is None else graph_max_hops,
-            )
-            merged.extend(safety)
-            if early_exit_state:
-                self.last_trace["plan_early_exit"] = early_exit_state
-            return self._dedupe_by_id(merged)[:k]
-
-        semaphore = asyncio.Semaphore(max(1, settings.RETRIEVAL_MULTI_QUERY_MAX_PARALLEL))
-
-        async def _bounded_retrieve(sq: Any) -> list[RetrievalRow]:
-            async with semaphore:
-                sq_scope_context = self._scope_context_for_subquery(
-                    scope_context=scope_context,
-                    subquery_text=sq.query,
-                )
-                return await self.retrieve_context(
-                    query=sq.query,
-                    scope_context=sq_scope_context,
-                    k=max(k, 12),
-                    fetch_k=fetch_k,
-                    graph_filter_relation_types=graph_filter_relation_types or sq.target_relations,
-                    graph_filter_node_types=graph_filter_node_types or sq.target_node_types,
-                    graph_max_hops=graph_max_hops
-                    if graph_max_hops is not None
-                    else (2 if sq.is_deep else 1),
-                )
-
-        tasks = [_bounded_retrieve(sq) for sq in selected_sub_queries]
-        tasks.append(
-            self.retrieve_context(
-                query=query,
-                scope_context=scope_context,
-                k=max(k, 12),
-                fetch_k=fetch_k,
-                graph_filter_relation_types=graph_filter_relation_types,
-                graph_filter_node_types=graph_filter_node_types,
-                graph_max_hops=0 if graph_max_hops is None else graph_max_hops,
-            )
-        )
-        responses = await asyncio.gather(*tasks, return_exceptions=True)
-        merged: list[dict[str, Any]] = []
-        for payload in responses:
-            if isinstance(payload, Exception):
-                logger.warning("atomic_plan_subquery_failed", error=str(payload))
-                continue
-            if isinstance(payload, list):
-                merged.extend(item for item in payload if isinstance(item, dict))
-        return self._dedupe_by_id(merged)[:k]
-
-    @staticmethod
-    def _extract_row_scope(item: dict[str, Any]) -> str:
-        return extract_row_scope(item)
-
-    @staticmethod
-    def _requested_scopes(scope_context: dict[str, Any] | None) -> tuple[str, ...]:
-        return requested_scopes_from_context(scope_context)
-
-    def _scope_penalty_ratio(
-        self, rows: list[dict[str, Any]], requested_scopes: tuple[str, ...]
-    ) -> float:
-        return scope_penalty_ratio(rows, requested_scopes)
-
-    def _scope_context_for_subquery(
-        self,
-        *,
-        scope_context: dict[str, Any] | None,
-        subquery_text: str,
-    ) -> dict[str, Any] | None:
-        if not isinstance(scope_context, dict):
-            return scope_context
-
-        scoped: dict[str, Any] = copy.deepcopy(scope_context)
-        standards = list(extract_requested_standards(subquery_text or ""))
-        clauses = list(extract_clause_refs(subquery_text or ""))
-
-        nested_raw = scoped.get("filters")
-        nested: dict[str, Any] = dict(nested_raw) if isinstance(nested_raw, dict) else {}
-
-        if standards:
-            if len(standards) == 1:
-                scoped["source_standard"] = standards[0]
-                scoped.pop("source_standards", None)
-                nested["source_standard"] = standards[0]
-                nested.pop("source_standards", None)
-            else:
-                scoped["source_standards"] = standards
-                scoped.pop("source_standard", None)
-                nested["source_standards"] = standards
-                nested.pop("source_standard", None)
-
-        if clauses:
-            # Apply hard clause only when subquery standard is singular/explicit.
-            active_standard = str(
-                scoped.get("source_standard") or nested.get("source_standard") or ""
-            ).strip()
-            clause_for_standard = (
-                clause_near_standard(subquery_text, active_standard) if active_standard else None
-            )
-            if active_standard and clause_for_standard:
-                metadata_raw = nested.get("metadata")
-                metadata: dict[str, Any] = (
-                    dict(metadata_raw) if isinstance(metadata_raw, dict) else {}
-                )
-                metadata["clause_id"] = clause_for_standard
-                nested["metadata"] = metadata
-            else:
-                metadata_raw = nested.get("metadata")
-                metadata: dict[str, Any] = (
-                    dict(metadata_raw) if isinstance(metadata_raw, dict) else {}
-                )
-                metadata.pop("clause_id", None)
-                if metadata:
-                    nested["metadata"] = metadata
-                else:
-                    nested.pop("metadata", None)
-
-        scoped["filters"] = nested
-        return scoped
-
-    @staticmethod
-    def _clause_near_standard(query: str, standard: str) -> str | None:
-        return clause_near_standard(query, standard)
 
     async def _search_vectors(
         self, query_vector: list[float], source_ids: list[str], fetch_k: int
@@ -911,10 +540,10 @@ class AtomicRetrievalEngine:
                 if row_scope and not any(target in row_scope for target in source_standards):
                     continue
 
-            if metadata_filters and not self._matches_metadata_filters(metadata, metadata_filters):
+            if metadata_filters and not self._scope.matches_metadata_filters(metadata, metadata_filters):
                 continue
 
-            if time_range and not self._matches_time_range(row, time_range):
+            if time_range and not self._scope.matches_time_range(row, time_range):
                 continue
 
             row_id = row.get("id")
@@ -922,53 +551,6 @@ class AtomicRetrievalEngine:
                 source_ids.append(str(row_id))
         return source_ids
 
-    @staticmethod
-    def _matches_metadata_filters(metadata: dict[str, Any], expected: dict[str, Any]) -> bool:
-        for key, value in expected.items():
-            observed = metadata.get(str(key))
-            if isinstance(value, list):
-                if observed not in value:
-                    return False
-                continue
-            if observed != value:
-                return False
-        return True
-
-    @staticmethod
-    def _parse_iso8601(value: str | None) -> datetime | None:
-        if not value:
-            return None
-        text = str(value).strip()
-        if not text:
-            return None
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        parsed = datetime.fromisoformat(text)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
-
-    @classmethod
-    def _matches_time_range(cls, row: dict[str, Any], time_range: dict[str, Any]) -> bool:
-        field = str(time_range.get("field") or "").strip()
-        if field not in {"created_at", "updated_at"}:
-            return False
-        row_value = row.get(field)
-        if not isinstance(row_value, str) or not row_value.strip():
-            return False
-        try:
-            row_dt = cls._parse_iso8601(row_value)
-            dt_from = cls._parse_iso8601(time_range.get("from"))
-            dt_to = cls._parse_iso8601(time_range.get("to"))
-        except Exception:
-            return False
-        if row_dt is None:
-            return False
-        if dt_from and row_dt < dt_from:
-            return False
-        if dt_to and row_dt > dt_to:
-            return False
-        return True
 
     @staticmethod
     def _dedupe_by_id(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
