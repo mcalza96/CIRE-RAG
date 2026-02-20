@@ -85,7 +85,8 @@ class StrictEngine:
             self._client, self._model = create_instructor_client()
             try:
                 self._async_client, _ = create_async_instructor_client()
-            except Exception:
+            except Exception as exc:
+                logger.warning("Failed to create async instructor client: %s", exc)
                 self._async_client = None
 
     async def agenerate(
@@ -212,6 +213,10 @@ class StrictEngine:
             logger.error("StrictEngine (Async) failed: %s", _compact_error(e))
             raise
 
+    # Cache for dynamically-created union schemas so Pydantic's expensive
+    # reflection only runs once per unique (success, error) combination.
+    _union_cache: Dict[tuple, Type[RootModel]] = {}
+
     def generate_or_error(
         self,
         prompt: str,
@@ -223,14 +228,17 @@ class StrictEngine:
         """
         Generate a response that can be either success or error.
         """
+        cache_key = (success_schema, error_schema)
+        if cache_key not in StrictEngine._union_cache:
+            class UnionResponse(RootModel):
+                root: Union[success_schema, error_schema]  # type: ignore
+            StrictEngine._union_cache[cache_key] = UnionResponse
 
-        # Create a union type dynamically
-        class UnionResponse(RootModel):
-            root: Union[success_schema, error_schema]  # type: ignore
+        union_schema = StrictEngine._union_cache[cache_key]
 
         result = self.generate(
             prompt=prompt,
-            schema=UnionResponse,
+            schema=union_schema,
             system_prompt=system_prompt,
             context=context,
         )

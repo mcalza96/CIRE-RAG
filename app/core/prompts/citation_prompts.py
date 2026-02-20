@@ -8,6 +8,36 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass
 
 
+def _truncate_content(text: str, max_length: int) -> str:
+    """
+    Truncate text at the last complete paragraph or line boundary
+    within max_length.  Never cuts mid-word or mid-sentence.
+    Appends '[...]' when truncation occurs.
+    """
+    if len(text) <= max_length:
+        return text
+
+    # Try to cut at a paragraph break
+    cut_at = text.rfind("\n\n", 0, max_length)
+    if cut_at == -1:
+        # Fall back to last newline
+        cut_at = text.rfind("\n", 0, max_length)
+    if cut_at == -1:
+        # Fall back to last sentence-ending punctuation
+        for sep in (". ", ".\n"):
+            cut_at = text.rfind(sep, 0, max_length)
+            if cut_at != -1:
+                cut_at += 1  # keep the period
+                break
+    if cut_at <= 0:
+        # Last resort: cut at last space
+        cut_at = text.rfind(" ", 0, max_length)
+    if cut_at <= 0:
+        cut_at = max_length
+
+    return text[:cut_at].rstrip() + "\n[...]"
+
+
 # =============================================================================
 # SYSTEM PROMPTS
 # =============================================================================
@@ -121,7 +151,7 @@ def format_nodes_for_citation(
     
     for node in nodes:
         node_id = str(node.get("id", ""))
-        content = str(node.get("content", ""))[:max_content_length]
+        content = _truncate_content(str(node.get("content", "")), max_content_length)
         title = node.get("title", "")
         node_type = node.get("node_type", "")
         

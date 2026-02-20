@@ -230,6 +230,28 @@ class GravityReranker:
 
         scored_results.sort(key=lambda x: x.similarity, reverse=True)
 
+        # --- Normalize scores to [0, 1] via min-max ---
+        # The multipliers reorder the results but must NOT destroy the scale.
+        if len(scored_results) > 1:
+            raw_scores = [r.similarity for r in scored_results]
+            max_s = max(raw_scores)
+            min_s = min(raw_scores)
+            spread = max_s - min_s
+            if spread > 0:
+                for r in scored_results:
+                    normalized = (r.similarity - min_s) / spread
+                    r.similarity = normalized
+                    r.score = normalized
+                    r.metadata["gravity_normalized_score"] = normalized
+            else:
+                # All scores equal — assign 1.0 to all
+                for r in scored_results:
+                    r.similarity = 1.0
+                    r.score = 1.0
+        elif len(scored_results) == 1:
+            scored_results[0].similarity = 1.0
+            scored_results[0].score = 1.0
+
         matrix_limit = config.get("max_results")
         if matrix_limit:
             scored_results = scored_results[:matrix_limit]

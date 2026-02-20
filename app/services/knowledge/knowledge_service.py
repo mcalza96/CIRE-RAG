@@ -1,3 +1,4 @@
+import hashlib
 import re
 from typing import List, Dict, Any
 from uuid import uuid4
@@ -185,7 +186,8 @@ class KnowledgeService:
             )
 
         context_map = {str(r.get("id")): r for r in results if r.get("id")}
-        # Build chunks from the deduplicated map to avoid sending duplicate text to the LLM
+        # Deduplicate by content hash to catch RAPTOR summaries / hybrid duplicates
+        context_map = self._dedupe_by_content(context_map)
         context_chunks = [str(r.get("content", "")) for r in context_map.values() if r.get("content")]
 
         return {
@@ -263,6 +265,7 @@ class KnowledgeService:
 
         # 3. Process results
         context_map = {str(r.get("id")): r for r in results if r.get("id")}
+        context_map = self._dedupe_by_content(context_map)
         context_chunks = [str(r.get("content", "")) for r in context_map.values() if r.get("content")]
 
         return {
@@ -282,6 +285,42 @@ class KnowledgeService:
             "requires_scope_clarification": ambiguous,
             "suggested_scopes": self._scope_policy.suggest_scope_candidates(query),
         }
+
+    @staticmethod
+    def _dedupe_by_content(context_map: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Remove entries whose content is identical (or near-identical after
+        whitespace normalization).  When two IDs map to the same text, keep
+        the one with the higher score.
+        """
+        seen_hashes: Dict[str, str] = {}  # content_hash → winning ID
+        deduped: Dict[str, Any] = {}
+
+        for doc_id, doc in context_map.items():
+            raw = str(doc.get("content") or "").strip()
+            if not raw:
+                continue
+            # Normalize whitespace for near-duplicate detection
+            normalized = re.sub(r"\s+", " ", raw).strip().lower()
+            content_hash = hashlib.md5(normalized.encode("utf-8")).hexdigest()
+
+            if content_hash not in seen_hashes:
+                seen_hashes[content_hash] = doc_id
+                deduped[doc_id] = doc
+            else:
+                existing_id = seen_hashes[content_hash]
+                existing_score = float(
+                    deduped[existing_id].get("similarity")
+                    or deduped[existing_id].get("score")
+                    or 0.0
+                )
+                new_score = float(doc.get("similarity") or doc.get("score") or 0.0)
+                if new_score > existing_score:
+                    del deduped[existing_id]
+                    seen_hashes[content_hash] = doc_id
+                    deduped[doc_id] = doc
+
+        return deduped
 
     def _filter_results_by_scope(
         self, results: List[Dict[str, Any]], requested_standards: tuple[str, ...]
