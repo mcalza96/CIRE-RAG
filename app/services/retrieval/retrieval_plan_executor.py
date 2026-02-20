@@ -3,7 +3,7 @@ import asyncio
 import structlog
 from typing import Any, List, Dict, Optional
 
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 from app.domain.schemas.query_plan import QueryPlan
 from app.services.retrieval.retrieval_scope_service import RetrievalScopeService
 

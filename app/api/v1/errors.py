@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-from app.core.observability.correlation import get_correlation_id
+from app.infrastructure.observability.correlation import get_correlation_id
 
 
 def _error_example(code: str, message: str, details: Any) -> dict[str, Any]:

@@ -1,5 +1,5 @@
 from supabase import AsyncClient, create_async_client
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 
 _async_supabase_client = None
 

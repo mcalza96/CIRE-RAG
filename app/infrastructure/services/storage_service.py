@@ -7,7 +7,7 @@ from typing import Optional
 from app.infrastructure.supabase.client import get_async_supabase_client, reset_async_supabase_client
 from app.infrastructure.adapters.filesystem_ingestion_source import FileSystemIngestionSource
 import logging
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 
 logger = logging.getLogger(__name__)
 

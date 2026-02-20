@@ -3,7 +3,7 @@ Centralized AI model configurations for the RAG ingestion service.
 Follows the CIRE-RAG rule of centralized model registry.
 """
 
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 
 
 class AIModelConfig:

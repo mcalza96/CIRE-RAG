@@ -6,9 +6,9 @@ from uuid import UUID
 
 import structlog
 
-from app.core.observability.retrieval_metrics import retrieval_metrics_store
-from app.core.observability.timing import elapsed_ms, perf_now
-from app.core.settings import settings
+from app.infrastructure.observability.retrieval_metrics import retrieval_metrics_store
+from app.infrastructure.observability.timing import elapsed_ms, perf_now
+from app.infrastructure.settings import settings
 from app.domain.interfaces.atomic_retrieval_repository import IAtomicRetrievalRepository
 from app.domain.schemas.query_plan import QueryPlan
 from app.domain.schemas.retrieval_payloads import RetrievalRow

@@ -5,7 +5,7 @@ import structlog
 from typing import Any, Callable, Dict, List, Optional
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.outputs import LLMResult
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 
 logger = structlog.get_logger("metrics")
 

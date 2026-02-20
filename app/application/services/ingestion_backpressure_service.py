@@ -2,7 +2,7 @@ import math
 import structlog
 from typing import Optional, Dict
 
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 from app.domain.types.ingestion_status import IngestionStatus
 from app.infrastructure.services.manual_ingestion_query_service import ManualIngestionQueryService
 

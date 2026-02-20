@@ -5,7 +5,7 @@ from fastapi import Security
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
 from app.api.v1.errors import ApiError
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 
 logger = structlog.get_logger(__name__)
 

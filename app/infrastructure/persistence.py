@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 from psycopg_pool import AsyncConnectionPool
 from psycopg import AsyncConnection
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 
 logger = logging.getLogger(__name__)
 

@@ -12,7 +12,7 @@ from typing import Any
 import fitz
 import structlog
 
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 from app.services.ingestion.structure_analyzer import PdfStructureAnalyzer
 
 logger = structlog.get_logger(__name__)

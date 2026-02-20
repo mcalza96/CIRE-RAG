@@ -8,15 +8,15 @@ import json
 import structlog
 
 from app.application.services.ingestion_state_manager import IngestionStateManager
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 from app.domain.repositories.content_repository import IContentRepository
-from app.core.llm import get_llm
+from app.ai.llm import get_llm
 from app.infrastructure.supabase.client import get_async_supabase_client
 from app.infrastructure.repositories.supabase_graph_repository import SupabaseGraphRepository
 from app.infrastructure.repositories.supabase_raptor_repository import SupabaseRaptorRepository
 from app.services.knowledge.graph_extractor import GraphExtractor
 from app.application.services.visual_anchor_service import VisualAnchorService
-from app.core.observability.ingestion_logging import compact_error, emit_event
+from app.infrastructure.observability.ingestion_logging import compact_error, emit_event
 
 logger = structlog.get_logger(__name__)
 

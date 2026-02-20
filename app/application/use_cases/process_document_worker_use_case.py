@@ -9,17 +9,17 @@ from app.domain.policies.ingestion_policy import IngestionPolicy
 from app.services.database.taxonomy_manager import TaxonomyManager
 from app.infrastructure.adapters.supabase_metadata_adapter import SupabaseMetadataAdapter
 from app.infrastructure.services.storage_service import StorageService
-from app.core.observability.correlation import set_correlation_id
+from app.infrastructure.observability.correlation import set_correlation_id
 from app.application.services.ingestion_context_resolver import IngestionContextResolver
 import structlog
-from app.core.observability.logger_config import bind_context
+from app.infrastructure.observability.logger_config import bind_context
 from app.infrastructure.repositories.supabase_raptor_repository import SupabaseRaptorRepository
 from app.application.services.document_download_service import DocumentDownloadService
 from app.application.services.ingestion_state_manager import IngestionStateManager
 from app.application.services.visual_anchor_service import VisualAnchorService
 from app.services.ingestion.visual_parser import VisualDocumentParser
 from app.services.ingestion.integrator import VisualGraphIntegrator
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 
 logger = structlog.get_logger(__name__)
 

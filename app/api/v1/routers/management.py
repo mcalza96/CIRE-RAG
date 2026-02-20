@@ -8,7 +8,7 @@ from app.api.v1.auth import require_service_auth
 from app.api.v1.errors import ERROR_RESPONSES, ApiError
 from app.api.v1.tenant_guard import enforce_tenant_match
 from app.api.v1.routers.ingestion import get_ingestion_use_case
-from app.core.observability.retrieval_metrics import retrieval_metrics_store
+from app.infrastructure.observability.retrieval_metrics import retrieval_metrics_store
 from app.application.use_cases.manual_ingestion_use_case import ManualIngestionUseCase
 
 logger = structlog.get_logger(__name__)

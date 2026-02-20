@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from app.api.v1.auth import require_service_auth
 from app.api.v1.errors import ERROR_RESPONSES, ApiError
 from app.api.v1.tenant_guard import enforce_tenant_match
-from app.core.dependencies import get_knowledge_service
+from app.infrastructure.dependencies import get_knowledge_service
 from app.services.knowledge.knowledge_service import KnowledgeService
 
 logger = structlog.get_logger(__name__)

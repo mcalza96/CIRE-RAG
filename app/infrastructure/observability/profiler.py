@@ -3,7 +3,7 @@ import functools
 from typing import Optional
 import structlog
 
-from app.core.observability.correlation import get_correlation_id
+from app.infrastructure.observability.correlation import get_correlation_id
 
 logger = structlog.get_logger("latency_monitor")
 

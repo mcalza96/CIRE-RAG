@@ -12,9 +12,9 @@ from uuid import UUID, uuid4
 
 import structlog
 
-from app.core.models.schemas import VisualParseResult
-from app.core.settings import settings
-from app.core.utils.text_processing import inject_anchor_token
+from app.ai.schemas import VisualParseResult
+from app.infrastructure.settings import settings
+from app.utils.text_processing import inject_anchor_token
 from app.infrastructure.supabase.client import get_async_supabase_client
 from app.services.embedding_service import JinaEmbeddingService
 

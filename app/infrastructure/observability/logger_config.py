@@ -1,9 +1,9 @@
 import logging
 import structlog
 from structlog.contextvars import bind_contextvars, merge_contextvars
-from app.core.observability.context_vars import get_tenant_id, get_user_id, bind_context
-from app.core.observability.correlation import get_correlation_id, CorrelationLogFilter
-from app.core.settings import settings
+from app.infrastructure.observability.context_vars import get_tenant_id, get_user_id, bind_context
+from app.infrastructure.observability.correlation import get_correlation_id, CorrelationLogFilter
+from app.infrastructure.settings import settings
 
 
 # bind_context is now imported from context_vars

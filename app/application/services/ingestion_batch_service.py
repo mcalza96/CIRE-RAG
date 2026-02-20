@@ -4,11 +4,11 @@ from uuid import uuid4
 from typing import Optional, Dict, Any, List
 from fastapi import UploadFile
 
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 from app.domain.types.ingestion_status import IngestionStatus
 from app.infrastructure.services.manual_ingestion_query_service import ManualIngestionQueryService
 from app.services.database.taxonomy_manager import TaxonomyManager
-from app.core.utils.filename_utils import sanitize_filename
+from app.utils.filename_utils import sanitize_filename
 
 logger = structlog.get_logger(__name__)
 

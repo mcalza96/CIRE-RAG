@@ -17,7 +17,7 @@ from typing import TypeVar, Type, Optional, Any, Union, Dict
 from pydantic import BaseModel, RootModel
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 from app.infrastructure.ai.instructor_factory import (
     create_async_instructor_client,
     create_instructor_client,
@@ -266,7 +266,7 @@ def structured_generate(prompt: str, schema: Type[T], **kwargs) -> T:
     Convenience function for one-off structured generation.
 
     Example:
-        from app.core.structured_generation import structured_generate
+        from app.ai.structured_generation import structured_generate
 
         class Response(BaseModel):
             answer: str

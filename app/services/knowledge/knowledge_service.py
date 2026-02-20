@@ -4,11 +4,11 @@ from typing import List, Dict, Any
 from uuid import uuid4
 import structlog
 from app.api.v1.errors import ApiError
-from app.core.middleware.security import SecurityViolationError
-from app.core.retrieval_config import retrieval_settings
-from app.core.settings import settings
-from app.core.observability.scope_metrics import scope_metrics_store
-from app.core.observability.timing import elapsed_ms, perf_now
+from app.infrastructure.middleware.security import SecurityViolationError
+from app.domain.retrieval_config import retrieval_settings
+from app.infrastructure.settings import settings
+from app.infrastructure.observability.scope_metrics import scope_metrics_store
+from app.infrastructure.observability.timing import elapsed_ms, perf_now
 from app.application.services.retrieval_router import RetrievalRouter
 from app.domain.knowledge_schemas import RetrievalIntent, AgentRole, TaskType
 from app.domain.schemas.retrieval_payloads import GroundedContext
@@ -134,7 +134,7 @@ class KnowledgeService:
         retrieval_request_id: str,
         requested_standards: tuple[str, ...] = (),
     ) -> GroundedContext:
-        from app.core.middleware.security import LeakCanary
+        from app.infrastructure.middleware.security import LeakCanary
 
         orchestrator = RetrievalRouter(
             vector_tools=container.retrieval_tools,
@@ -210,7 +210,7 @@ class KnowledgeService:
     ) -> GroundedContext:
         """Vector-only retrieval path."""
         retrieval_tools = container.retrieval_tools
-        from app.core.middleware.security import LeakCanary
+        from app.infrastructure.middleware.security import LeakCanary
 
         # 1. Execute Retrieval
         scope: Dict[str, Any] = {"type": "institutional", "tenant_id": institution_id}

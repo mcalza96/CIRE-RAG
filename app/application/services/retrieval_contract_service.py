@@ -40,8 +40,8 @@ from app.api.v1.schemas.retrieval_advanced import (
     ValidateScopeRequest,
     ValidateScopeResponse,
 )
-from app.core.middleware.security import LeakCanary, SecurityViolationError
-from app.core.settings import settings
+from app.infrastructure.middleware.security import LeakCanary, SecurityViolationError
+from app.infrastructure.settings import settings
 from app.domain.scope_utils import extract_requested_standards, normalize_scope_name
 from app.domain.scope_utils import extract_clause_refs, extract_row_scope
 from app.domain.retrieval_policy import (

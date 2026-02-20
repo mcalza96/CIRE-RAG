@@ -1,7 +1,7 @@
 import logging
 from typing import Any, Tuple
 
-from app.core.ai_models import AIModelConfig
+from app.ai.models import AIModelConfig
 
 logger = logging.getLogger(__name__)
 

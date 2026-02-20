@@ -5,7 +5,7 @@ from uuid import UUID
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.outputs import LLMResult
 from langchain_core.messages import BaseMessage
-from app.core.observability.correlation import get_correlation_id
+from app.infrastructure.observability.correlation import get_correlation_id
 
 logger = structlog.get_logger("agent_trace")
 

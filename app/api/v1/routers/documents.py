@@ -11,7 +11,7 @@ from app.api.v1.auth import require_service_auth
 from app.api.v1.errors import ERROR_RESPONSES, ApiError
 from app.api.v1.tenant_guard import require_tenant_from_context
 from app.api.v1.routers.ingestion import get_ingestion_use_case
-from app.core.idempotency_store import get_idempotency_store, reset_idempotency_store_for_tests
+from app.infrastructure.idempotency_store import get_idempotency_store, reset_idempotency_store_for_tests
 from app.application.use_cases.manual_ingestion_use_case import ManualIngestionUseCase
 from app.infrastructure.repositories.supabase_content_repository import SupabaseContentRepository
 from app.infrastructure.repositories.supabase_source_repository import SupabaseSourceRepository

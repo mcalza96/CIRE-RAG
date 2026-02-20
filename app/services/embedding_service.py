@@ -4,8 +4,8 @@ import asyncio
 import time
 from collections import OrderedDict
 from typing import List, Dict, Any, Optional, cast
-from app.core.observability.metrics import track_span
-from app.core.settings import settings
+from app.infrastructure.observability.metrics import track_span
+from app.infrastructure.settings import settings
 from app.domain.interfaces.embedding_provider import IEmbeddingProvider
 from app.infrastructure.services.cohere_cloud_provider import CohereCloudProvider
 from app.infrastructure.services.jina_cloud_provider import JinaCloudProvider

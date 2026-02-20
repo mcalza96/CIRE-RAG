@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 from uuid import UUID
 
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 from app.domain.repositories.source_repository import ISourceRepository
 from app.infrastructure.supabase.client import get_async_supabase_client
 from app.services.knowledge.clustering_service import ClusteringService

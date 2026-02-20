@@ -2,7 +2,7 @@ from typing import List, Dict, Optional, Any
 import structlog
 import re
 import aiohttp
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 
 logger = structlog.get_logger(__name__)
 

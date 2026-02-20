@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.outputs import LLMResult
 from langchain_core.messages import BaseMessage
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 
 logger = structlog.get_logger("forensic")
 

@@ -8,9 +8,9 @@ from uuid import UUID
 import structlog
 from langchain_core.language_models.chat_models import BaseChatModel
 
-from app.core.llm import get_llm
-from app.core.settings import settings
-from app.core.observability.scope_metrics import scope_metrics_store
+from app.ai.llm import get_llm
+from app.infrastructure.settings import settings
+from app.infrastructure.observability.scope_metrics import scope_metrics_store
 from app.domain.schemas.query_plan import PlannedSubQuery, QueryPlan
 from app.domain.knowledge_schemas import (
     AgentRole,

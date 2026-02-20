@@ -11,9 +11,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.core.settings import settings
-from app.core.structured_generation import StrictEngine, get_strict_engine
-from app.core.observability.ingestion_logging import compact_error
+from app.infrastructure.settings import settings
+from app.ai.structured_generation import StrictEngine, get_strict_engine
+from app.infrastructure.observability.ingestion_logging import compact_error
 
 try:
     from app.domain.graph_schemas import ExtractedNode, ExtractedEdge, GraphExtractionResult

@@ -15,7 +15,7 @@ from app.api.v1.schemas.retrieval_advanced import (
 )
 from app.api.v1.tenant_guard import enforce_tenant_match
 from app.application.services.retrieval_contract_service import RetrievalContractService
-from app.core.dependencies import get_container
+from app.infrastructure.dependencies import get_container
 
 logger = structlog.get_logger(__name__)
 

@@ -5,8 +5,8 @@ import textwrap
 import numpy as np
 from typing import List, Dict, Any, Optional, cast
 from app.domain.interfaces.embedding_provider import IEmbeddingProvider
-from app.core.ai_models import AIModelConfig
-from app.core.settings import settings
+from app.ai.models import AIModelConfig
+from app.infrastructure.settings import settings
 
 logger = structlog.get_logger(__name__)
 

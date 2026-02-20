@@ -4,7 +4,7 @@ from typing import Optional
 from app.domain.models.ingestion_source import IngestionSource
 from app.domain.repositories.source_repository import ISourceRepository
 from app.infrastructure.services.storage_service import StorageService
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 
 logger = structlog.get_logger(__name__)
 

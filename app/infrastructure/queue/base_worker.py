@@ -3,7 +3,7 @@ import time
 import structlog
 from typing import Any, Dict, Optional, Callable, Coroutine
 from app.infrastructure.queue.supabase_job_store import SupabaseJobStore
-from app.core.observability.ingestion_logging import compact_error, emit_event
+from app.infrastructure.observability.ingestion_logging import compact_error, emit_event
 
 logger = structlog.get_logger(__name__)
 

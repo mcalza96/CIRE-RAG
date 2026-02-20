@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from app.core.config.model_config import ModelSettings, ProviderName, get_model_settings
-from app.core.models.interfaces import BaseVLM
-from app.core.models.providers.gemini import GeminiAdapter
-from app.core.models.providers.openai import OpenAIAdapter
+from app.ai.config import ModelSettings, ProviderName, get_model_settings
+from app.ai.interfaces import BaseVLM
+from app.ai.providers.gemini import GeminiAdapter
+from app.ai.providers.openai import OpenAIAdapter
 
 def _create_provider_model(
     provider: ProviderName,

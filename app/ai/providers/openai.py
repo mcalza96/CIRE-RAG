@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from app.core.models.interfaces import BaseVLM, ModelAdapterError
+from app.ai.interfaces import BaseVLM, ModelAdapterError
 
 
 class OpenAIAdapter(BaseVLM):

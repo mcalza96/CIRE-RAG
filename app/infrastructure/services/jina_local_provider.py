@@ -5,7 +5,7 @@ import threading
 import asyncio
 from typing import List, Dict, Any, Tuple, Optional
 from app.domain.interfaces.embedding_provider import IEmbeddingProvider
-from app.core.ai_models import AIModelConfig
+from app.ai.models import AIModelConfig
 
 logger = structlog.get_logger(__name__)
 

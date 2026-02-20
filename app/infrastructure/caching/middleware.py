@@ -12,10 +12,10 @@ from typing import Any, TypeVar, cast
 
 import structlog
 
-from app.core.caching.image_hasher import ImageHasher
-from app.core.config.model_config import get_model_settings
-from app.core.models.schemas import VisualParseResult
-from app.core.settings import settings
+from app.infrastructure.caching.image_hasher import ImageHasher
+from app.ai.config import get_model_settings
+from app.ai.schemas import VisualParseResult
+from app.infrastructure.settings import settings
 from app.infrastructure.supabase.client import get_async_supabase_client
 
 logger = structlog.get_logger(__name__)

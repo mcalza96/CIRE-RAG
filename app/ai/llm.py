@@ -5,9 +5,9 @@ from typing import Any, Dict, Optional, cast
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 
-from app.core.ai_models import AIModelConfig
-from app.core.observability.forensic import ForensicCallbackHandler
-from app.core.observability.metrics import MetricsCallbackHandler
+from app.ai.models import AIModelConfig
+from app.infrastructure.observability.forensic import ForensicCallbackHandler
+from app.infrastructure.observability.metrics import MetricsCallbackHandler
 
 
 def _default_temperature_for_capability(capability: str) -> float:

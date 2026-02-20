@@ -3,7 +3,7 @@ import structlog
 from typing import Any, Callable, Coroutine, Dict, Optional
 
 from app.application.use_cases.process_document_worker_use_case import ProcessDocumentWorkerUseCase
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 from app.domain.policies.ingestion_policy import IngestionPolicy
 from app.infrastructure.adapters.supabase_metadata_adapter import SupabaseMetadataAdapter
 from app.infrastructure.container import CognitiveContainer

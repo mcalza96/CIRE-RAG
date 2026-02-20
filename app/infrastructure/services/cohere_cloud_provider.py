@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, cast
 import aiohttp
 import structlog
 
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 from app.domain.interfaces.embedding_provider import IEmbeddingProvider
 
 logger = structlog.get_logger(__name__)

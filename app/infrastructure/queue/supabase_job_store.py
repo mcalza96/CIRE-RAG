@@ -6,7 +6,7 @@ from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 from app.infrastructure.supabase.client import (
     get_async_supabase_client,
     reset_async_supabase_client,

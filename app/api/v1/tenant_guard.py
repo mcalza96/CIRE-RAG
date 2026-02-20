@@ -3,7 +3,7 @@ from __future__ import annotations
 import structlog
 
 from app.api.v1.errors import ApiError
-from app.core.observability.context_vars import get_tenant_id
+from app.infrastructure.observability.context_vars import get_tenant_id
 
 logger = structlog.get_logger(__name__)
 

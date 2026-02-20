@@ -1,7 +1,7 @@
 import asyncio
 from typing import Any, Dict, Optional, Protocol
 
-from app.core.observability.ingestion_logging import compact_error
+from app.infrastructure.observability.ingestion_logging import compact_error
 
 
 class JobStoreProtocol(Protocol):

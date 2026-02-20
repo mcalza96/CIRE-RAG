@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from app.core.observability.context_vars import get_tenant_id
+from app.infrastructure.observability.context_vars import get_tenant_id
 from app.infrastructure.supabase.client import get_async_supabase_client
 
 

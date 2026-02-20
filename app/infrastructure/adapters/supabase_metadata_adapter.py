@@ -2,7 +2,7 @@ from typing import Dict, Any, Optional
 from app.schemas.ingestion import IngestionMetadata
 from app.domain.types.authority import AuthorityLevel
 from app.domain.services.authority_classifier import AuthorityClassifier
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 
 class SupabaseMetadataAdapter:
     """

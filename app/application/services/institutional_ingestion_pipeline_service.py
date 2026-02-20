@@ -4,9 +4,9 @@ from typing import Any, Dict, Optional
 
 import structlog
 
-from app.core.llm import get_llm
-from app.core.prompts.institutional import InstitutionalPrompts
-from app.core.settings import settings
+from app.ai.llm import get_llm
+from app.domain.prompts.institutional import InstitutionalPrompts
+from app.infrastructure.settings import settings
 from app.domain.schemas import ContentChunk
 from app.domain.types.ingestion_status import IngestionStatus
 from app.infrastructure.repositories.supabase_content_repository import SupabaseContentRepository

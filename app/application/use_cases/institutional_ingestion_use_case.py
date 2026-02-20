@@ -9,10 +9,10 @@ from app.infrastructure.services.manual_ingestion_query_service import (
 )
 from app.application.services.ingestion_backpressure_service import IngestionBackpressureService
 from app.application.services.ingestion_batch_service import IngestionBatchService
-from app.core.observability.correlation import get_correlation_id
+from app.infrastructure.observability.correlation import get_correlation_id
 from app.services.database.taxonomy_manager import TaxonomyManager
-from app.core.settings import settings
-from app.core.utils.filename_utils import sanitize_filename
+from app.infrastructure.settings import settings
+from app.utils.filename_utils import sanitize_filename
 
 logger = structlog.get_logger(__name__)
 

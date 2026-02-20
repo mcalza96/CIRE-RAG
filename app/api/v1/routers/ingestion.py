@@ -12,7 +12,7 @@ from app.api.v1.errors import ApiError
 from app.api.v1.tenant_guard import enforce_tenant_match, require_tenant_from_context
 from app.application.use_cases.manual_ingestion_use_case import ManualIngestionUseCase
 from app.application.use_cases.institutional_ingestion_use_case import InstitutionalIngestionUseCase
-from app.core.dependencies import get_container, get_content_repository
+from app.infrastructure.dependencies import get_container, get_content_repository
 from app.workflows.ingestion.dispatcher import IngestionDispatcher
 from app.services.embedding_service import JinaEmbeddingService
 

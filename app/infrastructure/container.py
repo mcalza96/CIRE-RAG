@@ -14,7 +14,7 @@ from app.services.embedding_service import JinaEmbeddingService
 from app.services.knowledge.gravity_reranker import GravityReranker
 from app.services.knowledge.jina_reranker import JinaReranker
 from app.services.retrieval.atomic_engine import AtomicRetrievalEngine
-from app.core.tools.retrieval import RetrievalTools
+from app.ai.tools.retrieval import RetrievalTools
 from app.application.services.document_download_service import DocumentDownloadService
 from app.application.services.ingestion_state_manager import IngestionStateManager
 from app.application.services.retrieval_broker import RetrievalBroker

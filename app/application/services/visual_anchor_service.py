@@ -11,10 +11,10 @@ from typing import Any, Dict, Optional
 import structlog
 
 from app.application.services.ingestion_state_manager import IngestionStateManager
-from app.core.caching.image_hasher import ImageHasher
-from app.core.config.model_config import get_model_settings
-from app.core.settings import settings
-from app.core.models.schemas import VisualParseResult
+from app.infrastructure.caching.image_hasher import ImageHasher
+from app.ai.config import get_model_settings
+from app.infrastructure.settings import settings
+from app.ai.schemas import VisualParseResult
 from app.infrastructure.supabase.client import get_async_supabase_client
 from app.services.ingestion.integrator import VisualGraphIntegrator
 from app.services.ingestion.visual_parser import VisualDocumentParser

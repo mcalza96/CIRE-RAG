@@ -2,15 +2,15 @@ import structlog
 import time
 import math
 from typing import List, Dict, Any, Optional
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 from app.domain.schemas.query_plan import PlannedSubQuery, QueryPlan
 from app.services.embedding_service import JinaEmbeddingService
 from app.services.knowledge.cohere_reranker import CohereReranker
 from app.services.knowledge.gravity_reranker import GravityReranker
 from app.services.knowledge.jina_reranker import JinaReranker
 from app.services.ingestion.metadata_enricher import enrich_metadata
-from app.core.observability.forensic import ForensicRecorder
-from app.core.observability.scope_metrics import scope_metrics_store
+from app.infrastructure.observability.forensic import ForensicRecorder
+from app.infrastructure.observability.scope_metrics import scope_metrics_store
 from app.domain.knowledge_schemas import RAGSearchResult, RetrievalIntent, AgentRole, TaskType
 from app.domain.interfaces.reranking_provider import IAuthorityReranker, ISemanticReranker
 from app.domain.interfaces.retrieval_interface import IRetrievalRepository

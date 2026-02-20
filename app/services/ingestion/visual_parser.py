@@ -9,11 +9,11 @@ from typing import Any, Callable
 import structlog
 from pydantic import ValidationError
 
-from app.core.caching.middleware import cached_extraction
-from app.core.models.factory import create_ingest_fallback_model, create_ingest_model
-from app.core.models.interfaces import BaseVLM, ModelAdapterError
-from app.core.models.schemas import VerificationResult, VisualParseResult
-from app.core.settings import settings
+from app.infrastructure.caching.middleware import cached_extraction
+from app.ai.factory import create_ingest_fallback_model, create_ingest_model
+from app.ai.interfaces import BaseVLM, ModelAdapterError
+from app.ai.schemas import VerificationResult, VisualParseResult
+from app.infrastructure.settings import settings
 from app.services.ingestion.prompts import (
     FORENSIC_VISUAL_SYSTEM_PROMPT,
     build_visual_parse_user_prompt,

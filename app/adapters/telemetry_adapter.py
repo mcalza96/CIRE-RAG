@@ -15,7 +15,7 @@ from typing import List, Optional, Any, Dict
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
 from sqlalchemy import text
 import dspy
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 
 # Configure logger
 logger = logging.getLogger(__name__)

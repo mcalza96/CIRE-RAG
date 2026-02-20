@@ -5,8 +5,8 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
-from app.core.observability.context_vars import bind_context, tenant_id_ctx, user_id_ctx
-from app.core.observability.correlation import get_correlation_id
+from app.infrastructure.observability.context_vars import bind_context, tenant_id_ctx, user_id_ctx
+from app.infrastructure.observability.correlation import get_correlation_id
 
 TENANT_ID_HEADER = "X-Tenant-ID"
 USER_ID_HEADER = "X-User-ID"

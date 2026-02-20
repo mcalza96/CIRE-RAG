@@ -2,8 +2,8 @@ import logging
 import re
 from typing import List, Tuple
 
-from app.core.llm import get_llm
-from app.core.prompt_registry import PromptRegistry
+from app.ai.llm import get_llm
+from app.domain.prompt_registry import PromptRegistry
 
 logger = logging.getLogger(__name__)
 

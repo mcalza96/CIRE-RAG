@@ -5,7 +5,7 @@ from uuid import UUID
 from sklearn.mixture import GaussianMixture
 import asyncio
 import networkx as nx
-from app.core.llm import get_llm
+from app.ai.llm import get_llm
 from app.infrastructure.supabase.client import get_async_supabase_client
 from app.services.embedding_service import JinaEmbeddingService
 from app.domain.raptor_schemas import ClusterResult, ClusterAssignment
