@@ -1,5 +1,6 @@
 import structlog
 from typing import List, Dict, Any, Optional
+from uuid import NAMESPACE_URL, uuid5
 from app.services.ingestion.pdf_parser import PdfParserService
 from app.services.ingestion.structure_mapper import StructureMapper
 from app.schemas.ingestion import IngestionMetadata
@@ -15,6 +16,16 @@ logger = structlog.get_logger(__name__)
 
 _ISO_DOC_PATTERN = re.compile(r"\bISO\s*[-:_]?\s*(\d{4,5})\b", re.IGNORECASE)
 _NOM_ISO_DOC_PATTERN = re.compile(r"\bNOM\s*[-_ ]?ISO\s*[-_ ]?(\d{4,5})\b", re.IGNORECASE)
+_TOC_DOT_LEADER_LINE = re.compile(r"^\s*.+\.{3,}\s*\d+\s*$", re.MULTILINE)
+_TOC_CLAUSE_REF = re.compile(r"\b\d+(?:\.\d+){1,4}\b")
+_FRONTMATTER_HINTS = (
+    "reservados los derechos",
+    "all rights reserved",
+    "copyright",
+    "no podra reproducirse",
+    "no podrá reproducirse",
+    "iso copyright office",
+)
 
 
 def _infer_document_standards(metadata: IngestionMetadata) -> list[str]:
@@ -63,16 +74,16 @@ class LateChunkResult(BaseModel):
     """
 
     content: str = Field(min_length=1)
-    embedding: List[float] = Field(min_length=1)
+    embedding: Optional[List[float]] = None
     char_start: int = Field(ge=0)
     char_end: int = Field(gt=0)
     heading_path: Optional[str] = None
 
     @field_validator("embedding")
     @classmethod
-    def _validate_embedding(cls, value: List[float]) -> List[float]:
-        if not value:
-            raise ValueError("embedding cannot be empty")
+    def _validate_embedding(cls, value: Optional[List[float]]) -> Optional[List[float]]:
+        if value is not None and not value:
+            raise ValueError("embedding cannot be empty when present")
         return value
 
     @model_validator(mode="after")
@@ -92,6 +103,9 @@ class ChunkingService:
         Uses a simple character-based split. Kept for backward compatibility.
         """
         return [text[i : i + max_chars] for i in range(0, len(text), max_chars)]
+
+    def classify_chunk_role(self, content: str) -> dict[str, Any]:
+        return self._classify_chunk_role(content)
 
     async def chunk_document_with_late_chunking(
         self,
@@ -135,6 +149,28 @@ class ChunkingService:
         logger.info("contextual_chunking_applied", chunks=len(contextual), mode=embedding_mode)
         return [item.model_dump() for item in contextual]
 
+    async def chunk_document_contextual_selective(
+        self,
+        full_text: str,
+        embedding_mode: str,
+        embedding_provider: Optional[str] = None,
+        max_chars: int = AIModelConfig.MAX_CHARACTERS_PER_CHUNKING_BLOCK,
+        *,
+        skip_structural_embedding: bool = True,
+    ) -> List[Dict[str, Any]]:
+        if not full_text or not full_text.strip():
+            return []
+        sections = self.split_by_headings(full_text, max_chars=max_chars)
+        chunker = JinaEmbeddingService.get_instance()
+        contextual = await self._contextual_section_chunking(
+            sections,
+            chunker,
+            embedding_mode,
+            embedding_provider,
+            skip_structural_embedding=skip_structural_embedding,
+        )
+        return [item.model_dump() for item in contextual]
+
     def _attach_headings_and_validate(
         self,
         chunks: List[Dict[str, Any]],
@@ -163,6 +199,8 @@ class ChunkingService:
         chunker: JinaEmbeddingService,
         embedding_mode: str,
         embedding_provider: Optional[str],
+        *,
+        skip_structural_embedding: bool = False,
     ) -> List[LateChunkResult]:
         if not sections:
             return []
@@ -179,18 +217,34 @@ class ChunkingService:
                 )
             )
 
-        embeddings = await chunker.embed_texts(
-            contextual_texts,
-            mode=embedding_mode,
-            provider=embedding_provider,
-        )
+        embedding_indices: List[int] = []
+        embedding_texts: List[str] = []
+        for idx, section in enumerate(sections):
+            if not skip_structural_embedding:
+                embedding_indices.append(idx)
+                embedding_texts.append(contextual_texts[idx])
+                continue
+            role_meta = self._classify_chunk_role(str(section.get("content", "")))
+            if bool(role_meta.get("retrieval_eligible", True)):
+                embedding_indices.append(idx)
+                embedding_texts.append(contextual_texts[idx])
+
+        embeddings_by_index: Dict[int, List[float]] = {}
+        if embedding_texts:
+            embeddings = await chunker.embed_texts(
+                embedding_texts,
+                mode=embedding_mode,
+                provider=embedding_provider,
+            )
+            for idx, embedding in zip(embedding_indices, embeddings):
+                embeddings_by_index[idx] = embedding
 
         results: List[LateChunkResult] = []
-        for section, contextual_text, embedding in zip(sections, contextual_texts, embeddings):
+        for idx, (section, contextual_text) in enumerate(zip(sections, contextual_texts)):
             results.append(
                 LateChunkResult(
                     content=contextual_text,
-                    embedding=embedding,
+                    embedding=embeddings_by_index.get(idx),
                     char_start=int(section["char_start"]),
                     char_end=int(section["char_end"]),
                     heading_path=section.get("heading_path"),
@@ -409,7 +463,7 @@ class ChunkingService:
         char_end: int,
         page_map: List[Any],
         metadata: IngestionMetadata,
-        embedding: List[float],
+        embedding: Optional[List[float]],
         strategy_name: str,
         embedding_mode: str,
         embedding_profile: Optional[Dict[str, Any]],
@@ -424,15 +478,25 @@ class ChunkingService:
         structure_data = structure_mapper.map_page_to_context(page_num)
         structure_context = structure_data.get("structure_context", {})
         breadcrumbs = structure_context.get("breadcrumbs")
+        section_node_id = self._resolve_section_node_id(
+            source_id=metadata.source_id,
+            structure_context=structure_context,
+        )
 
         # 1. Structural Enrichment
         final_content = content
         if breadcrumbs:
             final_content = f"[UBICACIÓN: {breadcrumbs}]\n{final_content}"
 
+        role_meta = self._classify_chunk_role(final_content)
+
         # 2. Semantic Enrichment (Regex)
         # We enrich based on the RAW content to catch patterns, then update metadata/text
-        final_content, enriched_metadata = enrich_metadata(final_content, {})
+        final_content, enriched_metadata = enrich_metadata(
+            final_content,
+            {},
+            allow_clause_extraction=bool(role_meta.get("retrieval_eligible", True)),
+        )
 
         # Merge basic metadata
         profile = embedding_profile if isinstance(embedding_profile, dict) else {}
@@ -446,6 +510,8 @@ class ChunkingService:
             "embedding_provider": str(profile.get("provider") or "jina"),
             "embedding_profile": profile,
             "structure_context": structure_context,
+            "section_node_id": section_node_id,
+            **role_meta,
         }
         base_metadata.update(enriched_metadata)
 
@@ -465,4 +531,64 @@ class ChunkingService:
             "is_global": metadata.is_global,
             "embedding": embedding,
             "metadata": base_metadata,
+        }
+
+    @staticmethod
+    def _resolve_section_node_id(source_id: Any, structure_context: dict[str, Any]) -> str | None:
+        if not isinstance(structure_context, dict):
+            return None
+        section_ref = str(structure_context.get("section_ref") or "").strip()
+        if not section_ref:
+            return None
+        source_text = str(source_id or "").strip()
+        if not source_text:
+            return None
+        return str(uuid5(NAMESPACE_URL, f"doc-structure:{source_text}:{section_ref}"))
+
+    @staticmethod
+    def _classify_chunk_role(content: str) -> dict[str, Any]:
+        text = str(content or "")
+        lowered = text.lower()
+        dot_leader_lines = len(_TOC_DOT_LEADER_LINE.findall(text))
+        clause_refs = len(_TOC_CLAUSE_REF.findall(text))
+        frontmatter_hits = sum(1 for marker in _FRONTMATTER_HINTS if marker in lowered)
+        has_toc_keyword = any(
+            marker in lowered
+            for marker in (
+                "table of contents",
+                "indice",
+                "índice",
+                "contenido",
+                "contents",
+            )
+        )
+
+        is_frontmatter = frontmatter_hits >= 1 and len(text) <= 2200
+        is_toc = bool(
+            has_toc_keyword or dot_leader_lines >= 2 or (dot_leader_lines >= 1 and clause_refs >= 6)
+        )
+
+        if is_frontmatter:
+            chunk_role = "frontmatter"
+        elif is_toc:
+            chunk_role = "toc"
+        else:
+            chunk_role = "normative_body"
+
+        retrieval_eligible = chunk_role == "normative_body"
+        structure_eligible = chunk_role == "toc"
+        return {
+            "chunk_role": chunk_role,
+            "doc_section_type": chunk_role,
+            "is_toc": chunk_role == "toc",
+            "is_frontmatter": chunk_role == "frontmatter",
+            "is_normative_body": chunk_role == "normative_body",
+            "retrieval_eligible": retrieval_eligible,
+            "structure_eligible": structure_eligible,
+            "structural_noise_signals": {
+                "dot_leader_lines": dot_leader_lines,
+                "clause_refs": clause_refs,
+                "frontmatter_hits": frontmatter_hits,
+                "has_toc_keyword": has_toc_keyword,
+            },
         }

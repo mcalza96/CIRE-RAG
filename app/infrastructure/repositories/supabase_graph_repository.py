@@ -1,7 +1,7 @@
 import logging
 import math
 from typing import Any, Optional
-from uuid import UUID
+from uuid import UUID, NAMESPACE_URL, uuid5
 
 from app.infrastructure.supabase.client import get_async_supabase_client
 from app.services.embedding_service import JinaEmbeddingService
@@ -676,6 +676,191 @@ class SupabaseGraphRepository:
             stats["links_upserted"] = len(linked)
 
         return stats
+
+    @staticmethod
+    def _structure_node_id(source_document_id: UUID, section_ref: str) -> str:
+        return str(uuid5(NAMESPACE_URL, f"doc-structure:{source_document_id}:{section_ref}"))
+
+    async def upsert_document_structure(
+        self,
+        *,
+        tenant_id: UUID,
+        source_document_id: UUID,
+        toc_entries: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not toc_entries:
+            return {
+                "nodes_upserted": 0,
+                "edges_upserted": 0,
+                "section_node_ids": {},
+            }
+
+        tenant_str = str(tenant_id)
+        doc_str = str(source_document_id)
+
+        ordered_entries: list[dict[str, Any]] = []
+        for raw in toc_entries:
+            if not isinstance(raw, dict):
+                continue
+            title = str(raw.get("title") or "").strip()
+            if not title:
+                continue
+            try:
+                level = int(raw.get("level") or 0)
+                start_page = int(raw.get("start_page") or 1)
+            except Exception:
+                continue
+            end_page_raw = raw.get("end_page")
+            try:
+                end_page = int(end_page_raw) if end_page_raw is not None else None
+            except Exception:
+                end_page = None
+            section_ref = f"L{level}:{start_page}:{title}"
+            ordered_entries.append(
+                {
+                    "title": title,
+                    "level": level,
+                    "start_page": start_page,
+                    "end_page": end_page,
+                    "section_ref": section_ref,
+                }
+            )
+
+        if not ordered_entries:
+            return {
+                "nodes_upserted": 0,
+                "edges_upserted": 0,
+                "section_node_ids": {},
+            }
+
+        node_rows: list[dict[str, Any]] = []
+        section_node_ids: dict[str, str] = {}
+        for entry in ordered_entries:
+            section_ref = str(entry["section_ref"])
+            node_id = self._structure_node_id(source_document_id, section_ref)
+            section_node_ids[section_ref] = node_id
+            node_rows.append(
+                {
+                    "id": node_id,
+                    "tenant_id": tenant_str,
+                    "name": f"{entry['title']} ({section_ref})",
+                    "type": "DOCUMENT_SECTION",
+                    "description": f"Document section {entry['title']} (page {entry['start_page']})",
+                    "metadata": {
+                        "source_document_id": doc_str,
+                        "section_ref": section_ref,
+                        "level": entry["level"],
+                        "title": entry["title"],
+                        "start_page": entry["start_page"],
+                        "end_page": entry["end_page"],
+                    },
+                }
+            )
+
+        upserted_nodes = await self._bulk_upsert_with_fallback(
+            table="knowledge_entities",
+            rows=node_rows,
+            on_conflict="id",
+            select_cols="id",
+        )
+
+        edge_rows: list[dict[str, Any]] = []
+        stack: list[dict[str, Any]] = []
+        for entry in ordered_entries:
+            level = int(entry["level"])
+            while stack and int(stack[-1].get("level", 0)) >= level:
+                stack.pop()
+            parent = stack[-1] if stack else None
+            stack.append(entry)
+            if parent is None:
+                continue
+
+            parent_ref = str(parent["section_ref"])
+            child_ref = str(entry["section_ref"])
+            parent_id = section_node_ids.get(parent_ref)
+            child_id = section_node_ids.get(child_ref)
+            if not parent_id or not child_id or parent_id == child_id:
+                continue
+            edge_id = str(
+                uuid5(
+                    NAMESPACE_URL,
+                    f"doc-structure-edge:{doc_str}:{parent_ref}:{child_ref}:CONTAINS",
+                )
+            )
+            edge_rows.append(
+                {
+                    "id": edge_id,
+                    "tenant_id": tenant_str,
+                    "source_entity_id": parent_id,
+                    "target_entity_id": child_id,
+                    "relation_type": "CONTAINS",
+                    "description": "Document structure containment relation",
+                    "weight": 1,
+                    "metadata": {
+                        "source_document_id": doc_str,
+                        "source": "toc_structure",
+                    },
+                }
+            )
+
+        upserted_edges = await self._bulk_upsert_with_fallback(
+            table="knowledge_relations",
+            rows=edge_rows,
+            on_conflict="id",
+            select_cols="id",
+        )
+
+        return {
+            "nodes_upserted": len(upserted_nodes),
+            "edges_upserted": len(upserted_edges),
+            "section_node_ids": section_node_ids,
+        }
+
+    async def link_chunks_to_structure(
+        self,
+        *,
+        tenant_id: UUID,
+        source_document_id: UUID,
+        chunks: list[Any],
+    ) -> dict[str, Any]:
+        tenant_str = str(tenant_id)
+        doc_str = str(source_document_id)
+        link_rows: list[dict[str, Any]] = []
+
+        for chunk in chunks:
+            if not isinstance(chunk, dict):
+                continue
+            chunk_id = self._uuid_text(chunk.get("id"))
+            if not chunk_id:
+                continue
+            metadata = chunk.get("metadata") if isinstance(chunk.get("metadata"), dict) else {}
+            section_node_id = self._uuid_text(metadata.get("section_node_id"))
+            if not section_node_id:
+                continue
+            link_rows.append(
+                {
+                    "tenant_id": tenant_str,
+                    "entity_id": section_node_id,
+                    "chunk_id": chunk_id,
+                }
+            )
+
+        if not link_rows:
+            return {
+                "links_upserted": 0,
+                "source_document_id": doc_str,
+            }
+
+        linked = await self._bulk_upsert_with_fallback(
+            table="knowledge_node_provenance",
+            rows=link_rows,
+            on_conflict="tenant_id,entity_id,chunk_id",
+            select_cols="id",
+        )
+        return {
+            "links_upserted": len(linked),
+            "source_document_id": doc_str,
+        }
 
     @staticmethod
     def _legacy_to_chunk_extraction(extraction: Any) -> ChunkGraphExtraction:

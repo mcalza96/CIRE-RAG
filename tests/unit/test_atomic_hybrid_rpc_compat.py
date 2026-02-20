@@ -64,13 +64,12 @@ def test_retrieve_context_retries_without_hnsw_param_on_signature_mismatch(monke
     )
 
     assert len(rows) == 1
-    assert calls == [True, False]
+    # First two calls come from contract preflight (probe + compat retry), then retrieval uses compat.
+    assert calls == [True, False, False]
     assert engine.last_trace.get("hybrid_rpc_used") is True
-    assert engine.last_trace.get("hybrid_rpc_compat_mode") == "without_hnsw_ef_search"
-    assert engine.last_trace.get("rpc_compat_mode") == "without_hnsw_ef_search"
+    assert engine.last_trace.get("rpc_contract_status") == "compat_without_hnsw_ef_search"
     warnings = engine.last_trace.get("warnings")
     assert isinstance(warnings, list)
-    assert any("hybrid_rpc_signature_mismatch_hnsw_ef_search" in str(item) for item in warnings)
     warning_codes = engine.last_trace.get("warning_codes")
     assert isinstance(warning_codes, list)
-    assert "HYBRID_RPC_SIGNATURE_MISMATCH_HNSW" in warning_codes
+    assert "HYBRID_RPC_SIGNATURE_MISMATCH_HNSW" not in warning_codes

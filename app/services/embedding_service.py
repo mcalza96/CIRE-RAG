@@ -258,6 +258,22 @@ class JinaEmbeddingService:
             and expected_dims == actual_dims
         )
 
+    async def close(self) -> None:
+        providers = [self.jina_cloud_provider, self.cohere_cloud_provider, self.local_provider]
+        for provider in providers:
+            close_fn = getattr(provider, "close", None)
+            if callable(close_fn):
+                try:
+                    result = close_fn()
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as exc:
+                    logger.warning(
+                        "embedding_provider_close_failed",
+                        provider=getattr(provider, "provider_name", provider.__class__.__name__),
+                        error=str(exc),
+                    )
+
     @track_span(name="span:embedding_generation")
     async def embed_texts(
         self,

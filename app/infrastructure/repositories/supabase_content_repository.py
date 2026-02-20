@@ -126,7 +126,15 @@ class SupabaseContentRepository(IContentRepository):
         valid_chunks = []
         for c in chunks:
             emb = get_embedding(c)
+            metadata = c.get("metadata") if isinstance(c, dict) else getattr(c, "metadata", {})
+            retrieval_eligible = True
+            if isinstance(metadata, dict):
+                retrieval_eligible = bool(metadata.get("retrieval_eligible", True))
+
             if emb and len(emb) > 0:
+                valid_chunks.append(c)
+                continue
+            if not retrieval_eligible:
                 valid_chunks.append(c)
 
         if chunks and not valid_chunks:

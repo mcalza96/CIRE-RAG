@@ -12,11 +12,14 @@ from app.application.services.query_decomposer import QueryPlan
 from app.core.observability.retrieval_metrics import retrieval_metrics_store
 from app.core.observability.timing import elapsed_ms, perf_now
 from app.core.settings import settings
+from app.domain.interfaces.atomic_retrieval_repository import IAtomicRetrievalRepository
 from app.domain.schemas.retrieval_payloads import RetrievalRow
 from app.infrastructure.repositories.supabase_graph_retrieval_repository import (
     SupabaseGraphRetrievalRepository,
 )
-from app.infrastructure.supabase.client import get_async_supabase_client
+from app.infrastructure.repositories.supabase_atomic_retrieval_repository import (
+    SupabaseAtomicRetrievalRepository,
+)
 from app.services.embedding_service import JinaEmbeddingService
 from app.domain.scope_utils import (
     clause_near_standard,
@@ -44,9 +47,12 @@ class AtomicRetrievalEngine:
         self,
         embedding_service: JinaEmbeddingService | None = None,
         supabase_client: Any | None = None,
+        retrieval_repository: IAtomicRetrievalRepository | None = None,
     ):
         self._embedding_service = embedding_service or JinaEmbeddingService.get_instance()
-        self._supabase_client = supabase_client
+        self._retrieval_repository = retrieval_repository or SupabaseAtomicRetrievalRepository(
+            supabase_client=supabase_client
+        )
         self._graph_repo = SupabaseGraphRetrievalRepository(supabase_client=supabase_client)
         self.last_trace: dict[str, Any] = {}
         self._hybrid_rpc_contract_checked: bool = type(self)._global_hybrid_rpc_contract_checked
@@ -186,6 +192,8 @@ class AtomicRetrievalEngine:
         self._stamp_tenant_context(
             rows=merged, tenant_id=tenant_id, allowed_source_ids=allowed_source_ids
         )
+        merged, structural_filter_trace = self._filter_structural_rows(merged)
+        self.last_trace["structural_filter"] = structural_filter_trace
         logger.info(
             "retrieval_pipeline_timing",
             stage="atomic_engine_total",
@@ -210,6 +218,48 @@ class AtomicRetrievalEngine:
             "fts": round(fts_ms, 2),
         }
         return merged[:k]
+
+    @staticmethod
+    def _row_metadata(item: dict[str, Any]) -> dict[str, Any]:
+        raw = item.get("metadata")
+        metadata: dict[str, Any] = raw if isinstance(raw, dict) else {}
+        nested_row = metadata.get("row")
+        if not isinstance(nested_row, dict):
+            return metadata
+        nested_meta = nested_row.get("metadata")
+        if not isinstance(nested_meta, dict):
+            return metadata
+        merged = dict(nested_meta)
+        merged.update(metadata)
+        return merged
+
+    @classmethod
+    def _is_structural_only_row(cls, item: dict[str, Any]) -> bool:
+        metadata = cls._row_metadata(item)
+        if metadata.get("retrieval_eligible") is False:
+            return True
+        if metadata.get("is_toc") is True:
+            return True
+        if metadata.get("is_frontmatter") is True:
+            return True
+        return False
+
+    @classmethod
+    def _filter_structural_rows(
+        cls, items: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        if not items:
+            return [], {"applied": True, "dropped": 0, "kept": 0}
+        kept: list[dict[str, Any]] = []
+        dropped = 0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if cls._is_structural_only_row(item):
+                dropped += 1
+                continue
+            kept.append(item)
+        return kept, {"applied": True, "dropped": dropped, "kept": len(kept)}
 
     async def _ensure_hybrid_rpc_contract(self) -> None:
         if not bool(settings.ATOMIC_USE_HYBRID_RPC):
@@ -389,7 +439,6 @@ class AtomicRetrievalEngine:
         *,
         include_hnsw_ef_search: bool = True,
     ) -> list[dict[str, Any]]:
-        client = await self._get_client()
         effective_query_text = query_text if settings.ATOMIC_ENABLE_FTS else ""
         vector_weight = float(settings.ATOMIC_RRF_VECTOR_WEIGHT)
         effective_fts_weight = (
@@ -417,11 +466,7 @@ class AtomicRetrievalEngine:
         }
         if include_hnsw_ef_search:
             rpc_payload["hnsw_ef_search"] = max(10, int(settings.ATOMIC_HNSW_EF_SEARCH or 80))
-        response = await client.rpc(
-            "retrieve_hybrid_optimized",
-            rpc_payload,
-        ).execute()
-        rows = response.data if isinstance(response.data, list) else []
+        rows = await self._retrieval_repository.retrieve_hybrid_optimized(rpc_payload)
         normalized: list[dict[str, Any]] = []
         for row in rows:
             if not isinstance(row, dict):
@@ -658,17 +703,14 @@ class AtomicRetrievalEngine:
     async def _search_vectors(
         self, query_vector: list[float], source_ids: list[str], fetch_k: int
     ) -> list[dict[str, Any]]:
-        client = await self._get_client()
-        response = await client.rpc(
-            "search_vectors_only",
+        rows = await self._retrieval_repository.search_vectors_only(
             {
                 "query_embedding": query_vector,
                 "match_threshold": settings.ATOMIC_MATCH_THRESHOLD,
                 "match_count": max(fetch_k, 1),
                 "source_ids": source_ids,
-            },
-        ).execute()
-        rows = response.data if isinstance(response.data, list) else []
+            }
+        )
         normalized: list[dict[str, Any]] = []
         for row in rows:
             if not isinstance(row, dict):
@@ -694,16 +736,13 @@ class AtomicRetrievalEngine:
     async def _search_fts(
         self, query_text: str, source_ids: list[str], fetch_k: int
     ) -> list[dict[str, Any]]:
-        client = await self._get_client()
-        response = await client.rpc(
-            "search_fts_only",
+        rows = await self._retrieval_repository.search_fts_only(
             {
                 "query_text": query_text,
                 "match_count": max(fetch_k, 1),
                 "source_ids": source_ids,
-            },
-        ).execute()
-        rows = response.data if isinstance(response.data, list) else []
+            }
+        )
         normalized: list[dict[str, Any]] = []
         for row in rows:
             if not isinstance(row, dict):
@@ -808,25 +847,12 @@ class AtomicRetrievalEngine:
         return out
 
     async def _resolve_source_ids(self, scope_context: dict[str, Any]) -> list[str]:
-        client = await self._get_client()
-        query = (
-            client.table("source_documents")
-            .select("id,institution_id,collection_id,metadata,is_global,created_at,updated_at")
-            .limit(settings.ATOMIC_MAX_SOURCE_IDS)
+        rows = await self._retrieval_repository.list_source_documents(
+            tenant_id=str(scope_context.get("tenant_id") or "").strip() or None,
+            is_global=bool(scope_context.get("is_global")),
+            collection_id=str(scope_context.get("collection_id") or "").strip() or None,
+            limit=int(settings.ATOMIC_MAX_SOURCE_IDS),
         )
-
-        tenant_id = scope_context.get("tenant_id")
-        if tenant_id:
-            query = query.eq("institution_id", str(tenant_id))
-        elif scope_context.get("is_global"):
-            query = query.eq("is_global", True)
-
-        collection_id = scope_context.get("collection_id")
-        if collection_id:
-            query = query.eq("collection_id", str(collection_id))
-
-        response = await query.execute()
-        rows = response.data if isinstance(response.data, list) else []
         collection_name = str(scope_context.get("collection_name") or "").strip().lower()
         source_standard = str(scope_context.get("source_standard") or "").strip().lower()
         source_standards_raw = scope_context.get("source_standards")
@@ -961,9 +987,3 @@ class AtomicRetrievalEngine:
         if not vectors or not vectors[0]:
             raise ValueError("Failed to generate query embedding.")
         return vectors[0]
-
-    async def _get_client(self) -> Any:
-        if self._supabase_client is not None:
-            return self._supabase_client
-        self._supabase_client = await get_async_supabase_client()
-        return self._supabase_client

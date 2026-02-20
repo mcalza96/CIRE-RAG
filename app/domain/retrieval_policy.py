@@ -7,6 +7,42 @@ from typing import Any
 _WS_RE = re.compile(r"\s+")
 _TABLE_BORDER_RE = re.compile(r"^[\s|:+\-]{4,}$")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_TOC_DOT_LEADER_LINE_RE = re.compile(r"^\s*.+\.{3,}\s*\d+\s*$", re.MULTILINE)
+_TOC_KEYWORD_RE = re.compile(r"\b(table of contents|contents|indice|índice|contenido)\b")
+
+
+def _metadata_dict(row: dict[str, Any]) -> dict[str, Any]:
+    metadata_raw = row.get("metadata")
+    metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
+    nested_row = metadata.get("row")
+    if not isinstance(nested_row, dict):
+        return metadata
+    nested_metadata = nested_row.get("metadata")
+    if not isinstance(nested_metadata, dict):
+        return metadata
+    merged = dict(nested_metadata)
+    merged.update(metadata)
+    return merged
+
+
+def _is_structural_only_row(row: dict[str, Any]) -> bool:
+    metadata = _metadata_dict(row)
+    retrieval_eligible = metadata.get("retrieval_eligible")
+    if retrieval_eligible is False:
+        return True
+    if metadata.get("is_toc") is True:
+        return True
+    if metadata.get("is_frontmatter") is True:
+        return True
+
+    content = str(row.get("content") or "")
+    lowered = content.lower()
+    dot_leaders = len(_TOC_DOT_LEADER_LINE_RE.findall(content))
+    if dot_leaders >= 2:
+        return True
+    if dot_leaders >= 1 and _TOC_KEYWORD_RE.search(lowered):
+        return True
+    return False
 
 
 def apply_search_hints(
@@ -126,8 +162,13 @@ def reduce_structural_noise_rows(
     cleaned_rows: list[dict[str, Any]] = []
     changed = 0
     dropped = 0
+    dropped_structural = 0
     for row in rows:
         if not isinstance(row, dict):
+            continue
+        if _is_structural_only_row(row):
+            dropped += 1
+            dropped_structural += 1
             continue
         current = str(row.get("content") or "")
         cleaned = _clean_content(current)
@@ -144,5 +185,6 @@ def reduce_structural_noise_rows(
         "applied": True,
         "changed": changed,
         "dropped": dropped,
+        "dropped_structural": dropped_structural,
         "kept": len(cleaned_rows),
     }

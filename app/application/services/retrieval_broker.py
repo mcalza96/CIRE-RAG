@@ -15,6 +15,7 @@ from app.services.ingestion.metadata_enricher import enrich_metadata
 from app.core.observability.forensic import ForensicRecorder
 from app.core.observability.scope_metrics import scope_metrics_store
 from app.domain.knowledge_schemas import RAGSearchResult, RetrievalIntent, AgentRole, TaskType
+from app.domain.interfaces.reranking_provider import IAuthorityReranker, ISemanticReranker
 from app.domain.interfaces.retrieval_interface import IRetrievalRepository
 from app.services.knowledge.retrieval_strategies import (
     DirectRetrievalStrategy,
@@ -48,14 +49,27 @@ class RetrievalBroker:
     Decouples DSPy tools from business logic and infrastructure.
     """
 
-    def __init__(self, repository: IRetrievalRepository):
+    def __init__(
+        self,
+        repository: IRetrievalRepository,
+        *,
+        authority_reranker: IAuthorityReranker | None = None,
+        semantic_reranker: ISemanticReranker | None = None,
+        atomic_engine: AtomicRetrievalEngine | None = None,
+    ):
         self.repository = repository
-        self.reranker = GravityReranker()
-        self.jina_reranker = JinaReranker()
+        self.reranker = authority_reranker or GravityReranker()
+        self.jina_reranker = semantic_reranker or JinaReranker()
         self.direct_strategy = DirectRetrievalStrategy(repository)
         self.iterative_strategy = IterativeRetrievalStrategy(repository)
-        self.atomic_engine = AtomicRetrievalEngine()
+        self.atomic_engine = atomic_engine or AtomicRetrievalEngine()
         self.query_decomposer = QueryDecomposer()
+
+    async def close(self) -> None:
+        try:
+            await self.jina_reranker.close()
+        except Exception as exc:
+            logger.warning("retrieval_broker_close_failed", error=str(exc))
 
     @staticmethod
     def _engine_mode() -> str:

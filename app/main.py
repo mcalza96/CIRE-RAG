@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI, Request, status
@@ -18,15 +19,39 @@ logger = structlog.get_logger(__name__)
 logger.info(
     "auth_runtime_mode",
     auth_mode="deployed" if settings.is_deployed_environment else "local_bypass",
-    service_secret_configured=bool(str(settings.RAG_SERVICE_SECRET or "").strip() and str(settings.RAG_SERVICE_SECRET).strip() != "development-secret"),
+    service_secret_configured=bool(
+        str(settings.RAG_SERVICE_SECRET or "").strip()
+        and str(settings.RAG_SERVICE_SECRET).strip() != "development-secret"
+    ),
     app_env=settings.APP_ENV,
     environment=settings.ENVIRONMENT,
 )
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    del app
+    container = CognitiveContainer.get_instance()
+    await container.startup()
+    try:
+        status_payload = (
+            await container.retrieval_broker.atomic_engine.preflight_hybrid_rpc_contract()
+        )
+        logger.info("retrieval_rpc_contract_preflight", **status_payload)
+    except Exception as exc:
+        logger.warning("retrieval_rpc_contract_preflight_failed", error=str(exc))
+
+    try:
+        yield
+    finally:
+        await container.shutdown()
+
+
 app = FastAPI(
     title="CIRE-RAG Ingestion and Structured Retrieval API",
     description="Refactored SOLID architecture for cognitive ingestion and structured retrieval workflows.",
-    version="2.0.0"
+    version="2.0.0",
+    lifespan=lifespan,
 )
 
 
@@ -34,9 +59,10 @@ app = FastAPI(
 
 # 2. Business Context Middleware (Inner)
 app.add_middleware(BusinessContextMiddleware)
-    
+
 # 1. Correlation Middleware (Outer) - Generates/Extracts Request ID
 app.add_middleware(CorrelationMiddleware)
+
 
 @app.exception_handler(ResponseValidationError)
 async def response_validation_exception_handler(request: Request, exc: ResponseValidationError):
@@ -49,7 +75,7 @@ async def response_validation_exception_handler(request: Request, exc: ResponseV
         direction="outbound_backend",
         endpoint=str(request.url),
         validation_errors=exc.errors(),
-        message="Backend failed to fulfill the data contract for the response."
+        message="Backend failed to fulfill the data contract for the response.",
     )
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -62,6 +88,7 @@ async def response_validation_exception_handler(request: Request, exc: ResponseV
             }
         },
     )
+
 
 @app.exception_handler(RequestValidationError)
 async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
@@ -98,28 +125,15 @@ async def api_error_handler(request: Request, exc: ApiError):
 app.include_router(v1_router)
 
 
-@app.on_event("startup")
-async def preflight_retrieval_contract() -> None:
-    """Best-effort startup preflight for hybrid RPC contract compatibility."""
-    try:
-        container = CognitiveContainer.get_instance()
-        status = await container.retrieval_broker.atomic_engine.preflight_hybrid_rpc_contract()
-        logger.info("retrieval_rpc_contract_preflight", **status)
-    except Exception as exc:
-        logger.warning("retrieval_rpc_contract_preflight_failed", error=str(exc))
-
-
 @app.get("/health")
 def health_check():
     """
     Service health check.
     """
-    return {
-        "status": "ok",
-        "service": "rag-engine",
-        "api_v1": "available"
-    }
+    return {"status": "ok", "service": "rag-engine", "api_v1": "available"}
+
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)

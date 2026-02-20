@@ -34,7 +34,12 @@ def _canonical_standard(raw: str) -> str:
     return f"ISO {match.group(1)}"
 
 
-def enrich_metadata(text: str, current_metadata: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+def enrich_metadata(
+    text: str,
+    current_metadata: Dict[str, Any],
+    *,
+    allow_clause_extraction: bool = True,
+) -> Tuple[str, Dict[str, Any]]:
     """Scan text patterns and enrich metadata deterministically."""
     updates: Dict[str, Any] = {}
     found_tags = []
@@ -54,16 +59,17 @@ def enrich_metadata(text: str, current_metadata: Dict[str, Any]) -> Tuple[str, D
         if len(standards) > 1:
             updates["source_standards"] = standards
 
-    clause_refs = list(dict.fromkeys(CLAUSE_PATTERN.findall(text)))
-    if clause_refs:
-        updates["clause_refs"] = clause_refs[:20]
-        updates.setdefault("clause_id", clause_refs[0])
+    if allow_clause_extraction:
+        clause_refs = list(dict.fromkeys(CLAUSE_PATTERN.findall(text)))
+        if clause_refs:
+            updates["clause_refs"] = clause_refs[:20]
+            updates.setdefault("clause_id", clause_refs[0])
 
-    clause_title_match = CLAUSE_TITLE_PATTERN.search(text)
-    if clause_title_match:
-        updates["clause_anchor"] = clause_title_match.group(1)
-        updates["clause_title"] = clause_title_match.group(2).strip()
-        updates.setdefault("clause_id", clause_title_match.group(1))
+        clause_title_match = CLAUSE_TITLE_PATTERN.search(text)
+        if clause_title_match:
+            updates["clause_anchor"] = clause_title_match.group(1)
+            updates["clause_title"] = clause_title_match.group(2).strip()
+            updates.setdefault("clause_id", clause_title_match.group(1))
 
     new_metadata = current_metadata.copy()
     new_metadata.update(updates)
@@ -78,5 +84,15 @@ def enrich_metadata(text: str, current_metadata: Dict[str, Any]) -> Tuple[str, D
 class MetadataEnricher:
     """Compatibility wrapper around enrich_metadata."""
 
-    def enrich(self, text: str, current_metadata: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
-        return enrich_metadata(text, current_metadata)
+    def enrich(
+        self,
+        text: str,
+        current_metadata: Dict[str, Any],
+        *,
+        allow_clause_extraction: bool = True,
+    ) -> Tuple[str, Dict[str, Any]]:
+        return enrich_metadata(
+            text,
+            current_metadata,
+            allow_clause_extraction=allow_clause_extraction,
+        )

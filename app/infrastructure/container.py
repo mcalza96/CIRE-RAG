@@ -11,6 +11,9 @@ from app.services.ingestion.router import DocumentStructureRouter
 from app.services.ingestion.structure_analyzer import PdfStructureAnalyzer
 from app.services.ingestion.toc_discovery import TocDiscoveryService
 from app.services.embedding_service import JinaEmbeddingService
+from app.services.knowledge.gravity_reranker import GravityReranker
+from app.services.knowledge.jina_reranker import JinaReranker
+from app.services.retrieval.atomic_engine import AtomicRetrievalEngine
 from app.core.tools.retrieval import RetrievalTools
 from app.application.services.document_download_service import DocumentDownloadService
 from app.application.services.ingestion_state_manager import IngestionStateManager
@@ -18,12 +21,19 @@ from app.application.services.retrieval_broker import RetrievalBroker
 from app.infrastructure.services.storage_service import StorageService
 from app.infrastructure.repositories.supabase_source_repository import SupabaseSourceRepository
 from app.infrastructure.repositories.supabase_content_repository import SupabaseContentRepository
-from app.infrastructure.repositories.supabase_retrieval_repository import SupabaseRetrievalRepository
+from app.infrastructure.repositories.supabase_retrieval_repository import (
+    SupabaseRetrievalRepository,
+)
+from app.infrastructure.repositories.supabase_atomic_retrieval_repository import (
+    SupabaseAtomicRetrievalRepository,
+)
+
 
 class CognitiveContainer:
     """
     IoC Container for Cognitive Services.
     """
+
     _instance = None
 
     def __init__(self):
@@ -42,6 +52,10 @@ class CognitiveContainer:
         self._download_service = None
         self._state_manager = None
         self._retrieval_broker = None
+        self._atomic_retrieval_repository = None
+        self._authority_reranker = None
+        self._semantic_reranker = None
+        self._atomic_engine = None
 
     @classmethod
     def get_instance(cls):
@@ -54,7 +68,6 @@ class CognitiveContainer:
         if self._knowledge_service is None:
             self._knowledge_service = KnowledgeService()
         return self._knowledge_service
-
 
     @property
     def pdf_parser_service(self) -> PdfParserService:
@@ -77,7 +90,9 @@ class CognitiveContainer:
     @property
     def document_structure_router(self) -> DocumentStructureRouter:
         if self._document_structure_router is None:
-            self._document_structure_router = DocumentStructureRouter(analyzer=self.structure_analyzer)
+            self._document_structure_router = DocumentStructureRouter(
+                analyzer=self.structure_analyzer
+            )
         return self._document_structure_router
 
     @property
@@ -97,6 +112,34 @@ class CognitiveContainer:
         if self._retrieval_tools is None:
             self._retrieval_tools = RetrievalTools(repository=self.retrieval_repository)
         return self._retrieval_tools
+
+    @property
+    def atomic_retrieval_repository(self) -> SupabaseAtomicRetrievalRepository:
+        if self._atomic_retrieval_repository is None:
+            self._atomic_retrieval_repository = SupabaseAtomicRetrievalRepository()
+        return self._atomic_retrieval_repository
+
+    @property
+    def authority_reranker(self) -> GravityReranker:
+        if self._authority_reranker is None:
+            self._authority_reranker = GravityReranker()
+        return self._authority_reranker
+
+    @property
+    def semantic_reranker(self) -> JinaReranker:
+        if self._semantic_reranker is None:
+            self._semantic_reranker = JinaReranker()
+        return self._semantic_reranker
+
+    @property
+    def atomic_engine(self) -> AtomicRetrievalEngine:
+        if self._atomic_engine is None:
+            self._atomic_engine = AtomicRetrievalEngine(
+                embedding_service=self.embedding_service,
+                retrieval_repository=self.atomic_retrieval_repository,
+            )
+        return self._atomic_engine
+
     @property
     def storage_service(self) -> StorageService:
         if self._storage_service is None:
@@ -119,8 +162,7 @@ class CognitiveContainer:
     def download_service(self) -> DocumentDownloadService:
         if self._download_service is None:
             self._download_service = DocumentDownloadService(
-                storage_service=self.storage_service,
-                repository=self.source_repository
+                storage_service=self.storage_service, repository=self.source_repository
             )
         return self._download_service
 
@@ -133,5 +175,19 @@ class CognitiveContainer:
     @property
     def retrieval_broker(self) -> RetrievalBroker:
         if self._retrieval_broker is None:
-            self._retrieval_broker = RetrievalBroker(repository=self.retrieval_repository)
+            self._retrieval_broker = RetrievalBroker(
+                repository=self.retrieval_repository,
+                authority_reranker=self.authority_reranker,
+                semantic_reranker=self.semantic_reranker,
+                atomic_engine=self.atomic_engine,
+            )
         return self._retrieval_broker
+
+    async def startup(self) -> None:
+        _ = self.retrieval_broker
+
+    async def shutdown(self) -> None:
+        if self._retrieval_broker is not None:
+            await self._retrieval_broker.close()
+        if self._embedding_service is not None:
+            await self._embedding_service.close()

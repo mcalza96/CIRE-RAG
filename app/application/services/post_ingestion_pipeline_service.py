@@ -125,7 +125,14 @@ class PostIngestionPipelineService:
         source_metadata = await self._load_source_document_metadata(doc_id=doc_id)
         visual_tasks = self._extract_visual_tasks(source_metadata)
         routing = {"visual_tasks": visual_tasks} if visual_tasks else {}
-        result_obj = SimpleNamespace(chunks=chunks, metadata={"routing": routing})
+        toc_entries = self._extract_toc_entries(source_metadata)
+        result_obj = SimpleNamespace(
+            chunks=chunks,
+            metadata={
+                "routing": routing,
+                "toc_entries": toc_entries,
+            },
+        )
 
         visual_stats: Dict[str, Any] | None = None
         if include_visual and self.visual_anchor_service is not None and visual_tasks:
@@ -154,6 +161,7 @@ class PostIngestionPipelineService:
                 doc_id=doc_id,
                 tenant_id=tenant_id,
                 result=result_obj,
+                source_metadata=source_metadata,
             )
         result_payload = {
             "ok": True,
@@ -267,7 +275,8 @@ class PostIngestionPipelineService:
             if isinstance(source_metadata.get("routing"), dict)
             else {}
         )
-        tasks = routing.get("visual_tasks") if isinstance(routing, dict) else []
+        tasks_raw = routing.get("visual_tasks") if isinstance(routing, dict) else []
+        tasks = tasks_raw if isinstance(tasks_raw, list) else []
         return [task for task in tasks if isinstance(task, dict)]
 
     async def run_raptor_if_needed(
@@ -290,9 +299,20 @@ class PostIngestionPipelineService:
             for chunk in result.chunks:
                 content = chunk.get("content") if isinstance(chunk, dict) else chunk.content
                 embedding = chunk.get("embedding") if isinstance(chunk, dict) else chunk.embedding
+                metadata = chunk.get("metadata") if isinstance(chunk, dict) else {}
+                if not isinstance(metadata, dict):
+                    metadata = {}
                 chunk_id = uuid4()
 
                 if content and embedding:
+                    section_ref = str(metadata.get("section_ref") or "").strip() or None
+                    section_node_id = None
+                    section_node_id_raw = metadata.get("section_node_id")
+                    if section_node_id_raw:
+                        try:
+                            section_node_id = UUID(str(section_node_id_raw))
+                        except Exception:
+                            section_node_id = None
                     base_chunks.append(
                         BaseChunk(
                             id=chunk_id,
@@ -301,6 +321,10 @@ class PostIngestionPipelineService:
                             tenant_id=UUID(tenant_id)
                             if tenant_id
                             else UUID("00000000-0000-0000-0000-000000000000"),
+                            source_standard=str(metadata.get("source_standard") or "").strip()
+                            or None,
+                            section_ref=section_ref,
+                            section_node_id=section_node_id,
                         )
                     )
 
@@ -341,7 +365,13 @@ class PostIngestionPipelineService:
                 doc_id, f"Error en RAPTOR (no fatal): {str(exc)}", "WARNING", tenant_id=tenant_id
             )
 
-    async def run_graph_if_needed(self, doc_id: str, tenant_id: Optional[str], result: Any) -> None:
+    async def run_graph_if_needed(
+        self,
+        doc_id: str,
+        tenant_id: Optional[str],
+        result: Any,
+        source_metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         try:
             await self.state_manager.log_step(
                 doc_id,
@@ -352,6 +382,7 @@ class PostIngestionPipelineService:
                 doc_id=doc_id,
                 tenant_id=tenant_id,
                 chunks=result.chunks,
+                source_metadata=source_metadata,
             )
             await self.state_manager.log_step(
                 doc_id,
@@ -400,7 +431,11 @@ class PostIngestionPipelineService:
             )
 
     async def _run_graph_enrichment(
-        self, doc_id: str, tenant_id: Optional[str], chunks: list[Any]
+        self,
+        doc_id: str,
+        tenant_id: Optional[str],
+        chunks: list[Any],
+        source_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, int]:
         if not tenant_id:
             logger.warning("Skipping graph enrichment: missing tenant_id", doc_id=doc_id)
@@ -446,9 +481,26 @@ class PostIngestionPipelineService:
             "edges_upserted": 0,
             "links_upserted": 0,
             "chunk_errors": 0,
+            "structure_nodes_upserted": 0,
+            "structure_edges_upserted": 0,
+            "structure_links_upserted": 0,
         }
 
+        toc_entries = self._extract_toc_entries(source_metadata or {})
+        if toc_entries:
+            try:
+                structure_stats = await graph_repository.upsert_document_structure(
+                    tenant_id=tenant_uuid,
+                    source_document_id=UUID(str(doc_id)),
+                    toc_entries=toc_entries,
+                )
+                totals["structure_nodes_upserted"] += int(structure_stats.get("nodes_upserted", 0))
+                totals["structure_edges_upserted"] += int(structure_stats.get("edges_upserted", 0))
+            except Exception as exc:
+                logger.warning("toc_structure_upsert_failed", doc_id=doc_id, error=str(exc))
+
         candidate_chunks: list[tuple[int, UUID, str]] = []
+        skipped_structural = 0
         for idx, chunk in enumerate(chunks, start=1):
             content = (
                 chunk.get("content") if isinstance(chunk, dict) else getattr(chunk, "content", "")
@@ -456,10 +508,27 @@ class PostIngestionPipelineService:
             chunk_id_raw = (
                 chunk.get("id") if isinstance(chunk, dict) else getattr(chunk, "id", None)
             )
+            metadata = (
+                chunk.get("metadata")
+                if isinstance(chunk, dict) and isinstance(chunk.get("metadata"), dict)
+                else {}
+            )
             totals["chunks_seen"] += 1
             if not content or not chunk_id_raw:
                 continue
+            if not bool(metadata.get("retrieval_eligible", True)):
+                skipped_structural += 1
+                continue
             candidate_chunks.append((idx, UUID(str(chunk_id_raw)), str(content)))
+
+        if skipped_structural > 0:
+            emit_event(
+                logger,
+                "graphrag_structural_chunks_skipped",
+                doc_id=doc_id,
+                tenant_id=tenant_id,
+                skipped_chunks=skipped_structural,
+            )
 
         for batch_start in range(0, len(candidate_chunks), graph_batch_size):
             batch = candidate_chunks[batch_start : batch_start + graph_batch_size]
@@ -545,6 +614,19 @@ class PostIngestionPipelineService:
                     },
                 )
 
+        if toc_entries:
+            try:
+                structure_link_stats = await graph_repository.link_chunks_to_structure(
+                    tenant_id=tenant_uuid,
+                    source_document_id=UUID(str(doc_id)),
+                    chunks=chunks,
+                )
+                totals["structure_links_upserted"] += int(
+                    structure_link_stats.get("links_upserted", 0)
+                )
+            except Exception as exc:
+                logger.warning("chunk_structure_link_failed", doc_id=doc_id, error=str(exc))
+
         return totals
 
     @staticmethod
@@ -605,3 +687,19 @@ class PostIngestionPipelineService:
                 if provider:
                     return provider
         return None
+
+    @staticmethod
+    def _extract_toc_entries(source_metadata: Dict[str, Any]) -> list[dict[str, Any]]:
+        if not isinstance(source_metadata, dict):
+            return []
+        toc_raw = source_metadata.get("toc_structure")
+        if not isinstance(toc_raw, dict):
+            return []
+        entries_raw = toc_raw.get("entries")
+        if not isinstance(entries_raw, list):
+            return []
+        entries: list[dict[str, Any]] = []
+        for item in entries_raw:
+            if isinstance(item, dict):
+                entries.append(item)
+        return entries

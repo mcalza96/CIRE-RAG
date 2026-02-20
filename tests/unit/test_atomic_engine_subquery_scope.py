@@ -141,3 +141,26 @@ async def test_retrieve_context_from_plan_early_exit_on_scope_penalty(monkeypatc
 
     assert called_queries == ["q1", "root"]
     assert engine.last_trace.get("plan_early_exit", {}).get("triggered") is True
+
+
+def test_filter_structural_rows_drops_toc_and_frontmatter() -> None:
+    rows = [
+        {
+            "id": "toc-1",
+            "content": "9.1.2 Evaluacion ........ 14",
+            "metadata": {"retrieval_eligible": False, "is_toc": True},
+        },
+        {
+            "id": "front-1",
+            "content": "Reservados los derechos de reproduccion.",
+            "metadata": {"is_frontmatter": True},
+        },
+        {
+            "id": "body-1",
+            "content": "La organizacion debe definir criterios operacionales.",
+            "metadata": {"retrieval_eligible": True, "is_normative_body": True},
+        },
+    ]
+    kept, trace = AtomicRetrievalEngine._filter_structural_rows(rows)  # noqa: SLF001
+    assert [item["id"] for item in kept] == ["body-1"]
+    assert trace["dropped"] == 2

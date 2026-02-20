@@ -74,7 +74,18 @@ class PersistenceMapper:
 
         # Merge top-level filterable fields into the final metadata object
         final_metadata = nested_metadata.copy()
-        for key in ["source_standard", "clause_id", "scope"]:
+        for key in [
+            "source_standard",
+            "clause_id",
+            "scope",
+            "chunk_role",
+            "doc_section_type",
+            "is_toc",
+            "is_frontmatter",
+            "is_normative_body",
+            "retrieval_eligible",
+            "structure_eligible",
+        ]:
             if key in raw_metadata:
                 final_metadata[key] = raw_metadata[key]
 

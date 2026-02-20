@@ -24,6 +24,22 @@ class JinaReranker:
         self._model_name = model_name or AIModelConfig.JINA_RERANK_MODEL
         self._rerank_url = rerank_url or AIModelConfig.JINA_RERANK_URL
         self._timeout_seconds = max(1, int(timeout_seconds))
+        self._session: aiohttp.ClientSession | None = None
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            timeout = aiohttp.ClientTimeout(total=self._timeout_seconds)
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._api_key}",
+            }
+            self._session = aiohttp.ClientSession(timeout=timeout, headers=headers)
+        return self._session
+
+    async def close(self) -> None:
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+        self._session = None
 
     def is_enabled(self) -> bool:
         return bool(self._api_key and self._rerank_url and self._model_name)
@@ -44,18 +60,12 @@ class JinaReranker:
             "top_n": max(1, min(top_n, len(documents))),
         }
 
-        timeout = aiohttp.ClientTimeout(total=self._timeout_seconds)
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._api_key}",
-        }
-
-        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            async with session.post(self._rerank_url, json=payload) as response:
-                if response.status != 200:
-                    body = await response.text()
-                    raise RuntimeError(f"jina_rerank_http_{response.status}: {body[:300]}")
-                data = await response.json()
+        session = await self._get_session()
+        async with session.post(self._rerank_url, json=payload) as response:
+            if response.status != 200:
+                body = await response.text()
+                raise RuntimeError(f"jina_rerank_http_{response.status}: {body[:300]}")
+            data = await response.json()
 
         rows = data.get("results") if isinstance(data, dict) else None
         if not isinstance(rows, list):

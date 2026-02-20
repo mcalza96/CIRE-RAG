@@ -654,6 +654,8 @@ class RetrievalContractService:
 
         coverage_repair_attempted = False
         coverage_repair_rounds = 0
+        graph_expansion_attempted = False
+        graph_expansion_applied = False
         merged_items = list(hybrid.items)
         trace_warnings = list(hybrid.trace.warnings or [])
 
@@ -686,6 +688,77 @@ class RetrievalContractService:
                     )
                 except Exception as exc:
                     trace_warnings.append(f"coverage_repair_failed:{str(exc)[:160]}")
+
+        missing_scopes_intermediate = self._missing_scopes(
+            items=merged_items,
+            requested_standards=requested_scopes,
+            require_all_scopes=require_all_scopes,
+        )
+        missing_clause_refs_intermediate = self._missing_clause_refs(
+            items=merged_items,
+            query_clause_refs=query_clause_refs,
+            min_clause_refs_required=min_clause_refs_required,
+        )
+
+        if bool(getattr(settings, "RETRIEVAL_COVERAGE_GRAPH_EXPANSION_ENABLED", True)) and (
+            missing_scopes_intermediate or missing_clause_refs_intermediate
+        ):
+            graph_expansion_attempted = True
+            graph_hops_cap = max(
+                1,
+                min(
+                    4,
+                    int(getattr(settings, "RETRIEVAL_COVERAGE_GRAPH_EXPANSION_MAX_HOPS", 2) or 2),
+                ),
+            )
+            graph_payload = (
+                request.graph.model_dump(mode="python", exclude_none=True)
+                if request.graph is not None
+                else {}
+            )
+            current_hops = int(graph_payload.get("max_hops") or 0)
+            graph_payload["max_hops"] = max(1, min(4, max(graph_hops_cap, current_hops)))
+            try:
+                graph_hybrid = await self.run_hybrid(
+                    HybridRetrievalRequest.model_validate(
+                        {
+                            "query": expanded_query,
+                            "tenant_id": request.tenant_id,
+                            "collection_id": request.collection_id,
+                            "k": request.k,
+                            "fetch_k": request.fetch_k,
+                            "filters": (
+                                request.filters.model_dump(mode="python", exclude_none=True)
+                                if request.filters is not None
+                                else None
+                            ),
+                            "rerank": (
+                                request.rerank.model_dump(mode="python", exclude_none=True)
+                                if request.rerank is not None
+                                else None
+                            ),
+                            "graph": graph_payload,
+                        }
+                    ),
+                    skip_planner=True,
+                )
+                merged_items = self._merge_retrieval_items(
+                    primary=merged_items,
+                    secondary=graph_hybrid.items,
+                    top_k=max(1, int(request.k)),
+                )
+                graph_expansion_applied = True
+                coverage_repair_attempted = True
+                coverage_repair_rounds += 1
+                trace_warnings.extend(
+                    [
+                        f"graph_expansion:{warning}"
+                        for warning in (graph_hybrid.trace.warnings or [])
+                        if str(warning).strip()
+                    ]
+                )
+            except Exception as exc:
+                trace_warnings.append(f"graph_expansion_failed:{str(exc)[:160]}")
 
         missing_scopes_after = self._missing_scopes(
             items=merged_items,
@@ -735,6 +808,8 @@ class RetrievalContractService:
                     "requested_standards": requested_scopes,
                     "require_all_scopes": require_all_scopes,
                     "min_clause_refs": min_clause_refs_required,
+                    "graph_expansion_attempted": graph_expansion_attempted,
+                    "graph_expansion_applied": graph_expansion_applied,
                 },
                 retrieval_policy={
                     "min_score": min_score,

@@ -173,12 +173,24 @@ class CurriculumContentStrategy(IngestionStrategy):
         )
         chunking_service = ChunkingService(parser)
 
-        late_chunks = await chunking_service.chunk_document_with_late_chunking(
-            full_text=full_text,
-            embedding_mode=embedding_mode,
-            embedding_provider=embedding_provider_applied,
-            max_chars=AIModelConfig.MAX_CHARACTERS_PER_CHUNKING_BLOCK,
+        skip_structural_embeddings = bool(
+            getattr(settings, "INGEST_SKIP_STRUCTURAL_EMBEDDING", True)
         )
+        if skip_structural_embeddings:
+            late_chunks = await chunking_service.chunk_document_contextual_selective(
+                full_text=full_text,
+                embedding_mode=embedding_mode,
+                embedding_provider=embedding_provider_applied,
+                max_chars=AIModelConfig.MAX_CHARACTERS_PER_CHUNKING_BLOCK,
+                skip_structural_embedding=True,
+            )
+        else:
+            late_chunks = await chunking_service.chunk_document_with_late_chunking(
+                full_text=full_text,
+                embedding_mode=embedding_mode,
+                embedding_provider=embedding_provider_applied,
+                max_chars=AIModelConfig.MAX_CHARACTERS_PER_CHUNKING_BLOCK,
+            )
 
         all_chunks_data = []
         for chunk in late_chunks:
@@ -198,6 +210,10 @@ class CurriculumContentStrategy(IngestionStrategy):
             if chunk.get("heading_path"):
                 chunk_data["metadata"] = chunk_data.get("metadata", {})
                 chunk_data["metadata"]["heading_path"] = chunk["heading_path"]
+            if skip_structural_embeddings and not bool(
+                (chunk_data.get("metadata") or {}).get("retrieval_eligible", True)
+            ):
+                chunk_data["embedding"] = None
             all_chunks_data.append(chunk_data)
 
         logger.info("chunking_complete", total_chunks=len(all_chunks_data))
@@ -348,17 +364,35 @@ class FastCurriculumContentStrategy(CurriculumContentStrategy):
         )
         logger.info("requesting_batch_embeddings", count=len(text_chunks), mode=embedding_mode)
 
-        # FIXED: Calling embed_texts which was missing in original implementation
-        embeddings = await chunker.embed_texts(
-            text_chunks,
-            mode=embedding_mode,
-            provider=embedding_provider_applied,
+        skip_structural_embeddings = bool(
+            getattr(settings, "INGEST_SKIP_STRUCTURAL_EMBEDDING", True)
         )
+        role_by_index: dict[int, dict[str, Any]] = {}
+        embed_indices: list[int] = []
+        embed_texts: list[str] = []
+        for idx, chunk_text in enumerate(text_chunks):
+            role_meta = chunking_service.classify_chunk_role(chunk_text)
+            role_by_index[idx] = role_meta
+            if skip_structural_embeddings and not bool(role_meta.get("retrieval_eligible", True)):
+                continue
+            embed_indices.append(idx)
+            embed_texts.append(chunk_text)
+
+        embeddings_by_index: dict[int, list[float]] = {}
+        if embed_texts:
+            embeddings = await chunker.embed_texts(
+                embed_texts,
+                mode=embedding_mode,
+                provider=embedding_provider_applied,
+            )
+            for idx, vector in zip(embed_indices, embeddings):
+                embeddings_by_index[idx] = vector
 
         all_chunks_data = []
         current_offset = 0
 
-        for i, (chunk_text, embedding) in enumerate(zip(text_chunks, embeddings)):
+        for i, chunk_text in enumerate(text_chunks):
+            embedding = embeddings_by_index.get(i)
             chunk_len = len(chunk_text)
             start = current_offset
 
@@ -374,6 +408,9 @@ class FastCurriculumContentStrategy(CurriculumContentStrategy):
                 embedding_profile=embedding_profile,
                 structure_mapper=structure_mapper,
             )
+            role_meta = role_by_index.get(i, {})
+            if skip_structural_embeddings and not bool(role_meta.get("retrieval_eligible", True)):
+                chunk_data["embedding"] = None
             all_chunks_data.append(chunk_data)
             current_offset += chunk_len
 
@@ -459,12 +496,24 @@ class PreProcessedContentStrategy(IngestionStrategy):
             model=embedding_profile.get("model"),
             source_id=metadata.source_id,
         )
-        late_chunks = await chunking_service.chunk_document_with_late_chunking(
-            full_text=full_text,
-            embedding_mode=embedding_mode,
-            embedding_provider=embedding_provider_applied,
-            max_chars=4000,
+        skip_structural_embeddings = bool(
+            getattr(settings, "INGEST_SKIP_STRUCTURAL_EMBEDDING", True)
         )
+        if skip_structural_embeddings:
+            late_chunks = await chunking_service.chunk_document_contextual_selective(
+                full_text=full_text,
+                embedding_mode=embedding_mode,
+                embedding_provider=embedding_provider_applied,
+                max_chars=4000,
+                skip_structural_embedding=True,
+            )
+        else:
+            late_chunks = await chunking_service.chunk_document_with_late_chunking(
+                full_text=full_text,
+                embedding_mode=embedding_mode,
+                embedding_provider=embedding_provider_applied,
+                max_chars=4000,
+            )
 
         if not late_chunks:
             logger.error("pre_processed_chunking_failed_no_chunks", file=filename)
@@ -495,6 +544,10 @@ class PreProcessedContentStrategy(IngestionStrategy):
             if chunk.get("heading_path"):
                 chunk_data["metadata"] = chunk_data.get("metadata", {})
                 chunk_data["metadata"]["heading_path"] = chunk["heading_path"]
+            if skip_structural_embeddings and not bool(
+                (chunk_data.get("metadata") or {}).get("retrieval_eligible", True)
+            ):
+                chunk_data["embedding"] = None
             all_chunks_data.append(chunk_data)
 
         logger.info("pre_processed_chunking_complete", total_chunks=len(all_chunks_data))

@@ -46,3 +46,22 @@ def test_reduce_structural_noise_rows_cleans_markdown_table_border() -> None:
     assert len(cleaned) == 1
     assert cleaned[0]["content"] == "Texto con espacios"
     assert trace["changed"] == 1
+
+
+def test_reduce_structural_noise_rows_drops_structural_toc_rows() -> None:
+    rows = [
+        {
+            "content": "9.1.2 Evaluacion del cumplimiento .......... 14\n10 Mejora .......... 15",
+            "score": 0.91,
+            "metadata": {"retrieval_eligible": False, "is_toc": True},
+        },
+        {
+            "content": "La organizacion debe evaluar el cumplimiento de sus obligaciones.",
+            "score": 0.75,
+            "metadata": {"retrieval_eligible": True, "is_normative_body": True},
+        },
+    ]
+    cleaned, trace = reduce_structural_noise_rows(rows)
+    assert len(cleaned) == 1
+    assert cleaned[0]["content"].startswith("La organizacion")
+    assert trace["dropped_structural"] == 1
