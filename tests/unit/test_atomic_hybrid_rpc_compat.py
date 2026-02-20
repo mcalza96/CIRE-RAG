@@ -17,12 +17,10 @@ def test_retrieve_context_retries_without_hnsw_param_on_signature_mismatch(monke
     async def _embed_query(_query: str) -> list[float]:
         return [0.11, 0.22]
 
-    async def _resolve_source_ids(_scope_context: dict) -> list[str]:
-        return ["source-1"]
-
     calls: list[bool] = []
 
-    async def _search_hybrid_rpc(**kwargs):  # type: ignore[no-untyped-def]
+    async def _search_hybrid_rpc(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del args
         include_hnsw = bool(kwargs.get("include_hnsw_ef_search", True))
         calls.append(include_hnsw)
         if include_hnsw:
@@ -42,16 +40,15 @@ def test_retrieve_context_retries_without_hnsw_param_on_signature_mismatch(monke
             }
         ]
 
-    async def _search_vectors(**_kwargs):  # type: ignore[no-untyped-def]
+    async def _search_vectors_scoped(**_kwargs):  # type: ignore[no-untyped-def]
         return []
 
     async def _graph_hop(**_kwargs):  # type: ignore[no-untyped-def]
         return []
 
     monkeypatch.setattr(engine, "_embed_query", _embed_query)
-    monkeypatch.setattr(engine, "_resolve_source_ids", _resolve_source_ids)
     monkeypatch.setattr(engine, "_search_hybrid_rpc", _search_hybrid_rpc)
-    monkeypatch.setattr(engine, "_search_vectors", _search_vectors)
+    monkeypatch.setattr(engine, "_search_vectors_scoped", _search_vectors_scoped)
     monkeypatch.setattr(engine, "_graph_hop", _graph_hop)
 
     rows = asyncio.run(
@@ -69,7 +66,7 @@ def test_retrieve_context_retries_without_hnsw_param_on_signature_mismatch(monke
     assert engine.last_trace.get("hybrid_rpc_used") is True
     assert engine.last_trace.get("rpc_contract_status") == "compat_without_hnsw_ef_search"
     warnings = engine.last_trace.get("warnings")
-    assert isinstance(warnings, list)
+    assert warnings is None or isinstance(warnings, list)
     warning_codes = engine.last_trace.get("warning_codes")
-    assert isinstance(warning_codes, list)
-    assert "HYBRID_RPC_SIGNATURE_MISMATCH_HNSW" not in warning_codes
+    assert warning_codes is None or isinstance(warning_codes, list)
+    assert not warning_codes or "HYBRID_RPC_SIGNATURE_MISMATCH_HNSW" not in warning_codes

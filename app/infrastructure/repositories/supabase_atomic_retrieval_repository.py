@@ -32,32 +32,3 @@ class SupabaseAtomicRetrievalRepository:
         response = await client.rpc("search_fts_only", payload).execute()
         data = response.data if isinstance(response.data, list) else []
         return [row for row in data if isinstance(row, dict)]
-
-    async def list_source_documents(
-        self,
-        *,
-        tenant_id: str | None,
-        is_global: bool,
-        collection_id: str | None,
-        limit: int,
-    ) -> list[dict[str, Any]]:
-        client = await self._get_client()
-        query = (
-            client.table("source_documents")
-            .select("id,institution_id,collection_id,metadata,is_global,created_at,updated_at")
-            .limit(max(1, int(limit)))
-        )
-
-        tenant = str(tenant_id or "").strip()
-        if tenant:
-            query = query.eq("institution_id", tenant)
-        elif bool(is_global):
-            query = query.eq("is_global", True)
-
-        collection = str(collection_id or "").strip()
-        if collection:
-            query = query.eq("collection_id", collection)
-
-        response = await query.execute()
-        data = response.data if isinstance(response.data, list) else []
-        return [row for row in data if isinstance(row, dict)]

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import copy
-from datetime import datetime, timezone
-from typing import Any, cast
+from typing import Any, Optional, cast
 from uuid import UUID
 
 import structlog
@@ -89,12 +87,9 @@ class AtomicRetrievalEngine:
         )
 
         query_vector = await self._embed_query(query)
-        source_ids = await self._resolve_source_ids(scope_context or {})
-        if not source_ids:
-            return []
 
         tenant_id = str((scope_context or {}).get("tenant_id") or "").strip()
-        allowed_source_ids = set(str(sid) for sid in source_ids if str(sid).strip())
+        allowed_source_ids: set[str] = set()
 
         vector_start = perf_now()
         fused: list[RetrievalRow] = []
@@ -102,12 +97,14 @@ class AtomicRetrievalEngine:
 
         if settings.ATOMIC_USE_HYBRID_RPC and not self._runtime_disable_hybrid_rpc:
             fused, hybrid_rpc_used = await self._try_hybrid_rpc(
-                query, query_vector, source_ids, fetch_k
+                query, query_vector, scope_context or {}, fetch_k
             )
 
         if not hybrid_rpc_used:
-            fused = await self._search_vectors(
-                query_vector=query_vector, source_ids=source_ids, fetch_k=fetch_k
+            fused = await self._search_vectors_scoped(
+                query_vector=query_vector,
+                scope_context=scope_context or {},
+                fetch_k=fetch_k,
             )
 
         vector_ms = elapsed_ms(vector_start)
@@ -122,6 +119,13 @@ class AtomicRetrievalEngine:
         )
 
         merged = self._dedupe_by_id(fused + graph_rows)
+        allowed_source_ids = {
+            str((item.get("metadata") or {}).get("source_id") or "").strip()
+            for item in merged
+            if isinstance(item, dict)
+            and isinstance(item.get("metadata"), dict)
+            and str((item.get("metadata") or {}).get("source_id") or "").strip()
+        }
         self._scope.stamp_tenant_context(
             rows=merged, tenant_id=tenant_id, allowed_source_ids=allowed_source_ids
         )
@@ -140,11 +144,15 @@ class AtomicRetrievalEngine:
 
         return merged[:k]
 
-    async def _try_hybrid_rpc(self, query, query_vector, source_ids, fetch_k):
+    async def _try_hybrid_rpc(self, query, query_vector, scope_context, fetch_k):
         include_hnsw = self._hybrid_rpc_contract_status != "compat_without_hnsw_ef_search"
         try:
             rows = await self._search_hybrid_rpc(
-                query, query_vector, source_ids, fetch_k, include_hnsw_ef_search=include_hnsw
+                query,
+                query_vector,
+                scope_context,
+                fetch_k,
+                include_hnsw_ef_search=include_hnsw,
             )
             retrieval_metrics_store.record_hybrid_rpc_hit()
             return rows, True
@@ -153,7 +161,11 @@ class AtomicRetrievalEngine:
                 logger.warning("hybrid_rpc_retry_without_hnsw")
                 try:
                     rows = await self._search_hybrid_rpc(
-                        query, query_vector, source_ids, fetch_k, include_hnsw_ef_search=False
+                        query,
+                        query_vector,
+                        scope_context,
+                        fetch_k,
+                        include_hnsw_ef_search=False,
                     )
                     retrieval_metrics_store.record_hybrid_rpc_hit()
                     return rows, True
@@ -211,7 +223,7 @@ class AtomicRetrievalEngine:
             await self._search_hybrid_rpc(
                 query_text="",
                 query_vector=zero_vector,
-                source_ids=[],
+                scope_context={},
                 fetch_k=1,
                 include_hnsw_ef_search=True,
             )
@@ -230,7 +242,7 @@ class AtomicRetrievalEngine:
                     await self._search_hybrid_rpc(
                         query_text="",
                         query_vector=zero_vector,
-                        source_ids=[],
+                        scope_context={},
                         fetch_k=1,
                         include_hnsw_ef_search=False,
                     )
@@ -294,7 +306,7 @@ class AtomicRetrievalEngine:
         self,
         query_text: str,
         query_vector: list[float],
-        source_ids: list[str],
+        scope_context: dict[str, Any],
         fetch_k: int,
         *,
         include_hnsw_ef_search: bool = True,
@@ -314,15 +326,35 @@ class AtomicRetrievalEngine:
                     getattr(settings, "ATOMIC_CLAUSE_QUERY_RRF_FTS_WEIGHT", effective_fts_weight)
                     or effective_fts_weight
                 )
+        source_standard_raw = str(scope_context.get("source_standard") or "").strip()
+        source_standards_raw = scope_context.get("source_standards")
+        source_standards: list[str] = []
+        if isinstance(source_standards_raw, list):
+            source_standards = [
+                str(item).strip()
+                for item in source_standards_raw
+                if isinstance(item, str) and str(item).strip()
+            ]
+        if source_standard_raw and source_standard_raw not in source_standards:
+            source_standards.insert(0, source_standard_raw)
+
         rpc_payload: dict[str, Any] = {
             "query_embedding": query_vector,
             "query_text": effective_query_text,
-            "source_ids": source_ids,
             "match_threshold": settings.ATOMIC_MATCH_THRESHOLD,
             "match_count": max(fetch_k, 1),
             "rrf_k": settings.ATOMIC_RRF_K,
             "vector_weight": vector_weight,
             "fts_weight": effective_fts_weight,
+            "tenant_id": str(scope_context.get("tenant_id") or "").strip() or None,
+            "is_global": (
+                bool(scope_context.get("is_global"))
+                if scope_context.get("is_global") is not None
+                else None
+            ),
+            "collection_id": str(scope_context.get("collection_id") or "").strip() or None,
+            "source_standard": source_standard_raw or None,
+            "source_standards": source_standards or None,
         }
         if include_hnsw_ef_search:
             rpc_payload["hnsw_ef_search"] = max(10, int(settings.ATOMIC_HNSW_EF_SEARCH or 80))
@@ -348,6 +380,24 @@ class AtomicRetrievalEngine:
                 }
             )
         return normalized
+
+    async def _search_vectors_scoped(
+        self,
+        query_vector: list[float],
+        scope_context: dict[str, Any],
+        fetch_k: int,
+    ) -> list[dict[str, Any]]:
+        rows = await self._search_hybrid_rpc(
+            query_text="",
+            query_vector=query_vector,
+            scope_context=scope_context,
+            fetch_k=fetch_k,
+            include_hnsw_ef_search=False,
+        )
+        for row in rows:
+            if isinstance(row, dict):
+                row["source_layer"] = "vector"
+        return rows
 
     async def _search_vectors(
         self, query_vector: list[float], source_ids: list[str], fetch_k: int
@@ -494,84 +544,6 @@ class AtomicRetrievalEngine:
                 }
             )
         return out
-
-    async def _resolve_source_ids(self, scope_context: dict[str, Any]) -> list[str]:
-        rows = await self._retrieval_repository.list_source_documents(
-            tenant_id=str(scope_context.get("tenant_id") or "").strip() or None,
-            is_global=bool(scope_context.get("is_global")),
-            collection_id=str(scope_context.get("collection_id") or "").strip() or None,
-            limit=int(settings.ATOMIC_MAX_SOURCE_IDS),
-        )
-        collection_name = str(scope_context.get("collection_name") or "").strip().lower()
-        source_standard = str(scope_context.get("source_standard") or "").strip().lower()
-        source_standards_raw = scope_context.get("source_standards")
-        source_standards: set[str] = set()
-        if isinstance(source_standards_raw, list):
-            source_standards = {
-                str(item).strip().lower()
-                for item in source_standards_raw
-                if isinstance(item, str) and item.strip()
-            }
-        if source_standard:
-            source_standards.add(source_standard)
-
-        source_ids: list[str] = []
-        nested_filters_raw = scope_context.get("filters")
-        nested_filters: dict[str, Any] = (
-            nested_filters_raw if isinstance(nested_filters_raw, dict) else {}
-        )
-        metadata_filters = scope_context.get("metadata")
-        if not isinstance(metadata_filters, dict):
-            metadata_filters = nested_filters.get("metadata")
-        if not isinstance(metadata_filters, dict):
-            metadata_filters = {}
-        time_range = scope_context.get("time_range")
-        if not isinstance(time_range, dict):
-            time_range = nested_filters.get("time_range")
-        if not isinstance(time_range, dict):
-            time_range = {}
-
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            raw_metadata = row.get("metadata")
-            metadata: dict[str, Any] = (
-                cast(dict[str, Any], raw_metadata) if isinstance(raw_metadata, dict) else {}
-            )
-            if collection_name:
-                row_name = str((metadata or {}).get("collection_name") or "").strip().lower()
-                if row_name and row_name != collection_name:
-                    continue
-
-            if source_standards:
-                candidate_values = [
-                    (metadata or {}).get("source_standard"),
-                    (metadata or {}).get("standard"),
-                    (metadata or {}).get("scope"),
-                    (metadata or {}).get("norma"),
-                ]
-                row_scope = ""
-                for value in candidate_values:
-                    if isinstance(value, str) and value.strip():
-                        row_scope = value.strip().lower()
-                        break
-                if settings.SCOPE_STRICT_FILTERING and not row_scope:
-                    continue
-                if row_scope and not any(target in row_scope for target in source_standards):
-                    continue
-
-            if metadata_filters and not self._scope.matches_metadata_filters(
-                metadata, metadata_filters
-            ):
-                continue
-
-            if time_range and not self._scope.matches_time_range(row, time_range):
-                continue
-
-            row_id = row.get("id")
-            if row_id:
-                source_ids.append(str(row_id))
-        return source_ids
 
     @staticmethod
     def _dedupe_by_id(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
