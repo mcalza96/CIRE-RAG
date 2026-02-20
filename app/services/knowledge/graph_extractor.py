@@ -122,7 +122,7 @@ class GraphExtractor(IGraphExtractor):
         "7) For ISO/normative text, preserve exact names for mandatory documents and review inputs/outputs.\n"
         "8) Prefer these relation types when explicit in text: REQUIRES_DOCUMENT, HAS_REVIEW_INPUT, HAS_REVIEW_OUTPUT, BELONGS_TO_CLAUSE.\n"
         "9) If the chunk has no extractable graph facts, return empty entities and relations arrays.\n"
-        "10) CRITICAL: Limit extraction to the top 15 most important entities and top 20 most important relations to prevent output truncation.\n"
+        "10) CRITICAL: Limit extraction to the top 6 most important entities and top 8 most important relations to prevent output truncation.\n"
         "11) ONLY extract relations with a weight of 5 or higher."
     )
 

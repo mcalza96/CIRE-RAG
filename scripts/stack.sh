@@ -151,6 +151,11 @@ stop_all() {
   stop_process "Community Worker" "$COMMUNITY_WORKER_PID_FILE"
   stop_process "RAG Worker" "$RAG_WORKER_PID_FILE"
   stop_process "RAG API" "$RAG_API_PID_FILE"
+
+  # Fallback safety net: if scripts folder moved and PID files were lost,
+  # ensure no background orphaned workers remain running.
+  pkill -f "run_worker.py" 2>/dev/null || true
+  pkill -f "app.workers.community_worker" 2>/dev/null || true
 }
 
 show_status() {
