@@ -30,7 +30,7 @@ async def main():
         supabase = await get_async_supabase_client()
         print("✅ Client initialized!")
 
-        tenant_id = "b18a053c-1787-4a43-ac97-60c459f455b8"
+        tenant_id = os.getenv("TENANT_ID")
         
         # Check if ISO 9001 exists
         print(f"🔍 Checking for ANY 'ISO 9001' chunks in tenant...")

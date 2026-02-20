@@ -8,7 +8,9 @@ from app.domain.knowledge_schemas import (
     AuthorityLevel
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ============================================================================
 # WEIGHT PRESETS
@@ -190,13 +192,8 @@ class GravityReranker:
             
             # 6. Exclusion Check
             if exclude_zero and weight == 0.0 and not (is_constitutional or is_summary):
-                # We skip if weight is 0, unless it has a special override (though usually 0 means exclude)
-                # But constitutional/summary items usually have implied weight.
-                # If weight is explicitly 0 in matrix, generally we drop it.
-                # However, if it's constitutional, we probably shouldn't drop it regardless of matrix.
-                # Let's stick to the matrix strictness: if matrix says 0, it's 0 (unless we decide otherwise).
-                # But wait, constitutional boost is x1000. 0 * 1000 is still 0.
-                # So if strictly excluded by matrix, it stays excluded.
+                # Items with zero weight are excluded unless they are constitutional or summaries
+                # that might have implied relevancy despite their source authority level.
                 continue
 
             # Update result with new score and metadata
@@ -256,5 +253,5 @@ class GravityReranker:
             # But metadata comes from DB and might be raw string.
             return AuthorityLevel(value.lower())
         except ValueError:
-            logger.warning(f"[GravityReranker] Unknown authority level: {value}. Fallback to SUPPLEMENTARY.")
+            logger.warning("unknown_authority_level", value=value, fallback=AuthorityLevel.SUPPLEMENTARY)
             return AuthorityLevel.SUPPLEMENTARY

@@ -19,17 +19,8 @@ class JinaEmbeddingService:
     Handles caching, provider selection (Cloud vs Local), and metrics.
     """
 
-    _instance = None
-    _lock = threading.Lock()
-
-    def __new__(cls):
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super(JinaEmbeddingService, cls).__new__(cls)
-                cls._instance._initialized = False
-        return cls._instance
-
     def __init__(self):
+        self._lock = threading.Lock()
         with self._lock:
             if self._initialized:
                 return
@@ -106,9 +97,6 @@ class JinaEmbeddingService:
 
             self._initialized = True
 
-    @classmethod
-    def get_instance(cls):
-        return cls()  # Singleton
 
     def _build_local_provider(self) -> IEmbeddingProvider:
         try:
@@ -389,7 +377,7 @@ class JinaEmbeddingService:
                 )
                 return cast(List[List[float]], final_embeddings)
 
-            logger.error("embedding_generation_failed", error=str(e), texts_count=len(texts))
+            logger.error("embedding_generation_failed", error=str(e), texts_count=len(texts), exc_info=True)
             raise e
 
     @track_span(name="span:late_chunking")
@@ -429,5 +417,5 @@ class JinaEmbeddingService:
                     applied_provider=fallback_provider,
                 )
                 return chunks
-            logger.error(f"Error in chunk_and_encode: {e}")
+            logger.error("chunk_and_encode_failed", error=str(e), exc_info=True)
             raise e

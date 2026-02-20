@@ -1,5 +1,7 @@
+# CIRE-RAG .gitignore
+
 # -----------------------------
-# Python
+# Python / Environment
 # -----------------------------
 __pycache__/
 *.py[cod]
@@ -12,47 +14,19 @@ __pycache__/
 .coverage
 coverage.xml
 htmlcov/
-
-# Virtual environments
 venv/
 .venv/
 env/
-
-# Build artifacts
 build/
 dist/
 *.egg-info/
 
-# Profiling / runtime temp
-*.prof
-*.pid
-*.seed
-tmp/
-
 # -----------------------------
-# Node / frontend (if present)
-# -----------------------------
-node_modules/
-.pnp
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
-.next/
-out/
-*.tsbuildinfo
-next-env.d.ts
-
-# -----------------------------
-# Environment and secrets
+# Environment and Secrets
 # -----------------------------
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*
+!.env.example
 *.pem
 *.key
 
@@ -75,27 +49,23 @@ ehthumbs.db
 .gptignore
 
 # -----------------------------
-# Logs and local runtime state
+# Logs and Local Runtime State
 # -----------------------------
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-.pnpm-debug.log*
 .logs/
 .run/
-
-# -----------------------------
-# Project-local tooling / temp
-# -----------------------------
 .agent/
 .agents/
 .deepeval/
+
+# -----------------------------
+# Project specific (temp/noise)
+# -----------------------------
+tmp/
+*.prof
+*.pid
+*.seed
 .rag_tenants.json
-informes/
-implementation_plan.md
-walkthrough.md
-t.txt
-plan_batch_ingestion.txt
-plan_batch_ingestion_phase0.md
-rag_implementation_plan.md

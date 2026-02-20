@@ -21,6 +21,9 @@ class KnowledgeService:
     Uses retrieval router when enabled.
     """
 
+    def __init__(self, container: Optional[Any] = None) -> None:
+        self._container = container
+
     async def get_grounded_context(
         self, query: str, institution_id: str, k: int = retrieval_settings.TOP_K
     ) -> GroundedContext:
@@ -71,9 +74,11 @@ class KnowledgeService:
             retrieval_request_id=retrieval_request_id,
         )
 
-        from app.infrastructure.container import CognitiveContainer
+        if self._container is None:
+            from app.infrastructure.container import CognitiveContainer
+            self._container = CognitiveContainer()
 
-        container = CognitiveContainer.get_instance()
+        container = self._container
 
         if self._use_retrieval_router():
             result = await self._get_context_retrieval_router(

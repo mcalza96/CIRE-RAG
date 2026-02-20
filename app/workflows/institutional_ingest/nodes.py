@@ -1,14 +1,12 @@
-"""
-Nodes for the Institutional Ingest Graph.
-Implements Ingest -> Parse -> Embed -> Index pipeline with Strict Tenant Isolation.
-"""
-
 import asyncio
 import os
 import fitz  # PyMuPDF
+import structlog
 from dotenv import load_dotenv
 from app.core.llm import get_llm
 from app.core.settings import settings
+
+logger = structlog.get_logger(__name__)
 
 # Initialize Models
 from app.services.embedding_service import JinaEmbeddingService
@@ -133,7 +131,7 @@ async def ingest_node(state: InstitutionalState):
     """
     Reads the PDF file and extracts raw text.
     """
-    print("--- INGEST NODE ---")
+    logger.info("ingest_node_start")
     file_path = state.get("file_path")
 
     if not file_path or not os.path.exists(file_path):
@@ -156,7 +154,7 @@ async def parse_node(state: InstitutionalState):
     Uses LLM to clean and structure the raw text into Markdown.
     Implements map-reduce for large documents to avoid content loss.
     """
-    print("--- PARSE NODE ---")
+    logger.info("parse_node_start")
     raw_text = state.get("raw_text", "")
 
     if not raw_text:
@@ -179,7 +177,7 @@ async def parse_node(state: InstitutionalState):
             end = min(start + WINDOW_SIZE, len(raw_text))
             windows.append(raw_text[start:end])
             start += WINDOW_SIZE - OVERLAP
-        print(f"    Map-reduce: {len(windows)} windows for {len(raw_text)} chars")
+        logger.info("parse_map_reduce_init", windows=len(windows), total_chars=len(raw_text))
 
     try:
         semaphore = asyncio.Semaphore(PARSE_WINDOW_CONCURRENCY)
@@ -207,9 +205,13 @@ async def parse_node(state: InstitutionalState):
                         ) from exc
 
                     backoff_seconds = PARSE_WINDOW_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
-                    print(
-                        f"    Retry parte {i + 1}/{len(windows)} intento {attempt + 1}/{total_attempts} "
-                        f"en {backoff_seconds:.2f}s"
+                    logger.info(
+                        "parse_window_retry",
+                        part=i + 1,
+                        total_parts=len(windows),
+                        attempt=attempt + 1,
+                        total_attempts=total_attempts,
+                        backoff_seconds=backoff_seconds,
                     )
                     await asyncio.sleep(backoff_seconds)
 
@@ -232,7 +234,7 @@ async def embed_node(state: InstitutionalState):
     """
     Embeds the parsed markdown using Jina Late Chunking.
     """
-    print("--- EMBED NODE ---")
+    logger.info("embed_node_start")
     content = state.get("parsed_content", "")
 
     if not content:
@@ -271,7 +273,7 @@ async def index_node(state: InstitutionalState):
     """
     Pushes vectors to Supabase using Repository Pattern (STRICT SECURITY).
     """
-    print("--- INDEX NODE (SECURITY CRITICAL) ---")
+    logger.info("index_node_start", security_critical=True)
 
     tenant_id = state.get("tenant_id")
     document_id = state.get("document_id")
@@ -279,7 +281,7 @@ async def index_node(state: InstitutionalState):
 
     # 1. SECURITY CHECK
     if not tenant_id:
-        print("!!! SECURITY ALERT: Attempted indexing without Tenant ID !!!")
+        logger.critical("security_index_blocked_missing_tenant")
         raise SecurityContextError("Operation blocked: Missing tenant_id in secure context.")
 
     if not chunks_data:

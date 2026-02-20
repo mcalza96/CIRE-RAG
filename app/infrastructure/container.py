@@ -34,8 +34,6 @@ class CognitiveContainer:
     IoC Container for Cognitive Services.
     """
 
-    _instance = None
-
     def __init__(self):
         # Lazy initialization of services
         self._knowledge_service = None
@@ -56,12 +54,6 @@ class CognitiveContainer:
         self._authority_reranker = None
         self._semantic_reranker = None
         self._atomic_engine = None
-
-    @classmethod
-    def get_instance(cls):
-        if cls._instance is None:
-            cls._instance = CognitiveContainer()
-        return cls._instance
 
     @property
     def knowledge_service(self) -> KnowledgeService:

@@ -1,10 +1,20 @@
 import asyncio
 import httpx
+import sys
+import os
 from app.core.settings import settings
 
 async def run():
-    doc_id = "a22efae0-4c8a-4561-b93b-1eb30dafc8f2"
-    tenant_id = "b18a053c-1787-4a43-ac97-60c459f455b8"
+    if len(sys.argv) < 2:
+        print("Usage: python trigger_retry.py <doc_id> [tenant_id]")
+        return
+
+    doc_id = sys.argv[1]
+    tenant_id = sys.argv[2] if len(sys.argv) > 2 else os.getenv("TENANT_ID")
+    
+    if not tenant_id:
+        print("Error: tenant_id must be provided as 2nd arg or via TENANT_ID env var")
+        return
     
     # We can use the internal host since we are local
     url = f"http://localhost:8000/api/v1/ingestion/retry/{doc_id}"

@@ -98,8 +98,13 @@ def _extract_row(item: RetrievalItem) -> dict[str, Any]:
 
 
 class RetrievalContractService:
-    def __init__(self) -> None:
-        self._knowledge_service = KnowledgeService()
+    def __init__(
+        self,
+        knowledge_service: Optional[KnowledgeService] = None,
+        retrieval_tools: Optional[Any] = None,
+    ) -> None:
+        self._knowledge_service = knowledge_service or KnowledgeService()
+        self._retrieval_tools = retrieval_tools
 
     @staticmethod
     def _extract_requested_standards(query: str) -> tuple[str, ...]:
@@ -842,13 +847,17 @@ class RetrievalContractService:
             scope_context["_skip_planner"] = True
         if skip_external_rerank:
             scope_context["_skip_external_rerank"] = True
-        container = CognitiveContainer.get_instance()
+
+        if not self._retrieval_tools:
+            from app.infrastructure.container import CognitiveContainer
+            self._retrieval_tools = CognitiveContainer().retrieval_tools
+
         rerank_enabled = bool(request.rerank.enabled) if request.rerank is not None else True
         graph_relations = request.graph.relation_types if request.graph is not None else None
         graph_node_types = request.graph.node_types if request.graph is not None else None
         graph_max_hops = request.graph.max_hops if request.graph is not None else None
 
-        response = await container.retrieval_tools.retrieve(
+        response = await self._retrieval_tools.retrieve(
             query=request.query,
             scope_context=scope_context,
             k=max(1, int(request.k)),

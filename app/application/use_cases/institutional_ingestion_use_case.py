@@ -1,18 +1,19 @@
-import logging
 import math
 from typing import Dict, Any, Optional
+import structlog
+import os
 
 from app.domain.types.ingestion_status import IngestionStatus
-
-logger = logging.getLogger(__name__)
-
 from app.infrastructure.repositories.supabase_source_repository import SupabaseSourceRepository
-from app.infrastructure.services.manual_ingestion_query_service import ManualIngestionQueryService
-import os
+from app.infrastructure.services.manual_ingestion_query_service import (
+    ManualIngestionQueryService,
+)
 from app.core.observability.correlation import get_correlation_id
 from app.services.database.taxonomy_manager import TaxonomyManager
 from app.core.settings import settings
 from app.core.utils.filename_utils import sanitize_filename
+
+logger = structlog.get_logger(__name__)
 
 
 class InstitutionalIngestionUseCase:
@@ -22,10 +23,15 @@ class InstitutionalIngestionUseCase:
     DEPRECATED: The old LangGraph pipeline (institutional_ingest/nodes.py) is replaced
     by the unified PreProcessedContentStrategy which uses heading-based semantic chunking.
     """
-    def __init__(self):
-        self.repo = SupabaseSourceRepository()
-        self.taxonomy_manager = TaxonomyManager()
-        self.query_service = ManualIngestionQueryService()
+    def __init__(
+        self,
+        repo: Optional[SupabaseSourceRepository] = None,
+        taxonomy_manager: Optional[TaxonomyManager] = None,
+        query_service: Optional[ManualIngestionQueryService] = None,
+    ):
+        self.repo = repo or SupabaseSourceRepository()
+        self.taxonomy_manager = taxonomy_manager or TaxonomyManager()
+        self.query_service = query_service or ManualIngestionQueryService()
 
     async def _get_pending_snapshot(self, tenant_id: str) -> Dict[str, Optional[int]]:
         max_pending = int(getattr(settings, "INGESTION_MAX_PENDING_PER_TENANT", 0) or 0)
@@ -68,7 +74,7 @@ class InstitutionalIngestionUseCase:
         This ensures parity with manual ingestion and enables all new tooling:
         Graph enrichment, atomic upsert, metrics, retries, and community jobs.
         """
-        logger.info(f"Triggering Unified Institutional Ingestion for Doc: {document_id}, Tenant: {tenant_id}")
+        logger.info("trigger_unified_institutional_ingestion", document_id=document_id, tenant_id=tenant_id)
         
         try:
             await self._enforce_pending_limit(tenant_id=str(tenant_id))
@@ -137,10 +143,11 @@ class InstitutionalIngestionUseCase:
             )
 
             logger.info(
-                "Routing institutional ingest via worker strategy %s (ext=%s tenant=%s)",
-                strategy_key,
-                ext,
-                tenant_id,
+                "institutional_ingest_routed",
+                strategy=strategy_key,
+                extension=ext,
+                tenant_id=tenant_id,
+                document_id=document_id
             )
 
             # 3. Ensure document remains queued with latest metadata.
@@ -164,5 +171,5 @@ class InstitutionalIngestionUseCase:
             }
             
         except Exception as e:
-            logger.error(f"Failed to prepare institutional ingestion: {e}")
+            logger.error("institutional_ingest_preparation_failed", error=str(e), exc_info=True)
             raise e

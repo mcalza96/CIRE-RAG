@@ -14,7 +14,7 @@ if "SUPABASE_SERVICE_ROLE_KEY" in os.environ and "SUPABASE_SERVICE_KEY" not in o
 
 from app.infrastructure.supabase.client import get_async_supabase_client
 
-TENANT_ID = "b18a053c-1787-4a43-ac97-60c459f455b8"
+TENANT_ID = os.getenv("TENANT_ID")
 
 async def list_collections():
     print("🔌 Connecting to Supabase...")

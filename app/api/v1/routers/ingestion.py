@@ -12,9 +12,9 @@ from app.api.v1.errors import ApiError
 from app.api.v1.tenant_guard import enforce_tenant_match, require_tenant_from_context
 from app.application.use_cases.manual_ingestion_use_case import ManualIngestionUseCase
 from app.application.use_cases.institutional_ingestion_use_case import InstitutionalIngestionUseCase
+from app.core.dependencies import get_container, get_content_repository
 from app.workflows.ingestion.dispatcher import IngestionDispatcher
 from app.services.embedding_service import JinaEmbeddingService
-from app.infrastructure.repositories.supabase_content_repository import SupabaseContentRepository
 
 logger = structlog.get_logger(__name__)
 
@@ -63,12 +63,12 @@ class ReplayEnrichmentRequest(BaseModel):
 # --- DEPENDENCIES ---
 
 
-def get_dispatcher():
-    repo = SupabaseContentRepository()
-    return IngestionDispatcher(repo)
+def get_dispatcher(container=Depends(get_container)):
+    return IngestionDispatcher(container.content_repository)
 
 
-def get_ingestion_use_case(dispatcher: IngestionDispatcher = Depends(get_dispatcher)):
+def get_ingestion_use_case(container=Depends(get_container)):
+    dispatcher = IngestionDispatcher(container.content_repository)
     return ManualIngestionUseCase(dispatcher)
 
 
@@ -80,12 +80,12 @@ def get_institutional_use_case():
 
 
 @router.post("/embed")
-async def embed_texts(request: EmbedRequest):
+async def embed_texts(request: EmbedRequest, container=Depends(get_container)):
     """
     Fast Inference Endpoint for text embedding.
     """
     try:
-        engine = JinaEmbeddingService.get_instance()
+        engine = container.embedding_service
         vectors = await engine.embed_texts(
             request.texts,
             task=request.task,
@@ -95,7 +95,7 @@ async def embed_texts(request: EmbedRequest):
         profile = engine.resolve_embedding_profile(provider=request.provider, mode=request.mode)
         return {"embeddings": vectors, "embedding_profile": profile}
     except Exception as e:
-        logger.error("embedding_failed", error=str(e), text_count=len(request.texts))
+        logger.error("embedding_failed", error=str(e), text_count=len(request.texts), exc_info=True)
         raise ApiError(status_code=500, code="EMBEDDING_FAILED", message="Embedding failed")
 
 
@@ -171,7 +171,7 @@ async def ingest_document(
             details=str(e),
         )
     except Exception as e:
-        logger.error("ingestion_failed", error=str(e))
+        logger.error("ingestion_failed", error=str(e), exc_info=True)
         raise ApiError(status_code=500, code="INGESTION_FAILED", message="Ingestion failed")
 
 
@@ -226,7 +226,12 @@ async def ingest_institutional_document(
             details=str(e),
         )
     except Exception as e:
-        logger.error("institutional_ingestion_failed", error=str(e), tenant_id=request.tenant_id)
+        logger.error(
+            "institutional_ingestion_failed",
+            error=str(e),
+            tenant_id=request.tenant_id,
+            exc_info=True,
+        )
         raise ApiError(
             status_code=500,
             code="INSTITUTIONAL_INGESTION_FAILED",

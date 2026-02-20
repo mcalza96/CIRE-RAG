@@ -15,6 +15,7 @@ from app.api.v1.schemas.retrieval_advanced import (
 )
 from app.api.v1.tenant_guard import enforce_tenant_match
 from app.application.services.retrieval_contract_service import RetrievalContractService
+from app.core.dependencies import get_container
 
 logger = structlog.get_logger(__name__)
 
@@ -23,8 +24,8 @@ router = APIRouter(
 )
 
 
-def get_retrieval_contract_service() -> RetrievalContractService:
-    return RetrievalContractService()
+def get_retrieval_contract_service(container=Depends(get_container)) -> RetrievalContractService:
+    return RetrievalContractService(knowledge_service=container.knowledge_service)
 
 
 @router.post(
@@ -43,7 +44,7 @@ async def validate_scope(
     except ApiError:
         raise
     except Exception as exc:
-        logger.error("retrieval_validate_scope_failed", error=str(exc))
+        logger.error("retrieval_validate_scope_failed", error=str(exc), exc_info=True)
         raise ApiError(
             status_code=500, code="SCOPE_VALIDATION_FAILED", message="Scope validation failed"
         )
@@ -70,7 +71,7 @@ async def retrieval_comprehensive(
     except ApiError:
         raise
     except Exception as exc:
-        logger.error("comprehensive_retrieval_failed", error=str(exc))
+        logger.error("comprehensive_retrieval_failed", error=str(exc), exc_info=True)
         raise ApiError(
             status_code=500,
             code="COMPREHENSIVE_RETRIEVAL_FAILED",
@@ -99,7 +100,7 @@ async def retrieval_explain(
     except ApiError:
         raise
     except Exception as exc:
-        logger.error("retrieval_explain_failed", error=str(exc))
+        logger.error("retrieval_explain_failed", error=str(exc), exc_info=True)
         raise ApiError(
             status_code=500, code="RETRIEVAL_EXPLAIN_FAILED", message="Retrieval explain failed"
         )

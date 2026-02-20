@@ -9,7 +9,9 @@ from app.domain.repositories.source_repository import ISourceRepository
 from app.infrastructure.supabase.client import get_async_supabase_client
 from app.services.knowledge.clustering_service import ClusteringService
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 async def rebuild_community_graph_task(tenant_id: str) -> Dict[str, Any]:

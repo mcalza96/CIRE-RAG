@@ -12,7 +12,9 @@ from app.infrastructure.supabase.client import (
     reset_async_supabase_client,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class SupabaseJobStore:

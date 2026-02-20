@@ -30,8 +30,8 @@ logger.info(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    del app
-    container = CognitiveContainer.get_instance()
+    container = CognitiveContainer()
+    app.state.container = container
     await container.startup()
     try:
         status_payload = (

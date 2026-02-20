@@ -1,104 +1,69 @@
 import asyncio
 import structlog
 from uuid import UUID
+from typing import Dict, Any
 
-from app.infrastructure.supabase.client import get_async_supabase_client
+from app.infrastructure.queue.supabase_job_store import SupabaseJobStore
+from app.infrastructure.queue.base_worker import BaseWorkerProcessor
+from app.infrastructure.repositories.community_job_repository import CommunityJobRepository
 from app.services.knowledge.clustering_service import ClusteringService
 
 logger = structlog.get_logger(__name__)
 
-JOB_TYPE = "community_rebuild"
-POLL_INTERVAL = 5
+class CommunityWorker:
+    def __init__(
+        self, 
+        job_store: Optional[SupabaseJobStore] = None,
+        repository: Optional[CommunityJobRepository] = None,
+        clustering_service: Optional[ClusteringService] = None
+    ):
+        self.job_store = job_store or SupabaseJobStore()
+        self.repository = repository or CommunityJobRepository()
+        self.clustering_service = clustering_service or ClusteringService()
+        self.job_type = "community_rebuild"
 
+    async def handle_job(self, job: Dict[str, Any]) -> Dict[str, Any]:
+        job_id = job["id"]
+        # In this specific job, tenant_id is directly in the job record, not payload?
+        # Looking at original code: tenant_id = str(job["tenant_id"])
+        tenant_id = str(job.get("tenant_id") or job.get("payload", {}).get("tenant_id"))
+        
+        if not tenant_id:
+            raise ValueError(f"Missing tenant_id in job {job_id}")
 
-async def _append_ingestion_event(tenant_id: str, payload: dict, status: str) -> None:
-    supabase = await get_async_supabase_client()
-    try:
-        doc_res = await supabase.table("source_documents").select("id").eq(
-            "institution_id", tenant_id
-        ).order("created_at", desc=True).limit(1).execute()
-        rows = doc_res.data or []
-        if not rows:
-            return
-        doc_id = rows[0].get("id")
-        if not doc_id:
-            return
-
-        await supabase.table("ingestion_events").insert(
-            {
-                "source_document_id": doc_id,
-                "tenant_id": tenant_id,
-                "message": (
-                    f"Community rebuild tenant={tenant_id}: ok={payload.get('ok', False)} "
-                    f"detected={payload.get('communities_detected', 0)} "
-                    f"persisted={payload.get('communities_persisted', 0)}"
-                ),
-                "status": status,
-                "node_type": "SYSTEM",
-                "metadata": {
-                    "phase": "community_rebuild",
-                    "result": payload,
-                },
-            }
-        ).execute()
-    except Exception as exc:
-        logger.warning("community_worker_event_log_failed", tenant_id=tenant_id, error=str(exc))
-
-
-async def process_job(job: dict) -> None:
-    supabase = await get_async_supabase_client()
-    job_id = job["id"]
-    tenant_id = str(job["tenant_id"])
-
-    try:
-        service = ClusteringService()
-        result = await service.rebuild_communities(tenant_id=UUID(tenant_id))
-        payload = {"ok": True, "tenant_id": tenant_id, **result}
-
-        await supabase.table("job_queue").update(
-            {
-                "status": "completed",
-                "result": payload,
-            }
-        ).eq("id", job_id).execute()
-
-        await _append_ingestion_event(tenant_id, payload, status="SUCCESS")
-        logger.info("community_job_completed", job_id=job_id, tenant_id=tenant_id)
-    except Exception as exc:
-        payload = {
-            "ok": False,
-            "tenant_id": tenant_id,
-            "reason": "execution_error",
-            "error": str(exc),
-        }
-        await supabase.table("job_queue").update(
-            {
-                "status": "failed",
-                "error_message": str(exc),
-                "result": payload,
-            }
-        ).eq("id", job_id).execute()
-
-        await _append_ingestion_event(tenant_id, payload, status="WARNING")
-        logger.error("community_job_failed", job_id=job_id, tenant_id=tenant_id, error=str(exc))
-
-
-async def worker_loop() -> None:
-    logger.info("Starting Community Worker")
-    supabase = await get_async_supabase_client()
-
-    while True:
+        logger.info("community_rebuild_start", job_id=job_id, tenant_id=tenant_id)
+        
         try:
-            res = await supabase.rpc("fetch_next_job", {"p_job_type": JOB_TYPE}).execute()
-            jobs = res.data or []
-            if jobs:
-                await process_job(jobs[0])
-            else:
-                await asyncio.sleep(POLL_INTERVAL)
+            result = await self.clustering_service.rebuild_communities(tenant_id=UUID(tenant_id))
+            payload = {"ok": True, "tenant_id": tenant_id, **result}
+            
+            # Log event
+            doc_id = await self.repository.get_latest_document_id(tenant_id)
+            if doc_id:
+                msg = (f"Community rebuild tenant={tenant_id}: ok=True "
+                       f"detected={result.get('communities_detected', 0)} "
+                       f"persisted={result.get('communities_persisted', 0)}")
+                await self.repository.create_ingestion_event(doc_id, tenant_id, msg, "SUCCESS", payload)
+            
+            return payload
+            
         except Exception as exc:
-            logger.error("community_worker_loop_error", error=str(exc))
-            await asyncio.sleep(POLL_INTERVAL)
+            logger.error("community_rebuild_failed", job_id=job_id, tenant_id=tenant_id, error=str(exc))
+            payload = {"ok": False, "tenant_id": tenant_id, "error": str(exc)}
+            
+            doc_id = await self.repository.get_latest_document_id(tenant_id)
+            if doc_id:
+                await self.repository.create_ingestion_event(
+                    doc_id, tenant_id, f"Community rebuild failed: {str(exc)}", "WARNING", payload
+                )
+            raise exc
 
+    async def start(self):
+        logger.info("starting_community_worker")
+        processor = BaseWorkerProcessor(self.job_store, poller_id=1)
+        await processor.run_job_loop(self.job_type, self.handle_job, poll_interval=5)
 
 if __name__ == "__main__":
-    asyncio.run(worker_loop())
+    from typing import Optional
+    worker = CommunityWorker()
+    asyncio.run(worker.start())

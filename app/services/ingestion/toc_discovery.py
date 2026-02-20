@@ -3,6 +3,9 @@ import re
 from typing import List, Optional, BinaryIO
 import fitz  # PyMuPDF
 from pydantic import BaseModel
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 class TocEntry(BaseModel):
     level: int
@@ -62,5 +65,5 @@ class TocDiscoveryService:
 
         except Exception as e:
             # Log error but fail open
-            print(f"[TocDiscoveryService] Error discovering ToC: {e}")
+            logger.error("toc_discovery_failed", error=str(e))
             return TocResult(has_structure=False, entries=[])
