@@ -18,7 +18,7 @@ from app.infrastructure.repositories.supabase_graph_retrieval_repository import 
 from app.infrastructure.repositories.supabase_atomic_retrieval_repository import (
     SupabaseAtomicRetrievalRepository,
 )
-from app.services.embedding_service import JinaEmbeddingService
+from app.services.embedding_service import JinaEmbeddingService, EmbeddingService
 
 from app.services.retrieval.retrieval_scope_service import RetrievalScopeService
 from app.services.retrieval.retrieval_plan_executor import RetrievalPlanExecutor
@@ -217,7 +217,8 @@ class AtomicRetrievalEngine:
             return
 
         self._hybrid_rpc_contract_checked = True
-        dims = max(8, int(settings.JINA_EMBEDDING_DIMENSIONS or 1024))
+        profile = self._embedding_service.resolve_embedding_profile()
+        dims = int(profile.get("dimensions") or 1024)
         zero_vector = [0.0] * dims
         try:
             await self._search_hybrid_rpc(

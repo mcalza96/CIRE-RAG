@@ -75,6 +75,8 @@ class Settings(BaseSettings):
     COHERE_EMBEDDING_DIMENSIONS: int = 1024
     COHERE_REQUEST_MAX_PARALLEL: int = 2
     COHERE_MAX_TEXTS_PER_REQUEST: int = 96
+    COHERE_RERANK_URL: str = "https://api.cohere.com/v2/rerank"
+    COHERE_RERANK_MODEL: str = "rerank-v3.5"
 
     # API Config
     API_PORT: int = 8000

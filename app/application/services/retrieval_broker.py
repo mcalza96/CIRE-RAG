@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Optional
 from app.core.settings import settings
 from app.domain.schemas.query_plan import PlannedSubQuery, QueryPlan
 from app.services.embedding_service import JinaEmbeddingService
+from app.services.knowledge.cohere_reranker import CohereReranker
 from app.services.knowledge.gravity_reranker import GravityReranker
 from app.services.knowledge.jina_reranker import JinaReranker
 from app.services.ingestion.metadata_enricher import enrich_metadata
@@ -56,6 +57,7 @@ class RetrievalBroker:
         self.repository = repository
         self.reranker = authority_reranker or GravityReranker()
         self.jina_reranker = semantic_reranker or JinaReranker()
+        self.cohere_reranker = CohereReranker()
         self.direct_strategy = DirectRetrievalStrategy(repository)
         self.iterative_strategy = IterativeRetrievalStrategy(repository)
         self.atomic_engine = atomic_engine or AtomicRetrievalEngine()
@@ -63,6 +65,7 @@ class RetrievalBroker:
     async def close(self) -> None:
         try:
             await self.jina_reranker.close()
+            await self.cohere_reranker.close()
         except Exception as exc:
             logger.warning("retrieval_broker_close_failed", error=str(exc))
 
@@ -78,7 +81,7 @@ class RetrievalBroker:
     @staticmethod
     def _rerank_mode() -> str:
         mode = str(settings.RERANK_MODE or "hybrid").strip().lower()
-        if mode not in {"local", "jina", "hybrid"}:
+        if mode not in {"local", "jina", "cohere", "hybrid"}:
             return "hybrid"
         return mode
 
@@ -650,30 +653,40 @@ class RetrievalBroker:
             rerank_mode = self._rerank_mode()
             semantic_ranked = results
             requested_scopes = self._requested_scopes_from_context(scope_context)
-            jina_started = time.perf_counter()
+            rerank_started = time.perf_counter()
             skip_external_rerank = bool(scope_context.get("_skip_external_rerank"))
-            use_jina = rerank_mode in {"jina", "hybrid"} and not skip_external_rerank
-            use_local = rerank_mode in {"local", "hybrid"}
+            
+            # Choose the active semantic reranker based on mode
+            active_reranker = None
+            if not skip_external_rerank:
+                if rerank_mode == "cohere" and self.cohere_reranker.is_enabled():
+                    active_reranker = self.cohere_reranker
+                elif rerank_mode in {"jina", "hybrid"} and self.jina_reranker.is_enabled():
+                    active_reranker = self.jina_reranker
 
-            if use_jina and self.jina_reranker.is_enabled() and results:
-                max_candidates = max(1, int(settings.RERANK_MAX_CANDIDATES or 10))
+            if active_reranker and results:
+                max_candidates = max(1, int(settings.RERANK_MAX_CANDIDATES or 40))
                 rerank_candidates = results[:max_candidates]
                 docs = [str(item.get("content") or "") for item in rerank_candidates]
-                rows = await self.jina_reranker.rerank_documents(
+                rows = await active_reranker.rerank_documents(
                     query=query,
                     documents=docs,
                     top_n=max(1, min(k, len(rerank_candidates))),
                 )
                 if rows:
                     reordered: list[Dict[str, Any]] = []
+                    provider_label = active_reranker.__class__.__name__.lower()
                     for row in rows:
                         idx = row.get("index")
                         if not isinstance(idx, int) or idx < 0 or idx >= len(rerank_candidates):
                             continue
                         source = dict(rerank_candidates[idx])
-                        source["jina_relevance_score"] = _safe_float(
+                        # Unify score naming
+                        source["semantic_relevance_score"] = _safe_float(
                             row.get("relevance_score"), default=0.0
                         )
+                        if "jina" in provider_label:
+                            source["jina_relevance_score"] = source["semantic_relevance_score"]
                         reordered.append(source)
                     if reordered:
                         remainder = results[len(rerank_candidates) :]

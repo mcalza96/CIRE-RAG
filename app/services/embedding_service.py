@@ -431,5 +431,8 @@ class JinaEmbeddingService:
                     applied_provider=fallback_provider,
                 )
                 return chunks
-            logger.error("chunk_and_encode_failed", error=str(e), exc_info=True)
             raise e
+
+
+# Alias for better nomenclature
+EmbeddingService = JinaEmbeddingService

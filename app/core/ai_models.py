@@ -35,6 +35,11 @@ class AIModelConfig:
     JINA_RERANK_URL = settings.JINA_RERANK_URL
     JINA_RERANK_MODEL = settings.JINA_RERANK_MODEL
 
+    # Cohere Rerank Configuration
+    COHERE_RERANK_URL = settings.COHERE_RERANK_URL
+    COHERE_RERANK_MODEL = settings.COHERE_RERANK_MODEL
+    COHERE_API_KEY = settings.COHERE_API_KEY
+
     # Text Processing Limits
     MAX_CHARACTERS_PER_CHUNKING_BLOCK = 30000
     MAX_GEMINI_PROMPT_CHARS = 100000
