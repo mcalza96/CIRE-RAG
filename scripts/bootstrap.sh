@@ -2,7 +2,8 @@
 
 set -e
 
-cd "$(dirname "$0")"
+# Ensure we are in the project root (one level up from scripts/)
+cd "$(dirname "$0")/.."
 
 if command -v python3 >/dev/null 2>&1; then
   PYTHON_CMD=python3

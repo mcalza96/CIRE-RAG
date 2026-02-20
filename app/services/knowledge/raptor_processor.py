@@ -9,10 +9,11 @@ Implements hierarchical summarization of base chunks using:
 
 import logging
 import numpy as np
-from typing import List, Optional, Dict
+import asyncio
+from typing import Any, List, Optional, Dict
 from uuid import UUID, uuid4
 
-from app.domain.raptor_schemas import BaseChunk, ClusterResult, SummaryNode, RaptorTreeResult
+from app.domain.raptor_schemas import BaseChunk, SummaryNode, RaptorTreeResult
 from app.domain.repositories.raptor_repository import IRaptorRepository
 from app.services.knowledge.clustering_service import GMMClusteringService
 from app.services.knowledge.summarization_service import SummarizationAgent
@@ -53,6 +54,95 @@ class RaptorProcessor:
         self.clustering = clustering_service or GMMClusteringService()
         self.summarizer = summarization_service or SummarizationAgent()
         self.max_depth = max_depth
+        self._summarization_semaphore = asyncio.Semaphore(
+            max(1, int(getattr(settings, "RAPTOR_SUMMARIZATION_MAX_CONCURRENCY", 8) or 8))
+        )
+
+    async def _asummarize_cluster(self, cluster_texts: List[str]) -> tuple[str, str]:
+        async with self._summarization_semaphore:
+            return await self.summarizer.asummarize(cluster_texts)
+
+    async def _build_summary_nodes_for_level(
+        self,
+        *,
+        level_items: List[Dict[str, Any]],
+        current_level: int,
+        tenant_id: UUID,
+        source_document_id: Optional[UUID],
+        collection_id: Optional[UUID],
+        level_source_standard: Optional[str],
+        embedding_mode: Optional[str],
+    ) -> List[BaseChunk]:
+        if not level_items:
+            return []
+
+        summarize_tasks = [
+            asyncio.create_task(self._asummarize_cluster(item["cluster_texts"]))
+            for item in level_items
+        ]
+        summarize_results = await asyncio.gather(*summarize_tasks, return_exceptions=True)
+
+        valid_items: List[tuple[Dict[str, Any], str, str]] = []
+        for item, summary_result in zip(level_items, summarize_results):
+            if isinstance(summary_result, BaseException):
+                logger.warning(
+                    "raptor_cluster_summarization_failed level=%s cluster=%s error=%s",
+                    current_level,
+                    item.get("cluster_id"),
+                    str(summary_result),
+                )
+                continue
+            if not isinstance(summary_result, tuple) or len(summary_result) != 2:
+                logger.warning(
+                    "raptor_cluster_summarization_invalid_result level=%s cluster=%s",
+                    current_level,
+                    item.get("cluster_id"),
+                )
+                continue
+            title, summary = summary_result
+            valid_items.append((item, title, summary))
+
+        if not valid_items:
+            return []
+
+        summary_texts = [summary for _, _, summary in valid_items]
+        embeddings = await self.embedding_service.embed_texts(summary_texts, mode=embedding_mode)
+
+        summary_nodes: List[SummaryNode] = []
+        next_level_nodes: List[BaseChunk] = []
+        for (item, title, summary), summary_embedding in zip(valid_items, embeddings):
+            summary_node_id = uuid4()
+            summary_node = SummaryNode(
+                id=summary_node_id,
+                content=summary,
+                title=title,
+                embedding=summary_embedding,
+                level=current_level,
+                children_ids=item["children_ids"],
+                children_summary_ids=item.get("children_summary_ids", []),
+                tenant_id=tenant_id,
+                source_document_id=source_document_id,
+                collection_id=collection_id,
+                source_standard=level_source_standard,
+                section_ref=item.get("section_ref"),
+                section_node_id=item.get("section_node_id"),
+            )
+            summary_nodes.append(summary_node)
+            next_level_nodes.append(
+                BaseChunk(
+                    id=summary_node_id,
+                    content=summary_node.content,
+                    embedding=list(summary_embedding),
+                    tenant_id=tenant_id,
+                    source_standard=level_source_standard,
+                    section_ref=item.get("section_ref"),
+                    section_node_id=item.get("section_node_id"),
+                    is_summary_node=True,
+                )
+            )
+
+        await self.repository.save_summary_nodes(summary_nodes)
+        return next_level_nodes
 
     @staticmethod
     def _group_nodes_by_structure(
@@ -81,7 +171,7 @@ class RaptorProcessor:
             return []
 
         level_source_standard = getattr(current_level_nodes[0], "source_standard", None)
-        new_level_nodes: List[BaseChunk] = []
+        level_items: List[Dict[str, Any]] = []
 
         for section_ref, section_nodes in groups.items():
             cluster_texts = [
@@ -90,10 +180,6 @@ class RaptorProcessor:
             cluster_texts = [text for text in cluster_texts if text]
             if not cluster_texts:
                 continue
-
-            title, summary = self.summarizer.summarize(cluster_texts)
-            vectors = await self.embedding_service.embed_texts([summary], mode=embedding_mode)
-            summary_embedding = vectors[0]
 
             children_ids = [item.id for item in section_nodes]
             children_summary_ids = [item.id for item in section_nodes if bool(item.is_summary_node)]
@@ -105,38 +191,26 @@ class RaptorProcessor:
                 ),
                 None,
             )
-
-            summary_node = SummaryNode(
-                id=uuid4(),
-                content=summary,
-                title=title,
-                embedding=summary_embedding,
-                level=current_level,
-                children_ids=children_ids,
-                children_summary_ids=children_summary_ids,
-                tenant_id=tenant_id,
-                source_document_id=source_document_id,
-                collection_id=collection_id,
-                source_standard=level_source_standard,
-                section_ref=section_ref,
-                section_node_id=section_node_id,
-            )
-            await self.repository.save_summary_node(summary_node)
-
-            new_level_nodes.append(
-                BaseChunk(
-                    id=summary_node.id,
-                    content=summary_node.content,
-                    embedding=summary_node.embedding or [],
-                    tenant_id=tenant_id,
-                    source_standard=level_source_standard,
-                    section_ref=section_ref,
-                    section_node_id=section_node_id,
-                    is_summary_node=True,
-                )
+            level_items.append(
+                {
+                    "cluster_id": section_ref,
+                    "cluster_texts": cluster_texts,
+                    "children_ids": children_ids,
+                    "children_summary_ids": children_summary_ids,
+                    "section_ref": section_ref,
+                    "section_node_id": section_node_id,
+                }
             )
 
-        return new_level_nodes
+        return await self._build_summary_nodes_for_level(
+            level_items=level_items,
+            current_level=current_level,
+            tenant_id=tenant_id,
+            source_document_id=source_document_id,
+            collection_id=collection_id,
+            level_source_standard=level_source_standard,
+            embedding_mode=embedding_mode,
+        )
 
     async def build_tree(
         self,
@@ -198,9 +272,9 @@ class RaptorProcessor:
                     levels[current_level] = [n.id for n in structural_nodes]
                     current_level_nodes = structural_nodes
                     logger.info(
-                        "raptor_structural_level_created",
-                        level=current_level,
-                        nodes=len(structural_nodes),
+                        "raptor_structural_level_created level=%s nodes=%s",
+                        current_level,
+                        len(structural_nodes),
                     )
                     continue
 
@@ -223,8 +297,7 @@ class RaptorProcessor:
             content_lookup = {str(c.id): c.content for c in current_level_nodes}
             node_lookup = {str(c.id): c for c in current_level_nodes}
 
-            # Summarize each cluster
-            new_level_nodes: List[BaseChunk] = []
+            level_items: List[Dict[str, Any]] = []
 
             for cluster_id, cluster_chunk_ids in cluster_result.cluster_contents.items():
                 # Get text content for this cluster
@@ -235,50 +308,29 @@ class RaptorProcessor:
                     logger.warning(f"Cluster {cluster_id} has no valid text content, skipping")
                     continue
 
-                # Generate summary
-                title, summary = self.summarizer.summarize(cluster_texts)
-
-                # Generate embedding for summary
-                embeddings = await self.embedding_service.embed_texts(
-                    [summary],
-                    mode=embedding_mode,
-                )
-                summary_embedding = embeddings[0]
-
-                # Create summary node
-                summary_node = SummaryNode(
-                    id=uuid4(),
-                    content=summary,
-                    title=title,
-                    embedding=summary_embedding,
-                    level=current_level,
-                    children_ids=cluster_chunk_ids,
-                    tenant_id=tenant_id,
-                    source_document_id=source_document_id,
-                    collection_id=collection_id,
-                    source_standard=level_source_standard,
-                    children_summary_ids=[
-                        UUID(str(cid))
-                        for cid in cluster_chunk_ids
-                        if bool(getattr(node_lookup.get(str(cid)), "is_summary_node", False))
-                    ],
+                level_items.append(
+                    {
+                        "cluster_id": cluster_id,
+                        "cluster_texts": cluster_texts,
+                        "children_ids": cluster_chunk_ids,
+                        "children_summary_ids": [
+                            UUID(str(cid))
+                            for cid in cluster_chunk_ids
+                            if bool(getattr(node_lookup.get(str(cid)), "is_summary_node", False))
+                        ],
+                    }
                 )
 
-                # Persist via repository
-                await self.repository.save_summary_node(summary_node)
-                total_created += 1
-
-                # Add to next iteration as BaseChunk-like object
-                # Update BaseChunk with source_standard if needed for further propagation
-                new_level_chunk = BaseChunk(
-                    id=summary_node.id,
-                    content=summary_node.content,
-                    embedding=summary_node.embedding,
-                    tenant_id=tenant_id,
-                    source_standard=level_source_standard,
-                    is_summary_node=True,
-                )
-                new_level_nodes.append(new_level_chunk)
+            new_level_nodes = await self._build_summary_nodes_for_level(
+                level_items=level_items,
+                current_level=current_level,
+                tenant_id=tenant_id,
+                source_document_id=source_document_id,
+                collection_id=collection_id,
+                level_source_standard=level_source_standard,
+                embedding_mode=embedding_mode,
+            )
+            total_created += len(new_level_nodes)
 
             levels[current_level] = [n.id for n in new_level_nodes]
             current_level_nodes = new_level_nodes

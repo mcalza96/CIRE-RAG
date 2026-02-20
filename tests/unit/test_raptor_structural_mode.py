@@ -16,6 +16,9 @@ class _FakeRepo:
     async def save_summary_node(self, node: Any) -> None:
         self.saved_nodes.append(node)
 
+    async def save_summary_nodes(self, nodes: list[Any]) -> None:
+        self.saved_nodes.extend(nodes)
+
 
 class _FakeEmbeddingService:
     async def embed_texts(self, texts, mode=None, task=None, provider=None):
@@ -23,7 +26,7 @@ class _FakeEmbeddingService:
 
 
 class _FakeSummarizer:
-    def summarize(self, cluster_texts):
+    async def asummarize(self, cluster_texts):
         return ("Summary", " | ".join(cluster_texts))
 
 

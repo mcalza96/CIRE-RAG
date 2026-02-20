@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # Ensure we are in the script's directory
-cd "$(dirname "$0")"
+# Ensure we are in the project root
+cd "$(dirname "$0")/.."
 
 # Check for python3
 if command -v python3 &>/dev/null; then

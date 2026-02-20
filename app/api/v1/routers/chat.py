@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from app.api.v1.auth import require_service_auth
 from app.api.v1.errors import ERROR_RESPONSES, ApiError
 from app.api.v1.tenant_guard import enforce_tenant_match
+from app.core.dependencies import get_knowledge_service
 from app.services.knowledge.knowledge_service import KnowledgeService
 
 logger = structlog.get_logger(__name__)
@@ -97,12 +98,7 @@ def _build_retrieval_query(message: str, history: List[ChatMessage], max_turns: 
     rendered_history = "\n".join(
         f"{(m.role or 'user').upper()}: {m.content.strip()}" for m in history_tail
     )
-    return (
-        "HISTORIAL RELEVANTE:\n"
-        f"{rendered_history}\n\n"
-        "PREGUNTA ACTUAL:\n"
-        f"{question}"
-    )
+    return f"HISTORIAL RELEVANTE:\n{rendered_history}\n\nPREGUNTA ACTUAL:\n{question}"
 
 
 @router.post(
@@ -122,7 +118,9 @@ def _build_retrieval_query(message: str, history: List[ChatMessage], max_turns: 
                     "example": {
                         "interaction_id": "be6236d6-5eca-4ec6-8296-5d42c4b16595",
                         "query": "Que exige la clausula 8.5 de ISO 9001?",
-                        "context_chunks": ["La organizacion debe implementar controles de produccion..."],
+                        "context_chunks": [
+                            "La organizacion debe implementar controles de produccion..."
+                        ],
                         "context_map": {"chunk-001": {"id": "chunk-001", "similarity": 0.87}},
                         "citations": ["chunk-001", "chunk-017"],
                         "mode": "VECTOR_ONLY",
@@ -140,7 +138,7 @@ def _build_retrieval_query(message: str, history: List[ChatMessage], max_turns: 
 )
 async def create_chat_completion(
     request: ChatCompletionRequest,
-    knowledge_service: KnowledgeService = Depends(KnowledgeService),
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
 ) -> ChatCompletionResponse:
     try:
         tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")
@@ -181,7 +179,9 @@ async def create_chat_completion(
         raise
     except Exception as e:
         logger.error("chat_completion_failed", error=str(e), tenant_id=request.tenant_id)
-        raise ApiError(status_code=500, code="CHAT_COMPLETION_FAILED", message="Chat completion failed")
+        raise ApiError(
+            status_code=500, code="CHAT_COMPLETION_FAILED", message="Chat completion failed"
+        )
 
 
 @router.post(

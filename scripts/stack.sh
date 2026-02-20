@@ -2,11 +2,10 @@
 
 set -euo pipefail
 
-BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUN_DIR="$BASE_DIR/.run"
-LOG_DIR="$BASE_DIR/.logs"
-
-RAG_DIR="$BASE_DIR"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RAG_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+RUN_DIR="$SCRIPT_DIR/.run"
+LOG_DIR="$SCRIPT_DIR/.logs"
 
 mkdir -p "$RUN_DIR" "$LOG_DIR"
 
@@ -19,8 +18,8 @@ RAG_WORKER_LOG="$LOG_DIR/rag-worker.log"
 COMMUNITY_WORKER_LOG="$LOG_DIR/community-worker.log"
 
 load_root_env() {
-  local env_local="$BASE_DIR/.env.local"
-  local env_file="$BASE_DIR/.env"
+  local env_local="$RAG_DIR/.env.local"
+  local env_file="$RAG_DIR/.env"
 
   set -a
   if [ -f "$env_file" ]; then
@@ -143,8 +142,8 @@ start_all() {
   : > "$RAG_API_LOG"
   : > "$RAG_WORKER_LOG"
   : > "$COMMUNITY_WORKER_LOG"
-  start_process "RAG API" "./start_api.sh" "$RAG_DIR" "$RAG_API_PID_FILE" "$RAG_API_LOG"
-  start_process "RAG Worker" "./start_worker.sh" "$RAG_DIR" "$RAG_WORKER_PID_FILE" "$RAG_WORKER_LOG"
+  start_process "RAG API" "./scripts/start_api.sh" "$RAG_DIR" "$RAG_API_PID_FILE" "$RAG_API_LOG"
+  start_process "RAG Worker" "./scripts/start_worker.sh" "$RAG_DIR" "$RAG_WORKER_PID_FILE" "$RAG_WORKER_LOG"
   start_process "Community Worker" "venv/bin/python -m app.workers.community_worker" "$RAG_DIR" "$COMMUNITY_WORKER_PID_FILE" "$COMMUNITY_WORKER_LOG"
 }
 

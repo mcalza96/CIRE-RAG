@@ -3,7 +3,8 @@ import os
 import sys
 
 # Ensure app module is in path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Ensure project root is in path (one level up from scripts/)
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.worker import IngestionWorker
 from app.core.settings import settings

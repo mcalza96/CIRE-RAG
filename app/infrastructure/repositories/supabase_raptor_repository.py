@@ -1,5 +1,6 @@
 import logging
 from uuid import UUID, NAMESPACE_URL, uuid5
+
 from app.domain.repositories.raptor_repository import IRaptorRepository
 from app.domain.raptor_schemas import SummaryNode
 
@@ -24,6 +25,25 @@ class SupabaseRaptorRepository(IRaptorRepository):
 
     async def save_summary_node(self, node: SummaryNode) -> None:
         """Persist a summary node to Supabase."""
+        await self.save_summary_nodes([node])
+
+    async def save_summary_nodes(self, nodes: list[SummaryNode]) -> None:
+        """Persist multiple summary nodes to Supabase with batched upserts."""
+        if not nodes:
+            return
+
+        try:
+            client = await self.get_client()
+            regulatory_rows = [self._to_regulatory_node_row(node) for node in nodes]
+            await client.table("regulatory_nodes").upsert(regulatory_rows).execute()
+            await self._mirror_summaries_into_knowledge_graph(client=client, nodes=nodes)
+            logger.debug("Persisted %s summary nodes", len(nodes))
+        except Exception as e:
+            logger.error("Failed to persist %s summary nodes: %s", len(nodes), e)
+            raise
+
+    @staticmethod
+    def _to_regulatory_node_row(node: SummaryNode) -> dict:
         section_node_id = str(node.section_node_id) if node.section_node_id else None
         data = {
             "id": str(node.id),
@@ -48,26 +68,17 @@ class SupabaseRaptorRepository(IRaptorRepository):
 
         if node.source_document_id:
             data["source_document_id"] = str(node.source_document_id)
-
-        try:
-            client = await self.get_client()
-            await client.table("regulatory_nodes").upsert(data).execute()
-            await self._mirror_summary_into_knowledge_graph(client=client, node=node)
-            logger.debug(f"Persisted summary node {node.id} at level {node.level}")
-        except Exception as e:
-            logger.error(f"Failed to persist summary node {node.id}: {e}")
-            raise
+        return data
 
     @staticmethod
     def _edge_id(source_id: str, target_id: str, relation_type: str) -> str:
         return str(uuid5(NAMESPACE_URL, f"raptor-edge:{source_id}:{target_id}:{relation_type}"))
 
-    async def _mirror_summary_into_knowledge_graph(self, client, node: SummaryNode) -> None:
-        """Mirror RAPTOR summaries into knowledge graph tables for graph retrieval."""
+    @staticmethod
+    def _to_kg_entity_row(node: SummaryNode) -> dict:
         summary_id = str(node.id)
         tenant_id = str(node.tenant_id)
-
-        entity_row = {
+        return {
             "id": summary_id,
             "tenant_id": tenant_id,
             "name": node.title,
@@ -86,7 +97,10 @@ class SupabaseRaptorRepository(IRaptorRepository):
                 "section_node_id": str(node.section_node_id) if node.section_node_id else None,
             },
         }
-        await client.table("knowledge_entities").upsert(entity_row, on_conflict="id").execute()
+
+    def _to_kg_relation_rows(self, node: SummaryNode) -> list[dict]:
+        summary_id = str(node.id)
+        tenant_id = str(node.tenant_id)
 
         relation_rows: list[dict] = []
         if node.section_node_id:
@@ -116,6 +130,22 @@ class SupabaseRaptorRepository(IRaptorRepository):
                     "metadata": {"source": "raptor_hierarchy"},
                 }
             )
+
+        return relation_rows
+
+    async def _mirror_summaries_into_knowledge_graph(
+        self, client, nodes: list[SummaryNode]
+    ) -> None:
+        """Mirror RAPTOR summaries into knowledge graph tables for graph retrieval."""
+        if not nodes:
+            return
+
+        entity_rows = [self._to_kg_entity_row(node) for node in nodes]
+        await client.table("knowledge_entities").upsert(entity_rows, on_conflict="id").execute()
+
+        relation_rows: list[dict] = []
+        for node in nodes:
+            relation_rows.extend(self._to_kg_relation_rows(node))
 
         if relation_rows:
             await (

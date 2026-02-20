@@ -19,10 +19,23 @@ class JinaEmbeddingService:
     Handles caching, provider selection (Cloud vs Local), and metrics.
     """
 
+    _instance: Optional["JinaEmbeddingService"] = None
+    _instance_lock = threading.Lock()
+
+    @classmethod
+    def get_instance(cls) -> "JinaEmbeddingService":
+        if cls._instance is None:
+            with cls._instance_lock:
+                if cls._instance is None:
+                    cls._instance = cls()
+        return cls._instance
+
     def __init__(self):
+        if getattr(self, "_initialized", False):
+            return
         self._lock = threading.Lock()
         with self._lock:
-            if self._initialized:
+            if getattr(self, "_initialized", False):
                 return
 
             self.local_provider: Optional[IEmbeddingProvider] = None
@@ -96,7 +109,6 @@ class JinaEmbeddingService:
             self._embedding_semaphore = asyncio.Semaphore(self.embedding_concurrency)
 
             self._initialized = True
-
 
     def _build_local_provider(self) -> IEmbeddingProvider:
         try:
@@ -377,7 +389,9 @@ class JinaEmbeddingService:
                 )
                 return cast(List[List[float]], final_embeddings)
 
-            logger.error("embedding_generation_failed", error=str(e), texts_count=len(texts), exc_info=True)
+            logger.error(
+                "embedding_generation_failed", error=str(e), texts_count=len(texts), exc_info=True
+            )
             raise e
 
     @track_span(name="span:late_chunking")
