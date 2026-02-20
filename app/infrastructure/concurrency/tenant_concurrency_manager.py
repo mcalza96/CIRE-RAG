@@ -1,13 +1,20 @@
 import asyncio
+from contextlib import asynccontextmanager
 import structlog
-from typing import Dict, Set
+from typing import AsyncIterator, Dict, Set
 
 logger = structlog.get_logger(__name__)
+
+
+class AlreadyProcessingError(RuntimeError):
+    """Raised when a document is already locked by another worker."""
+
 
 class TenantConcurrencyManager:
     """
     Manages concurrency limits and active job tracking per tenant.
     """
+
     def __init__(self, per_tenant_limit: int):
         self.per_tenant_limit = per_tenant_limit
         self._tenant_semaphores: Dict[str, asyncio.Semaphore] = {}
@@ -50,6 +57,30 @@ class TenantConcurrencyManager:
     async def get_active_jobs_count(self, tenant_id: str) -> int:
         async with self._tenant_active_jobs_lock:
             return self._tenant_active_jobs.get(tenant_id, 0)
+
+    @asynccontextmanager
+    async def tenant_slot(
+        self,
+        *,
+        record: dict,
+        doc_id: str,
+        global_semaphore: asyncio.Semaphore,
+    ) -> AsyncIterator[str]:
+        tenant_key = self.resolve_tenant_key(record)
+        if not await self.try_acquire_doc_lock(doc_id):
+            raise AlreadyProcessingError(str(doc_id))
+
+        try:
+            async with global_semaphore:
+                tenant_sem = await self.get_semaphore(tenant_key)
+                async with tenant_sem:
+                    await self.increment_active_jobs(tenant_key)
+                    try:
+                        yield tenant_key
+                    finally:
+                        await self.decrement_active_jobs(tenant_key)
+        finally:
+            await self.release_doc_lock(doc_id)
 
     def resolve_tenant_key(self, record: dict) -> str:
         tenant_id = record.get("institution_id")

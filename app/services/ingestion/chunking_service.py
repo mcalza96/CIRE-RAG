@@ -1,6 +1,10 @@
 import structlog
 from typing import List, Dict, Any, Optional
-from uuid import NAMESPACE_URL, uuid5
+from app.services.ingestion.chunking.identity_service import ChunkIdentityService
+from app.services.ingestion.chunking.splitter_strategies import (
+    RecursiveTextSplitter,
+    SemanticHeadingSplitter,
+)
 from app.services.ingestion.pdf_parser import PdfParserService
 from app.services.ingestion.structure_mapper import StructureMapper
 from app.schemas.ingestion import IngestionMetadata
@@ -14,8 +18,6 @@ import re
 logger = structlog.get_logger(__name__)
 
 
-_ISO_DOC_PATTERN = re.compile(r"\bISO\s*[-:_]?\s*(\d{4,5})\b", re.IGNORECASE)
-_NOM_ISO_DOC_PATTERN = re.compile(r"\bNOM\s*[-_ ]?ISO\s*[-_ ]?(\d{4,5})\b", re.IGNORECASE)
 _TOC_DOT_LEADER_LINE = re.compile(r"^\s*.+\.{3,}\s*\d+\s*$", re.MULTILINE)
 _TOC_CLAUSE_REF = re.compile(r"\b\d+(?:\.\d+){1,4}\b")
 _ISO_FOOTER_RE = re.compile(
@@ -32,46 +34,6 @@ _FRONTMATTER_HINTS = (
     "no podrá reproducirse",
     "iso copyright office",
 )
-
-
-def _infer_document_standards(metadata: IngestionMetadata) -> list[str]:
-    candidates: list[str] = []
-    nested = metadata.metadata if isinstance(metadata.metadata, dict) else {}
-    for key in ("source_standard", "standard", "scope"):
-        raw = nested.get(key)
-        if isinstance(raw, str) and raw.strip():
-            candidates.append(raw.strip())
-    raw_many = nested.get("source_standards")
-    if isinstance(raw_many, list):
-        for item in raw_many:
-            if isinstance(item, str) and item.strip():
-                candidates.append(item.strip())
-
-    for text in (
-        metadata.title,
-        str(nested.get("filename") or ""),
-        str(nested.get("storage_path") or ""),
-    ):
-        if not text:
-            continue
-        for match in _ISO_DOC_PATTERN.findall(text):
-            candidates.append(f"ISO {match}")
-        for match in _NOM_ISO_DOC_PATTERN.findall(text):
-            candidates.append(f"ISO {match}")
-
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for item in candidates:
-        m = re.search(r"\b(?:ISO\s*[-:_]?\s*)?(\d{4,5})\b", item, flags=re.IGNORECASE)
-        if m:
-            canon = f"ISO {m.group(1)}"
-        else:
-            canon = item.strip().upper()
-        if not canon or canon in seen:
-            continue
-        seen.add(canon)
-        normalized.append(canon)
-    return normalized
 
 
 class LateChunkResult(BaseModel):
@@ -100,8 +62,20 @@ class LateChunkResult(BaseModel):
 
 
 class ChunkingService:
-    def __init__(self, parser: PdfParserService):
+    def __init__(
+        self,
+        parser: PdfParserService,
+        *,
+        recursive_splitter: Optional[RecursiveTextSplitter] = None,
+        semantic_splitter: Optional[SemanticHeadingSplitter] = None,
+        identity_service: Optional[ChunkIdentityService] = None,
+    ):
         self.parser = parser
+        self.recursive_splitter = recursive_splitter or RecursiveTextSplitter()
+        self.semantic_splitter = semantic_splitter or SemanticHeadingSplitter(
+            self.recursive_splitter
+        )
+        self.identity_service = identity_service or ChunkIdentityService()
 
     def split_text(self, text: str, max_chars: int) -> List[str]:
         """
@@ -337,175 +311,12 @@ class ChunkingService:
         return ""
 
     def split_by_headings(self, markdown_text: str, max_chars: int = 4000) -> List[Dict[str, Any]]:
-        """
-        Splits markdown by heading boundaries (##, ###, ####), respecting max_chars.
-
-        Returns a list of section dicts:
-        [{"content": str, "heading_path": str, "char_start": int, "char_end": int}]
-
-        If a section exceeds max_chars, it is sub-split at paragraph boundaries (\n\n).
-        """
-        # Split on markdown headings (## and deeper) or Bold numbered headings (e.g. **1. TITLE**)
-        heading_pattern = re.compile(r"^(?:#{2,4}|(?:\d+\.)+)\s+(.+)", re.MULTILINE)
-
-        sections: List[Dict[str, Any]] = []
-        matches = list(heading_pattern.finditer(markdown_text))
-
-        if not matches:
-            # No headings found: fall back to paragraph-based splitting
-            return self._split_by_paragraphs(markdown_text, max_chars)
-
-        # Handle text before first heading
-        if matches[0].start() > 0:
-            preamble = markdown_text[: matches[0].start()].strip()
-            if preamble:
-                sections.append(
-                    {
-                        "content": preamble,
-                        "heading_path": "[Preámbulo]",
-                        "char_start": 0,
-                        "char_end": matches[0].start(),
-                    }
-                )
-
-        # Process each heading section
-        heading_stack: List[str] = []
-
-        for i, match in enumerate(matches):
-            level = 2  # Default for numbered headings
-            if match.group(0).startswith("#"):
-                hash_match = re.match(r"^#+", match.group(0))
-                if hash_match:
-                    level = len(hash_match.group(0))
-
-            title = match.group(1).strip()
-
-            # Build heading path (breadcrumb)
-            # Trim stack to current level
-            heading_stack = heading_stack[: level - 2]  # offset by 2 since ## is level 2
-            heading_stack.append(title)
-            heading_path = " > ".join(heading_stack)
-
-            # Extract section content (from this heading to next heading)
-            section_start = match.start()
-            section_end = matches[i + 1].start() if i + 1 < len(matches) else len(markdown_text)
-            section_content = markdown_text[section_start:section_end].strip()
-
-            if not section_content:
-                continue
-
-            # If section exceeds max_chars, sub-split at paragraph boundaries
-            if len(section_content) > max_chars:
-                sub_sections = self._split_long_section(
-                    section_content, heading_path, section_start, max_chars
-                )
-                sections.extend(sub_sections)
-            else:
-                sections.append(
-                    {
-                        "content": section_content,
-                        "heading_path": heading_path,
-                        "char_start": section_start,
-                        "char_end": section_end,
-                    }
-                )
-
+        sections = self.semantic_splitter.split(markdown_text, max_chars=max_chars)
         logger.info("heading_split_complete", total_sections=len(sections))
         return sections
 
-    def _split_long_section(
-        self, content: str, heading_path: str, base_offset: int, max_chars: int
-    ) -> List[Dict[str, Any]]:
-        """Sub-splits an oversized section at paragraph boundaries."""
-        paragraphs = content.split("\n\n")
-        chunks: List[Dict[str, Any]] = []
-        current_chunk = ""
-        chunk_start = base_offset
-        part_num = 0
-
-        for para in paragraphs:
-            if current_chunk and len(current_chunk) + len(para) + 2 > max_chars:
-                part_num += 1
-                chunks.append(
-                    {
-                        "content": current_chunk.strip(),
-                        "heading_path": f"{heading_path} (parte {part_num})",
-                        "char_start": chunk_start,
-                        "char_end": chunk_start + len(current_chunk),
-                    }
-                )
-                chunk_start += len(current_chunk) + 2
-                current_chunk = para
-            else:
-                current_chunk += ("\n\n" if current_chunk else "") + para
-
-        if current_chunk.strip():
-            part_num += 1
-            chunks.append(
-                {
-                    "content": current_chunk.strip(),
-                    "heading_path": f"{heading_path} (parte {part_num})"
-                    if part_num > 1
-                    else heading_path,
-                    "char_start": chunk_start,
-                    "char_end": chunk_start + len(current_chunk),
-                }
-            )
-
-        return chunks
-
     def _split_by_paragraphs(self, text: str, max_chars: int) -> List[Dict[str, Any]]:
-        """Fallback: split by paragraph boundaries when no headings exist."""
-        paragraphs = text.split("\n\n")
-        chunks: List[Dict[str, Any]] = []
-        current_chunk = ""
-        chunk_start = 0
-
-        for para in paragraphs:
-            # SAFETY: If a single paragraph is too large, split it by characters
-            if len(para) > max_chars:
-                sub_paras = [para[i : i + max_chars] for i in range(0, len(para), max_chars)]
-                for sp in sub_paras:
-                    if current_chunk and len(current_chunk) + len(sp) + 2 > max_chars:
-                        chunks.append(
-                            {
-                                "content": current_chunk.strip(),
-                                "heading_path": "",
-                                "char_start": chunk_start,
-                                "char_end": chunk_start + len(current_chunk),
-                            }
-                        )
-                        chunk_start += len(current_chunk) + 2
-                        current_chunk = sp
-                    else:
-                        current_chunk += ("\n\n" if current_chunk else "") + sp
-                continue
-
-            if current_chunk and len(current_chunk) + len(para) + 2 > max_chars:
-                chunks.append(
-                    {
-                        "content": current_chunk.strip(),
-                        "heading_path": "",
-                        "char_start": chunk_start,
-                        "char_end": chunk_start + len(current_chunk),
-                    }
-                )
-                chunk_start += len(current_chunk) + 2
-                current_chunk = para
-            else:
-                current_chunk += ("\n\n" if current_chunk else "") + para
-
-        if current_chunk.strip():
-            chunks.append(
-                {
-                    "content": current_chunk.strip(),
-                    "heading_path": "",
-                    "char_start": chunk_start,
-                    "char_end": chunk_start + len(current_chunk),
-                }
-            )
-
-        return chunks
+        return self.recursive_splitter.split(text, max_chars=max_chars)
 
     def assemble_chunk(
         self,
@@ -568,7 +379,7 @@ class ChunkingService:
         }
         base_metadata.update(enriched_metadata)
 
-        inferred_standards = _infer_document_standards(metadata)
+        inferred_standards = self.identity_service.infer_document_standards(metadata)
         if inferred_standards and not str(base_metadata.get("source_standard") or "").strip():
             base_metadata["source_standard"] = inferred_standards[0]
             base_metadata.setdefault("scope", inferred_standards[0])
@@ -588,15 +399,7 @@ class ChunkingService:
 
     @staticmethod
     def _resolve_section_node_id(source_id: Any, structure_context: dict[str, Any]) -> str | None:
-        if not isinstance(structure_context, dict):
-            return None
-        section_ref = str(structure_context.get("section_ref") or "").strip()
-        if not section_ref:
-            return None
-        source_text = str(source_id or "").strip()
-        if not source_text:
-            return None
-        return str(uuid5(NAMESPACE_URL, f"doc-structure:{source_text}:{section_ref}"))
+        return ChunkIdentityService.resolve_section_node_id(source_id, structure_context)
 
     @staticmethod
     def _classify_chunk_role(content: str) -> dict[str, Any]:

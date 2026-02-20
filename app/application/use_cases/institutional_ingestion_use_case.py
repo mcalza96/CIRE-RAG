@@ -1,4 +1,3 @@
-import math
 from typing import Dict, Any, Optional
 import structlog
 import os
@@ -8,6 +7,8 @@ from app.infrastructure.repositories.supabase_source_repository import SupabaseS
 from app.infrastructure.services.manual_ingestion_query_service import (
     ManualIngestionQueryService,
 )
+from app.application.services.ingestion_backpressure_service import IngestionBackpressureService
+from app.application.services.ingestion_batch_service import IngestionBatchService
 from app.core.observability.correlation import get_correlation_id
 from app.services.database.taxonomy_manager import TaxonomyManager
 from app.core.settings import settings
@@ -19,65 +20,45 @@ logger = structlog.get_logger(__name__)
 class InstitutionalIngestionUseCase:
     """
     Use Case for Institutional Ingestion.
-    
+
     DEPRECATED: The old LangGraph pipeline (institutional_ingest/nodes.py) is replaced
     by the unified PreProcessedContentStrategy which uses heading-based semantic chunking.
     """
+
     def __init__(
         self,
         repo: Optional[SupabaseSourceRepository] = None,
-        taxonomy_manager: Optional[TaxonomyManager] = None,
         query_service: Optional[ManualIngestionQueryService] = None,
+        taxonomy_manager: Optional[TaxonomyManager] = None,
+        backpressure_service: Optional[IngestionBackpressureService] = None,
+        batch_service: Optional[IngestionBatchService] = None,
     ):
         self.repo = repo or SupabaseSourceRepository()
-        self.taxonomy_manager = taxonomy_manager or TaxonomyManager()
-        self.query_service = query_service or ManualIngestionQueryService()
+        shared_query = query_service or ManualIngestionQueryService()
+        shared_taxonomy = taxonomy_manager or TaxonomyManager()
+        self.batch_service = batch_service or IngestionBatchService(shared_query, shared_taxonomy)
+        self.query_service = self.batch_service.query_service
+        self.taxonomy_manager = self.batch_service.taxonomy_manager
+        self.backpressure = backpressure_service or IngestionBackpressureService(self.query_service)
 
-    async def _get_pending_snapshot(self, tenant_id: str) -> Dict[str, Optional[int]]:
-        max_pending = int(getattr(settings, "INGESTION_MAX_PENDING_PER_TENANT", 0) or 0)
-        limit = max_pending + 1 if max_pending > 0 else 1000
-        pending_count = await self.query_service.count_pending_documents(
-            tenant_id=str(tenant_id),
-            limit=limit,
-            statuses=["queued", "pending", "pending_ingestion", "processing", "processing_v2"],
-        )
-        docs_per_minute_per_worker = max(1, int(getattr(settings, "INGESTION_DOCS_PER_MINUTE_PER_WORKER", 2) or 2))
-        worker_concurrency = max(1, int(getattr(settings, "WORKER_CONCURRENCY", 1) or 1))
-        throughput_per_minute = docs_per_minute_per_worker * worker_concurrency
-        estimated_wait_seconds = int(math.ceil((pending_count / throughput_per_minute) * 60)) if pending_count > 0 else 0
-
-        return {
-            "queue_depth": pending_count,
-            "max_pending": max_pending if max_pending > 0 else None,
-            "estimated_wait_seconds": estimated_wait_seconds,
-        }
-
-    async def _enforce_pending_limit(self, tenant_id: str) -> Dict[str, Optional[int]]:
-        snapshot = await self._get_pending_snapshot(tenant_id=tenant_id)
-        max_pending = int(snapshot.get("max_pending") or 0)
-        if max_pending <= 0:
-            return snapshot
-
-        pending_count = int(snapshot.get("queue_depth") or 0)
-        if pending_count >= max_pending:
-            raise ValueError(
-                "INGESTION_BACKPRESSURE "
-                f"tenant={tenant_id} pending={pending_count} max={max_pending} "
-                f"eta_seconds={int(snapshot.get('estimated_wait_seconds') or 0)}"
-            )
-
-        return snapshot
-
-    async def execute(self, tenant_id: str, file_path: str, document_id: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def execute(
+        self,
+        tenant_id: str,
+        file_path: str,
+        document_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
         Prepares and queues institutional ingestion for the Worker pipeline.
         This ensures parity with manual ingestion and enables all new tooling:
         Graph enrichment, atomic upsert, metrics, retries, and community jobs.
         """
-        logger.info("trigger_unified_institutional_ingestion", document_id=document_id, tenant_id=tenant_id)
-        
+        logger.info(
+            "trigger_unified_institutional_ingestion", document_id=document_id, tenant_id=tenant_id
+        )
+
         try:
-            await self._enforce_pending_limit(tenant_id=str(tenant_id))
+            await self.backpressure.enforce_limit(tenant_id=str(tenant_id))
 
             # 1. Determine strategy up-front so first QUEUED write already contains it.
             ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
@@ -103,7 +84,9 @@ class InstitutionalIngestionUseCase:
                     merged_metadata["metadata"].update(incoming_nested)
 
             raw_nested_meta = merged_metadata.get("metadata")
-            nested_meta: Dict[str, Any] = raw_nested_meta if isinstance(raw_nested_meta, dict) else {}
+            nested_meta: Dict[str, Any] = (
+                raw_nested_meta if isinstance(raw_nested_meta, dict) else {}
+            )
             nested_meta["strategy_override"] = strategy_key
             nested_meta["embedding_mode"] = (metadata or {}).get("embedding_mode", "LOCAL")
             merged_metadata["metadata"] = nested_meta
@@ -114,7 +97,9 @@ class InstitutionalIngestionUseCase:
                 or merged_metadata.get("collection_id")
                 or nested_meta.get("collection_id")
             )
-            collection_name = merged_metadata.get("collection_name") or nested_meta.get("collection_name")
+            collection_name = merged_metadata.get("collection_name") or nested_meta.get(
+                "collection_name"
+            )
             collection_id = None
             if collection_key:
                 collection = await self.taxonomy_manager.ensure_collection_open(
@@ -139,7 +124,9 @@ class InstitutionalIngestionUseCase:
                 tenant_id=str(tenant_id),
                 metadata=merged_metadata,
                 collection_id=str(collection_id) if collection_id else None,
-                course_id=str((metadata or {}).get("course_id")) if (metadata or {}).get("course_id") else None,
+                course_id=str((metadata or {}).get("course_id"))
+                if (metadata or {}).get("course_id")
+                else None,
             )
 
             logger.info(
@@ -147,7 +134,7 @@ class InstitutionalIngestionUseCase:
                 strategy=strategy_key,
                 extension=ext,
                 tenant_id=tenant_id,
-                document_id=document_id
+                document_id=document_id,
             )
 
             # 3. Ensure document remains queued with latest metadata.
@@ -167,9 +154,9 @@ class InstitutionalIngestionUseCase:
                 "document_id": document_id,
                 "queued": True,
                 "strategy": strategy_key,
-                "queue": await self._get_pending_snapshot(tenant_id=str(tenant_id)),
+                "queue": await self.backpressure.get_pending_snapshot(tenant_id=str(tenant_id)),
             }
-            
+
         except Exception as e:
             logger.error("institutional_ingest_preparation_failed", error=str(e), exc_info=True)
             raise e
