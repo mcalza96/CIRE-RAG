@@ -56,7 +56,20 @@ class RecursiveTextSplitter:
 
 
 class SemanticHeadingSplitter:
-    _heading_pattern = re.compile(r"^(?:#{2,4}|(?:\d+\.)+)\s+(.+)", re.MULTILINE)
+    # Matches:
+    #   - Markdown headings: ## Foo, ### Bar, #### Baz
+    #   - Numbered clauses with trailing dot: 4.1. Context
+    #   - Numbered clauses WITHOUT trailing dot: 4.1 Context, 10.2 Nonconformity
+    #   - Bold numbered clauses: **4.1 Context**
+    #   - Top-level single-digit clauses: 1 Scope (but not arbitrary numbers)
+    _heading_pattern = re.compile(
+        r"^(?:"
+        r"#{2,4}\s+(.+)"           # markdown headings
+        r"|"
+        r"\*{0,2}(\d+(?:\.\d+)*\.?)\s+([A-ZÁÉÍÓÚÑÜ].+?)\*{0,2}"  # numbered clauses (optional bold)
+        r")",
+        re.MULTILINE,
+    )
 
     def __init__(self, fallback_splitter: RecursiveTextSplitter | None = None):
         self.fallback_splitter = fallback_splitter or RecursiveTextSplitter()
@@ -81,13 +94,24 @@ class SemanticHeadingSplitter:
 
         heading_stack: list[str] = []
         for i, match in enumerate(matches):
-            level = 2
-            if match.group(0).startswith("#"):
-                hash_match = re.match(r"^#+", match.group(0))
-                if hash_match:
-                    level = len(hash_match.group(0))
+            raw = match.group(0)
 
-            title = match.group(1).strip()
+            if raw.startswith("#"):
+                # Markdown heading: determine level from hash count
+                hash_match = re.match(r"^#+", raw)
+                level = len(hash_match.group(0)) if hash_match else 2
+                title = (match.group(1) or "").strip()
+            else:
+                # Numbered clause: infer level from dot-separated depth
+                clause_num = (match.group(2) or "").strip().rstrip(".")
+                clause_title = (match.group(3) or "").strip().rstrip("*")
+                depth = clause_num.count(".") + 1  # "4" = 1, "4.1" = 2, "4.1.2" = 3
+                level = depth + 1  # offset so top-level clauses = level 2
+                title = f"{clause_num} {clause_title}"
+
+            if not title:
+                continue
+
             heading_stack = heading_stack[: level - 2]
             heading_stack.append(title)
             heading_path = " > ".join(heading_stack)

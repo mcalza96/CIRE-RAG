@@ -333,6 +333,11 @@ class SupabaseJobStore:
             "temporarily unavailable",
             "connection reset",
             "broken pipe",
+            "502",
+            "503",
+            "504",
+            "bad gateway",
+            "json could not be generated",
         )
         if any(marker in name for marker in transient_markers):
             return True

@@ -655,7 +655,11 @@ class RetrievalBroker:
             requested_scopes = self._requested_scopes_from_context(scope_context)
             rerank_started = time.perf_counter()
             skip_external_rerank = bool(scope_context.get("_skip_external_rerank"))
-            
+
+            # Determine whether to apply local GravityReranker after external rerank.
+            # "local" and "hybrid" modes use GravityReranker; "jina"/"cohere" skip it.
+            use_local = rerank_mode in {"local", "hybrid"}
+
             # Choose the active semantic reranker based on mode
             active_reranker = None
             if not skip_external_rerank:
@@ -723,10 +727,11 @@ class RetrievalBroker:
 
             logger.info(
                 "retrieval_pipeline_timing",
-                stage="jina_rerank",
-                duration_ms=round((time.perf_counter() - jina_started) * 1000, 2),
-                enabled=self.jina_reranker.is_enabled(),
+                stage="rerank",
+                duration_ms=round((time.perf_counter() - rerank_started) * 1000, 2),
                 rerank_mode=rerank_mode,
+                use_local=use_local,
+                external_reranker=active_reranker.__class__.__name__ if active_reranker else "none",
                 candidates=len(results),
                 ranked=len(semantic_ranked),
                 requested_scopes=list(requested_scopes),
@@ -736,7 +741,7 @@ class RetrievalBroker:
 
             if not use_local:
                 if isinstance(trace_payload, dict):
-                    trace_payload["score_space"] = "jina_relevance"
+                    trace_payload["score_space"] = "semantic_relevance"
                 return semantic_ranked[:k]
 
             raw_by_id = {str(item.get("id", "")): item for item in results}

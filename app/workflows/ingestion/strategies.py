@@ -21,7 +21,7 @@ logger = structlog.get_logger(__name__)
 
 
 def _get_container() -> CognitiveContainer:
-    return CognitiveContainer.get_instance()
+    return CognitiveContainer()
 
 
 @dataclass
