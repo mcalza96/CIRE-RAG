@@ -550,6 +550,63 @@ class RetrievalBroker:
             logger.error("raptor_retrieval_failed", error=str(e))
             return []
 
+    async def retrieve_graph_nodes(
+        self,
+        query: str,
+        tenant_id: str,
+        graph_options: dict[str, Any],
+        k: int = 5,
+        collection_id: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """Retrieves purely topological graph context directly via AtomicEngine."""
+        if not query or not tenant_id:
+            return []
+            
+        try:
+            engine = JinaEmbeddingService.get_instance()
+            vectors = await engine.embed_texts([query], task="retrieval.query")
+            if not vectors or not vectors[0]:
+                return []
+                
+            scope_context = {"tenant_id": tenant_id, "collection_id": collection_id}
+            
+            # Use atomic engine to resolve the graph hops directly
+            data = await self.atomic_engine._graph_hop(
+                query_vector=vectors[0],
+                scope_context=scope_context,
+                fetch_k=k * 2,
+                graph_filter_relation_types=graph_options.get("relation_types"),
+                graph_filter_node_types=graph_options.get("node_types"),
+                graph_max_hops=graph_options.get("max_hops") or 2,
+            )
+            
+            # Ensure every row is ownership-stamped for LeakCanary
+            for row in data or []:
+                if not isinstance(row, dict):
+                    continue
+                meta_raw = row.get("metadata")
+                metadata = meta_raw if isinstance(meta_raw, dict) else {}
+                if meta_raw is None or not isinstance(meta_raw, dict):
+                    row["metadata"] = metadata
+                row.setdefault("institution_id", tenant_id)
+                row.setdefault("tenant_id", tenant_id)
+                metadata.setdefault("institution_id", tenant_id)
+                metadata.setdefault("tenant_id", tenant_id)
+                
+            ForensicRecorder.record_retrieval(
+                query,
+                data,
+                {
+                    "scope": "graph_nodes",
+                    "tenant_id": tenant_id,
+                    "collection_id": collection_id,
+                },
+            )
+            return sorted(data, key=lambda x: float(x.get("score") or 0.0), reverse=True)[:k]
+        except Exception as e:
+            logger.error("graph_retrieval_failed", error=str(e))
+            return []
+
     def _resolve_filters(self, query: str, scope_context: Dict[str, Any]) -> Dict[str, Any]:
         scope_type = scope_context.get("type", "institutional")
         filters: Dict[str, Any] = {}

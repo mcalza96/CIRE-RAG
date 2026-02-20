@@ -19,6 +19,7 @@ from app.api.v1.schemas.retrieval_advanced import (
     ExplainedItemDetails,
     ExplainedRetrievalItem,
     ExplainTrace,
+    GraphOptions,
     HybridRetrievalRequest,
     HybridRetrievalResponse,
     HybridTrace,
@@ -48,53 +49,36 @@ from app.domain.retrieval_policy import (
     filter_rows_by_min_score,
     reduce_structural_noise_rows,
 )
+from app.domain.retrieval_validation import (
+    validate_metadata_values,
+    validate_time_range,
+    validate_source_standards,
+    matches_time_range,
+    metadata_keys_matched,
+    _ALLOWED_FILTER_KEYS,
+    _RESERVED_METADATA_KEYS
+)
+from app.domain.retrieval_fusion import fuse_late_results, to_retrieval_items
+from app.domain.retrieval_trace import build_comprehensive_trace
 from app.infrastructure.container import CognitiveContainer
 from app.services.knowledge.knowledge_service import KnowledgeService
 
 logger = structlog.get_logger(__name__)
 
-_ALLOWED_FILTER_KEYS = {"metadata", "time_range", "source_standard", "source_standards"}
-_RESERVED_METADATA_KEYS = {"tenant_id", "institution_id"}
 _SCALAR_TYPES = (str, int, float, bool)
 
 
-def _safe_float(value: Any, *, default: float = 0.0) -> float:
-    """Return a JSON-safe finite float (no NaN/Inf)."""
-
-    try:
-        f = float(value)
-    except Exception:
-        return float(default)
-    return f if math.isfinite(f) else float(default)
-
+from app.domain.retrieval_fusion import extract_row, item_identity, item_clause_refs, _safe_float
 
 def _finite_or_none(value: Any) -> float | None:
-    """Return float(value) if finite; otherwise None."""
-
     try:
         f = float(value)
+        return f if math.isfinite(f) else None
     except Exception:
         return None
-    return f if math.isfinite(f) else None
-
-
-def _coerce_iso8601(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    candidate = str(value).strip()
-    if not candidate:
-        return None
-    if candidate.endswith("Z"):
-        candidate = candidate[:-1] + "+00:00"
-    dt = datetime.fromisoformat(candidate)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
 
 def _extract_row(item: RetrievalItem) -> dict[str, Any]:
-    raw = item.metadata.get("row")
-    return raw if isinstance(raw, dict) else {}
+    return extract_row(item)
 
 
 class RetrievalContractService:
@@ -106,126 +90,25 @@ class RetrievalContractService:
         self._knowledge_service = knowledge_service or KnowledgeService()
         self._retrieval_tools = retrieval_tools
 
-    @staticmethod
-    def _extract_requested_standards(query: str) -> tuple[str, ...]:
-        return extract_requested_standards(query)
-
-    @classmethod
-    def _validate_metadata_values(cls, metadata: Any) -> tuple[dict[str, Any], list[ScopeIssue]]:
-        violations: list[ScopeIssue] = []
-        if metadata is None:
-            return {}, violations
-        if not isinstance(metadata, dict):
-            violations.append(
-                ScopeIssue(
-                    code="INVALID_SCOPE_FILTER",
-                    field="filters.metadata",
-                    message="metadata must be an object",
-                )
-            )
-            return {}, violations
-
-        normalized: dict[str, Any] = {}
-        for key, value in metadata.items():
-            key_str = str(key).strip()
-            if not key_str:
-                violations.append(
-                    ScopeIssue(
-                        code="INVALID_SCOPE_FILTER",
-                        field="filters.metadata",
-                        message="metadata keys must be non-empty",
-                    )
-                )
-                continue
-            if key_str in _RESERVED_METADATA_KEYS:
-                violations.append(
-                    ScopeIssue(
-                        code="INVALID_SCOPE_FILTER",
-                        field=f"filters.metadata.{key_str}",
-                        message="tenant ownership keys are not allowed in metadata filters",
-                    )
-                )
-                continue
-            if isinstance(value, _SCALAR_TYPES):
-                normalized[key_str] = value
-                continue
-            if isinstance(value, list) and all(isinstance(item, _SCALAR_TYPES) for item in value):
-                normalized[key_str] = value
-                continue
-            violations.append(
-                ScopeIssue(
-                    code="INVALID_SCOPE_FILTER",
-                    field=f"filters.metadata.{key_str}",
-                    message="metadata values must be scalar or list of scalars",
-                )
-            )
-        return normalized, violations
+    @property
+    def retrieval_tools(self) -> Any:
+        if self._retrieval_tools is None:
+            from app.infrastructure.container import CognitiveContainer
+            self._retrieval_tools = CognitiveContainer().retrieval_tools
+        return self._retrieval_tools
 
     @staticmethod
-    def _validate_time_range(time_range: Any) -> tuple[dict[str, Any] | None, list[ScopeIssue]]:
-        violations: list[ScopeIssue] = []
-        if time_range is None:
-            return None, violations
-        if not isinstance(time_range, dict):
-            violations.append(
-                ScopeIssue(
-                    code="INVALID_SCOPE_FILTER",
-                    field="filters.time_range",
-                    message="time_range must be an object",
-                )
-            )
-            return None, violations
+    def _validate_metadata_values(metadata: Any) -> tuple[dict[str, Any], list[ScopeIssue]]:
+        return validate_metadata_values(metadata)
 
-        field = str(time_range.get("field") or "").strip()
-        if field not in {"created_at", "updated_at"}:
-            violations.append(
-                ScopeIssue(
-                    code="INVALID_SCOPE_FILTER",
-                    field="filters.time_range.field",
-                    message="field must be 'created_at' or 'updated_at'",
-                )
-            )
+    @staticmethod
+    def _validate_time_range(time_range: Any) -> tuple[dict[str, Any], list[ScopeIssue]]:
+        return validate_time_range(time_range)
 
-        try:
-            dt_from = _coerce_iso8601(time_range.get("from"))
-        except Exception:
-            dt_from = None
-            violations.append(
-                ScopeIssue(
-                    code="INVALID_SCOPE_FILTER",
-                    field="filters.time_range.from",
-                    message="from must be valid ISO-8601 timestamp",
-                )
-            )
-        try:
-            dt_to = _coerce_iso8601(time_range.get("to"))
-        except Exception:
-            dt_to = None
-            violations.append(
-                ScopeIssue(
-                    code="INVALID_SCOPE_FILTER",
-                    field="filters.time_range.to",
-                    message="to must be valid ISO-8601 timestamp",
-                )
-            )
-
-        if dt_from and dt_to and dt_from > dt_to:
-            violations.append(
-                ScopeIssue(
-                    code="INVALID_SCOPE_FILTER",
-                    field="filters.time_range",
-                    message="from must be <= to",
-                )
-            )
-
-        if violations:
-            return None, violations
-
-        return {
-            "field": field,
-            "from": dt_from.isoformat() if dt_from else None,
-            "to": dt_to.isoformat() if dt_to else None,
-        }, []
+    def _validate_source_standards(self, raw_filters: dict[str, Any], violations: list[ScopeIssue]) -> tuple[str | None, list[str]]:
+        source_standard, source_standards, v = validate_source_standards(raw_filters)
+        violations.extend(v)
+        return source_standard, source_standards
 
     def validate_scope(
         self, request: ValidateScopeRequest | HybridRetrievalRequest | ExplainRetrievalRequest
@@ -256,43 +139,7 @@ class RetrievalContractService:
         )
         violations.extend(time_range_violations)
 
-        source_standard = str(raw_filters.get("source_standard") or "").strip() or None
-        source_standards_raw = raw_filters.get("source_standards")
-        source_standards: list[str] = []
-        if source_standards_raw is not None:
-            if not isinstance(source_standards_raw, list):
-                violations.append(
-                    ScopeIssue(
-                        code="INVALID_SCOPE_FILTER",
-                        field="filters.source_standards",
-                        message="source_standards must be a list of strings",
-                    )
-                )
-            else:
-                for value in source_standards_raw:
-                    if not isinstance(value, str) or not value.strip():
-                        violations.append(
-                            ScopeIssue(
-                                code="INVALID_SCOPE_FILTER",
-                                field="filters.source_standards",
-                                message="source_standards entries must be non-empty strings",
-                            )
-                        )
-                        continue
-                    source_standards.append(value.strip())
-                source_standards = list(dict.fromkeys(source_standards))
-
-        if source_standard and source_standard not in source_standards:
-            source_standards.insert(0, source_standard)
-        if not source_standard and source_standards:
-            source_standard = source_standards[0]
-
-        # Enforce mutually exclusive standard selectors to avoid ambiguous filtering.
-        if len(source_standards) > 1:
-            source_standard = None
-        elif len(source_standards) == 1:
-            source_standard = source_standards[0]
-            source_standards = []
+        source_standard, source_standards = self._validate_source_standards(raw_filters, violations)
 
         scope_resolution = self._knowledge_service._resolve_scope(request.query)
         query_scope = QueryScopeSummary(
@@ -369,78 +216,28 @@ class RetrievalContractService:
 
     @staticmethod
     def _to_retrieval_items(rows: list[dict[str, Any]]) -> list[RetrievalItem]:
-        out: list[RetrievalItem] = []
-        for idx, row in enumerate(rows):
-            if not isinstance(row, dict):
-                continue
-            content = str(row.get("content") or "").strip()
-            if not content:
-                continue
-
-            # Use the entire row dictionary as metadata.
-            # This allows the orchestrator to see both top-level filterable fields
-            # and nested structures (like our backfilled 'row' key).
-            out.append(
-                RetrievalItem(
-                    source=str(row.get("source") or f"C{idx + 1}"),
-                    content=content,
-                    score=_safe_float(
-                        row.get("similarity"), default=_safe_float(row.get("score"), default=0.0)
-                    ),
-                    metadata=row,
-                )
-            )
-        return out
-
-    @staticmethod
-    def _rows_from_items(items: list[RetrievalItem]) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        for item in items:
-            row = _extract_row(item)
-            if row:
-                rows.append(row)
-        return rows
-
-    @staticmethod
-    def _normalize_scope_name(value: Any) -> str:
-        return normalize_scope_name(value)
-
-    @classmethod
-    def _scope_clause_key(cls, item: SubQueryRequest) -> str:
-        filters = item.filters
-        scope = cls._normalize_scope_name(filters.source_standard if filters else "")
-        clause_id = ""
-        if filters and isinstance(filters.metadata, dict):
-            clause_id = str(filters.metadata.get("clause_id") or "").strip()
-        if scope and clause_id:
-            return f"scope_clause::{scope}::{clause_id}"
-        normalized_query = re.sub(r"\s+", " ", str(item.query or "").strip().lower())
-        return f"query::{normalized_query}"
+        return to_retrieval_items(rows)
 
     @staticmethod
     def _item_identity(item: RetrievalItem) -> str:
-        row = _extract_row(item)
-        row_id = str(row.get("id") or "").strip()
-        if row_id:
-            return f"row::{row_id}"
-        source = str(item.source or "").strip()
-        content_key = str(item.content or "").strip()[:120]
-        return f"fallback::{source}::{content_key}"
+        return item_identity(item)
 
     @staticmethod
     def _item_clause_refs(item: RetrievalItem) -> set[str]:
-        row = _extract_row(item)
-        refs: set[str] = set()
-        raw_meta = row.get("metadata")
-        metadata = raw_meta if isinstance(raw_meta, dict) else {}
-        clause_id = str(metadata.get("clause_id") or row.get("clause_id") or "").strip()
-        if clause_id:
-            refs.add(clause_id)
-        raw_clause_refs = metadata.get("clause_refs")
-        if isinstance(raw_clause_refs, list):
-            refs.update(str(val).strip() for val in raw_clause_refs if str(val).strip())
-        refs.update(extract_clause_refs(str(item.content or "")))
-        return refs
+        return item_clause_refs(item)
+
+    @staticmethod
+    def _scope_clause_key(item: SubQueryRequest) -> str:
+        """Deterministic key for deduplicating identical subquery intents."""
+        filters = item.filters
+        standard = normalize_scope_name(filters.source_standard if filters else "")
+        clause_id = ""
+        if filters and isinstance(filters.metadata, dict):
+            clause_id = str(filters.metadata.get("clause_id") or "").strip()
+        if standard and clause_id:
+            return f"scope_clause::{standard}::{clause_id}"
+        normalized_query = re.sub(r"\s+", " ", str(item.query or "").strip().lower())
+        return f"query::{normalized_query}"
 
     @classmethod
     def _missing_scopes(
@@ -450,15 +247,8 @@ class RetrievalContractService:
         requested_standards: list[str],
         require_all_scopes: bool,
     ) -> list[str]:
-        if not require_all_scopes or not requested_standards:
-            return []
-        present: set[str] = set()
-        for item in items:
-            row = _extract_row(item)
-            scope = normalize_scope_name(extract_row_scope(row))
-            if scope:
-                present.add(scope)
-        return [scope for scope in requested_standards if scope not in present]
+        from app.domain.retrieval_fusion import missing_scopes
+        return missing_scopes(items=items, requested_standards=requested_standards, require_all_scopes=require_all_scopes)
 
     @classmethod
     def _missing_clause_refs(
@@ -468,40 +258,8 @@ class RetrievalContractService:
         query_clause_refs: list[str],
         min_clause_refs_required: int,
     ) -> list[str]:
-        if min_clause_refs_required <= 0 or not query_clause_refs:
-            return []
-        query_clause_set = {
-            str(clause).strip() for clause in query_clause_refs if str(clause).strip()
-        }
-        if not query_clause_set:
-            return []
-        covered: set[str] = set()
-        for item in items:
-            covered.update(cls._item_clause_refs(item))
-        missing = [cl for cl in query_clause_refs if cl not in covered]
-        missing = list(dict.fromkeys(missing))
-        return missing if len(query_clause_set - covered) >= min_clause_refs_required else []
-
-    @classmethod
-    def _merge_retrieval_items(
-        cls,
-        *,
-        primary: list[RetrievalItem],
-        secondary: list[RetrievalItem],
-        top_k: int,
-    ) -> list[RetrievalItem]:
-        merged_by_id: dict[str, RetrievalItem] = {}
-        for item in [*primary, *secondary]:
-            item_id = cls._item_identity(item)
-            existing = merged_by_id.get(item_id)
-            if existing is None or float(item.score or 0.0) > float(existing.score or 0.0):
-                merged_by_id[item_id] = item
-        merged = sorted(
-            merged_by_id.values(),
-            key=lambda item: float(item.score or 0.0),
-            reverse=True,
-        )
-        return merged[: max(1, int(top_k))]
+        from app.domain.retrieval_fusion import missing_clause_refs
+        return missing_clause_refs(items=items, query_clause_refs=query_clause_refs, min_clause_refs_required=min_clause_refs_required)
 
     @staticmethod
     def _apply_retrieval_policy_to_items(
@@ -510,109 +268,88 @@ class RetrievalContractService:
         min_score: float | None,
         noise_reduction: bool,
     ) -> tuple[list[RetrievalItem], dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        for item in items:
-            row = {
-                "source": item.source,
-                "content": item.content,
-                "score": float(item.score or 0.0),
-                "similarity": float(item.score or 0.0),
-                "metadata": dict(item.metadata or {}),
-            }
-            rows.append(row)
-
-        policy_trace: dict[str, Any] = {}
-        rows, min_score_trace = filter_rows_by_min_score(rows, min_score=min_score)
-        policy_trace["min_score"] = min_score_trace
-
-        if noise_reduction:
-            rows, noise_trace = reduce_structural_noise_rows(rows)
-            policy_trace["noise_reduction"] = noise_trace
-        else:
-            policy_trace["noise_reduction"] = {"applied": False, "reason": "disabled"}
-
-        out_items: list[RetrievalItem] = []
-        for idx, row in enumerate(rows):
-            if not isinstance(row, dict):
-                continue
-            content = str(row.get("content") or "").strip()
-            if not content:
-                continue
-            metadata_raw = row.get("metadata")
-            metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
-            out_items.append(
-                RetrievalItem(
-                    source=str(row.get("source") or f"C{idx + 1}"),
-                    content=content,
-                    score=_safe_float(row.get("score"), default=0.0),
-                    metadata=metadata,
-                )
-            )
-        return out_items, policy_trace
+        from app.domain.retrieval_fusion import apply_retrieval_policy_to_items
+        return apply_retrieval_policy_to_items(items, min_score=min_score, noise_reduction=noise_reduction)
 
     @classmethod
-    def _build_comprehensive_subqueries(
+    def _fuse_late_results(
         cls,
         *,
-        request: ComprehensiveRetrievalRequest,
-        missing_scopes: list[str],
-        missing_clause_refs: list[str],
-    ) -> list[SubQueryRequest]:
-        filters_payload = (
-            request.filters.model_dump(mode="python", by_alias=True, exclude_none=True)
-            if request.filters
-            else {}
-        )
+        chunks: list[RetrievalItem],
+        graph: list[RetrievalItem],
+        raptor: list[RetrievalItem],
+        k: int,
+    ) -> list[RetrievalItem]:
+        return fuse_late_results(chunks=chunks, graph=graph, raptor=raptor, k=k)
 
-        subqueries: list[SubQueryRequest] = []
-        for idx, scope in enumerate(missing_scopes, start=1):
-            scoped_filters = dict(filters_payload)
-            scoped_filters["source_standard"] = scope
-            scoped_filters.pop("source_standards", None)
-            scope_filters_model = ScopeFilters.model_validate(scoped_filters)
-            subqueries.append(
-                SubQueryRequest(
-                    id=f"repair_scope_{idx}",
-                    query=f"{request.query} {scope}",
-                    k=max(4, int(request.k)),
-                    fetch_k=max(20, int(request.fetch_k)),
-                    filters=scope_filters_model,
-                )
+    async def _pipeline_chunks(
+        self, 
+        request: HybridRetrievalRequest, 
+        trace_warnings: list[str]
+    ) -> list[RetrievalItem]:
+        try:
+            res = await self.run_hybrid(request)
+            items = res.items
+            for item in items:
+                item.metadata["fusion_source"] = "chunks"
+            return items, res.trace.model_dump()
+        except Exception as e:
+            trace_warnings.append(f"chunks_pipeline_failed:{str(e)[:160]}")
+            return [], {}
+
+    async def _pipeline_graph(
+        self,
+        query: str,
+        tenant_id: str,
+        collection_id: str | None,
+        graph_options: dict[str, Any],
+        k: int,
+        trace_warnings: list[str]
+    ) -> list[RetrievalItem]:
+        try:
+            raw_nodes = await self.retrieval_tools.retrieve_graph_nodes(
+                query=query,
+                tenant_id=tenant_id,
+                graph_options=graph_options,
+                k=k,
+                collection_id=collection_id,
             )
+            items = self._to_retrieval_items(raw_nodes)
+            for item in items:
+                item.metadata["fusion_source"] = "graph"
+            return items
+        except Exception as e:
+            trace_warnings.append(f"graph_pipeline_failed:{str(e)[:160]}")
+            return []
 
-        for idx, clause in enumerate(missing_clause_refs[:2], start=1):
-            clause_filters = dict(filters_payload)
-            metadata_raw = clause_filters.get("metadata")
-            metadata = dict(metadata_raw) if isinstance(metadata_raw, dict) else {}
-            metadata["clause_id"] = clause
-            clause_filters["metadata"] = metadata
-            clause_filters_model = ScopeFilters.model_validate(clause_filters)
-            subqueries.append(
-                SubQueryRequest(
-                    id=f"repair_clause_{idx}",
-                    query=f"{request.query} clausula {clause}",
-                    k=max(4, int(request.k)),
-                    fetch_k=max(20, int(request.fetch_k)),
-                    filters=clause_filters_model,
-                )
+    async def _pipeline_raptor(
+        self,
+        query: str,
+        tenant_id: str,
+        collection_id: str | None,
+        k: int,
+        trace_warnings: list[str]
+    ) -> list[RetrievalItem]:
+        try:
+            raw_summaries = await self.retrieval_tools.retrieve_summaries(
+                query=query,
+                tenant_id=tenant_id,
+                k=k,
+                collection_id=collection_id,
             )
-
-        deduped: list[SubQueryRequest] = []
-        seen: set[str] = set()
-        for sq in subqueries:
-            key = cls._scope_clause_key(sq)
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(sq)
-        return deduped[:8]
+            items = self._to_retrieval_items(raw_summaries)
+            for item in items:
+                item.metadata["fusion_source"] = "raptor"
+            return items
+        except Exception as e:
+            trace_warnings.append(f"raptor_pipeline_failed:{str(e)[:160]}")
+            return []
 
     async def run_comprehensive(
         self,
         request: ComprehensiveRetrievalRequest,
     ) -> ComprehensiveRetrievalResponse:
         started = time.perf_counter()
-        coverage = request.coverage_requirements
         retrieval_policy = request.retrieval_policy
         hints_payload = (
             [hint.model_dump(mode="python") for hint in retrieval_policy.search_hints]
@@ -620,209 +357,110 @@ class RetrievalContractService:
             else []
         )
         expanded_query, hint_trace = apply_search_hints(request.query, hints_payload)
-        query_scopes = list(extract_requested_standards(request.query))
-        requested_scopes_raw = list(coverage.requested_standards) if coverage else []
-        requested_scopes = [
-            normalize_scope_name(scope) for scope in [*requested_scopes_raw, *query_scopes]
-        ]
-        requested_scopes = [scope for scope in requested_scopes if scope]
-        requested_scopes = list(dict.fromkeys(requested_scopes))
-        require_all_scopes = (
-            bool(coverage.require_all_scopes) if coverage else len(requested_scopes) >= 2
+        
+        # 1. Preparar Requests
+        chunks_req = HybridRetrievalRequest(
+            query=expanded_query,
+            tenant_id=request.tenant_id,
+            collection_id=request.collection_id,
+            k=request.k,
+            fetch_k=request.fetch_k,
+            filters=request.filters,
+            rerank=RerankOptions(enabled=True),
+            graph=None,
         )
-        min_clause_refs_required = int(coverage.min_clause_refs) if coverage else 0
+        
+        graph_payload = (
+            request.graph.model_dump(mode="python", exclude_none=True)
+            if request.graph is not None
+            else {}
+        )
+        graph_hops_cap = max(1, min(4, int(getattr(settings, "RETRIEVAL_COVERAGE_GRAPH_EXPANSION_MAX_HOPS", 2) or 2)))
+        graph_payload["max_hops"] = max(1, min(4, max(graph_hops_cap, int(graph_payload.get("max_hops") or 0))))
 
-        hybrid = await self.run_hybrid(
-            HybridRetrievalRequest(
-                query=expanded_query,
-                tenant_id=request.tenant_id,
-                collection_id=request.collection_id,
-                k=request.k,
-                fetch_k=request.fetch_k,
-                filters=request.filters,
-                rerank=request.rerank,
-                graph=request.graph,
+        trace_warnings = []
+        
+        # 2. Ejecutar Pipelines Concurrentemente (Late Fusion)
+        results = await asyncio.gather(
+            self._pipeline_chunks(chunks_req, trace_warnings),
+            self._pipeline_graph(
+                expanded_query, request.tenant_id, request.collection_id, 
+                graph_payload, request.k, trace_warnings
+            ),
+            self._pipeline_raptor(
+                expanded_query, request.tenant_id, request.collection_id, 
+                request.k, trace_warnings
             )
         )
+        
+        (chunks_items, chunks_trace), graph_items, raptor_items = results
 
-        query_clause_refs = list(extract_clause_refs(request.query))
-        missing_scopes_before = self._missing_scopes(
-            items=hybrid.items,
-            requested_standards=requested_scopes,
-            require_all_scopes=require_all_scopes,
+        # 3. Ensamblaje determinista (Late Fusion)
+        merged_items = self._fuse_late_results(
+            chunks=chunks_items,
+            graph=graph_items,
+            raptor=raptor_items,
+            k=request.k
         )
-        missing_clause_refs_before = self._missing_clause_refs(
-            items=hybrid.items,
-            query_clause_refs=query_clause_refs,
-            min_clause_refs_required=min_clause_refs_required,
-        )
-
-        coverage_repair_attempted = False
-        coverage_repair_rounds = 0
-        graph_expansion_attempted = False
-        graph_expansion_applied = False
-        merged_items = list(hybrid.items)
-        trace_warnings = list(hybrid.trace.warnings or [])
-
-        if missing_scopes_before or missing_clause_refs_before:
-            coverage_repair_attempted = True
-            subqueries = self._build_comprehensive_subqueries(
-                request=request,
-                missing_scopes=missing_scopes_before,
-                missing_clause_refs=missing_clause_refs_before,
-            )
-            if subqueries:
-                coverage_repair_rounds = 1
-                try:
-                    mq = await self.run_multi_query(
-                        MultiQueryRetrievalRequest(
-                            tenant_id=request.tenant_id,
-                            collection_id=request.collection_id,
-                            queries=subqueries,
-                            merge=MergeOptions(
-                                strategy="rrf",
-                                rrf_k=60,
-                                top_k=max(1, int(request.k)),
-                            ),
-                        )
-                    )
-                    merged_items = self._merge_retrieval_items(
-                        primary=hybrid.items,
-                        secondary=mq.items,
-                        top_k=max(1, int(request.k)),
-                    )
-                except Exception as exc:
-                    trace_warnings.append(f"coverage_repair_failed:{str(exc)[:160]}")
-
-        missing_scopes_intermediate = self._missing_scopes(
-            items=merged_items,
-            requested_standards=requested_scopes,
-            require_all_scopes=require_all_scopes,
-        )
-        missing_clause_refs_intermediate = self._missing_clause_refs(
-            items=merged_items,
-            query_clause_refs=query_clause_refs,
-            min_clause_refs_required=min_clause_refs_required,
-        )
-
-        if bool(getattr(settings, "RETRIEVAL_COVERAGE_GRAPH_EXPANSION_ENABLED", True)) and (
-            missing_scopes_intermediate or missing_clause_refs_intermediate
-        ):
-            graph_expansion_attempted = True
-            graph_hops_cap = max(
-                1,
-                min(
-                    4,
-                    int(getattr(settings, "RETRIEVAL_COVERAGE_GRAPH_EXPANSION_MAX_HOPS", 2) or 2),
-                ),
-            )
-            graph_payload = (
-                request.graph.model_dump(mode="python", exclude_none=True)
-                if request.graph is not None
-                else {}
-            )
-            current_hops = int(graph_payload.get("max_hops") or 0)
-            graph_payload["max_hops"] = max(1, min(4, max(graph_hops_cap, current_hops)))
-            try:
-                graph_hybrid = await self.run_hybrid(
-                    HybridRetrievalRequest.model_validate(
-                        {
-                            "query": expanded_query,
-                            "tenant_id": request.tenant_id,
-                            "collection_id": request.collection_id,
-                            "k": request.k,
-                            "fetch_k": request.fetch_k,
-                            "filters": (
-                                request.filters.model_dump(mode="python", exclude_none=True)
-                                if request.filters is not None
-                                else None
-                            ),
-                            "rerank": (
-                                request.rerank.model_dump(mode="python", exclude_none=True)
-                                if request.rerank is not None
-                                else None
-                            ),
-                            "graph": graph_payload,
-                        }
-                    ),
-                    skip_planner=True,
-                )
-                merged_items = self._merge_retrieval_items(
-                    primary=merged_items,
-                    secondary=graph_hybrid.items,
-                    top_k=max(1, int(request.k)),
-                )
-                graph_expansion_applied = True
-                coverage_repair_attempted = True
-                coverage_repair_rounds += 1
-                trace_warnings.extend(
-                    [
-                        f"graph_expansion:{warning}"
-                        for warning in (graph_hybrid.trace.warnings or [])
-                        if str(warning).strip()
-                    ]
-                )
-            except Exception as exc:
-                trace_warnings.append(f"graph_expansion_failed:{str(exc)[:160]}")
-
-        missing_scopes_after = self._missing_scopes(
-            items=merged_items,
-            requested_standards=requested_scopes,
-            require_all_scopes=require_all_scopes,
-        )
-        missing_clause_refs_after = self._missing_clause_refs(
-            items=merged_items,
-            query_clause_refs=query_clause_refs,
-            min_clause_refs_required=min_clause_refs_required,
-        )
-
+        
         min_score = retrieval_policy.min_score if retrieval_policy is not None else None
-        noise_reduction = (
-            bool(retrieval_policy.noise_reduction) if retrieval_policy is not None else True
-        )
+        noise_reduction = bool(retrieval_policy.noise_reduction) if retrieval_policy is not None else True
         merged_items, policy_trace = self._apply_retrieval_policy_to_items(
             merged_items,
             min_score=min_score,
             noise_reduction=noise_reduction,
         )
 
-        base_trace = hybrid.trace.model_dump()
-        base_trace["score_space"] = (
-            "mixed"
-            if coverage_repair_attempted and coverage_repair_rounds > 0
-            else base_trace.get("score_space")
+        # 4. Construcción de Trace
+        trace = self._build_comprehensive_trace(
+            request=request,
+            merged_items=merged_items,
+            chunks_trace=chunks_trace,
+            graph_items=graph_items,
+            raptor_items=raptor_items,
+            trace_warnings=trace_warnings,
+            hint_trace=hint_trace,
+            policy_trace=policy_trace,
+            min_score=min_score,
+            noise_reduction=noise_reduction,
+            started_at=started
         )
-        base_trace["warnings"] = list(dict.fromkeys(trace_warnings))
-        base_trace["timings_ms"] = {
-            **dict(base_trace.get("timings_ms") or {}),
-            "total": round((time.perf_counter() - started) * 1000, 2),
-        }
-        base_trace["search_hint_expansions"] = hint_trace
 
         return ComprehensiveRetrievalResponse(
             items=merged_items,
-            trace=ComprehensiveTrace(
-                **base_trace,
-                coverage_repair_attempted=coverage_repair_attempted,
-                coverage_repair_rounds=coverage_repair_rounds,
-                missing_scopes_before=missing_scopes_before,
-                missing_scopes_after=missing_scopes_after,
-                missing_clause_refs_before=missing_clause_refs_before,
-                missing_clause_refs_after=missing_clause_refs_after,
-                coverage_policy={
-                    "requested_standards": requested_scopes,
-                    "require_all_scopes": require_all_scopes,
-                    "min_clause_refs": min_clause_refs_required,
-                    "graph_expansion_attempted": graph_expansion_attempted,
-                    "graph_expansion_applied": graph_expansion_applied,
-                },
-                retrieval_policy={
-                    "min_score": min_score,
-                    "noise_reduction": noise_reduction,
-                    "search_hints_applied": hint_trace,
-                    "filtering": policy_trace,
-                },
-            ),
+            trace=trace,
+            latency_ms=round((time.perf_counter() - started) * 1000, 2),
+        )
+
+    def _build_comprehensive_trace(
+        self,
+        *,
+        request: ComprehensiveRetrievalRequest,
+        merged_items: list[RetrievalItem],
+        chunks_trace: dict[str, Any],
+        graph_items: list[RetrievalItem],
+        raptor_items: list[RetrievalItem],
+        trace_warnings: list[str],
+        hint_trace: dict[str, Any],
+        policy_trace: dict[str, Any],
+        min_score: float | None,
+        noise_reduction: bool,
+        started_at: float
+    ) -> ComprehensiveTrace:
+        return build_comprehensive_trace(
+            request=request,
+            merged_items=merged_items,
+            chunks_trace=chunks_trace,
+            graph_items=graph_items,
+            raptor_items=raptor_items,
+            trace_warnings=trace_warnings,
+            hint_trace=hint_trace,
+            policy_trace=policy_trace,
+            min_score=min_score,
+            noise_reduction=noise_reduction,
+            started_at=started_at,
+            missing_scopes_callback=self._missing_scopes,
+            missing_clause_refs_callback=self._missing_clause_refs
         )
 
     async def run_hybrid(
@@ -853,17 +491,14 @@ class RetrievalContractService:
         if skip_external_rerank:
             scope_context["_skip_external_rerank"] = True
 
-        if not self._retrieval_tools:
-            from app.infrastructure.container import CognitiveContainer
-
-            self._retrieval_tools = CognitiveContainer().retrieval_tools
+        tools = self.retrieval_tools
 
         rerank_enabled = bool(request.rerank.enabled) if request.rerank is not None else True
         graph_relations = request.graph.relation_types if request.graph is not None else None
         graph_node_types = request.graph.node_types if request.graph is not None else None
         graph_max_hops = request.graph.max_hops if request.graph is not None else None
 
-        response = await self._retrieval_tools.retrieve(
+        response = await self.retrieval_tools.retrieve(
             query=request.query,
             scope_context=scope_context,
             k=max(1, int(request.k)),
@@ -880,19 +515,8 @@ class RetrievalContractService:
         if not isinstance(rows, list):
             rows = []
 
-        try:
-            LeakCanary.verify_isolation(request.tenant_id, rows)
-        except SecurityViolationError as exc:
-            logger.critical(
-                "security_isolation_breach", error=str(exc), tenant_id=request.tenant_id
-            )
-            raise ApiError(
-                status_code=500,
-                code="SECURITY_ISOLATION_BREACH",
-                message="Security isolation validation failed",
-                details=str(exc),
-            ) from exc
         items = self._to_retrieval_items(rows)
+        LeakCanary.verify_isolation(request.tenant_id, [extract_row(i) for i in items])
         warnings_raw = trace_payload.get("warnings") if isinstance(trace_payload, dict) else None
         warning_codes_raw = (
             trace_payload.get("warning_codes") if isinstance(trace_payload, dict) else None
@@ -1177,18 +801,7 @@ class RetrievalContractService:
             rrf_k=max(1, int(request.merge.rrf_k)),
             top_k=max(1, int(request.merge.top_k)),
         )
-        try:
-            LeakCanary.verify_isolation(request.tenant_id, self._rows_from_items(merged))
-        except SecurityViolationError as exc:
-            logger.critical(
-                "security_isolation_breach", error=str(exc), tenant_id=request.tenant_id
-            )
-            raise ApiError(
-                status_code=500,
-                code="SECURITY_ISOLATION_BREACH",
-                message="Security isolation validation failed",
-                details=str(exc),
-            ) from exc
+        LeakCanary.verify_isolation(request.tenant_id, [extract_row(i) for i in merged])
         return MultiQueryRetrievalResponse(
             items=merged,
             subqueries=subqueries,
@@ -1206,46 +819,13 @@ class RetrievalContractService:
 
     @staticmethod
     def _matches_time_range(row: dict[str, Any], time_range: dict[str, Any] | None) -> bool | None:
-        if not time_range:
-            return None
-        field = str(time_range.get("field") or "").strip()
-        if field not in {"created_at", "updated_at"}:
-            return False
-        row_value = row.get(field)
-        if not isinstance(row_value, str) or not row_value.strip():
-            return False
-        try:
-            row_dt = _coerce_iso8601(row_value)
-            range_from = _coerce_iso8601(time_range.get("from"))
-            range_to = _coerce_iso8601(time_range.get("to"))
-        except Exception:
-            return False
-        if row_dt is None:
-            return False
-        if range_from and row_dt < range_from:
-            return False
-        if range_to and row_dt > range_to:
-            return False
-        return True
+        return matches_time_range(row, time_range)
 
     @staticmethod
     def _metadata_keys_matched(
         row: dict[str, Any], metadata_filter: dict[str, Any] | None
     ) -> list[str]:
-        if not metadata_filter:
-            return []
-        raw_metadata = row.get("metadata")
-        metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
-        matched: list[str] = []
-        for key, expected in metadata_filter.items():
-            observed = metadata.get(key)
-            if isinstance(expected, list):
-                if observed in expected:
-                    matched.append(key)
-                continue
-            if observed == expected:
-                matched.append(key)
-        return matched
+        return metadata_keys_matched(row, metadata_filter)
 
     async def run_explain(self, request: ExplainRetrievalRequest) -> ExplainRetrievalResponse:
         hybrid = await self.run_hybrid(

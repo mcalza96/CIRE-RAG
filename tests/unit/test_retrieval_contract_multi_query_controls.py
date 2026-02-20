@@ -30,7 +30,7 @@ async def test_run_multi_query_skips_duplicate_scope_clause(monkeypatch) -> None
                     source="C1",
                     content="ok",
                     score=0.8,
-                    metadata={"row": {"id": req.query, "content": "ok"}},
+                    metadata={"row": {"id": req.query, "content": "ok", "tenant_id": "t1"}},
                 )
             ],
             trace=HybridTrace(scope_penalized_ratio=0.0),
@@ -76,7 +76,7 @@ async def test_run_multi_query_drops_out_of_scope_branch(monkeypatch) -> None:
                         source="Cbad",
                         content="out",
                         score=0.1,
-                        metadata={"row": {"id": "bad", "content": "out"}},
+                        metadata={"row": {"id": "bad", "content": "out", "tenant_id": "t1"}},
                     )
                 ],
                 trace=HybridTrace(scope_penalized_ratio=1.0),
@@ -87,7 +87,7 @@ async def test_run_multi_query_drops_out_of_scope_branch(monkeypatch) -> None:
                     source="Cgood",
                     content="in",
                     score=0.9,
-                    metadata={"row": {"id": "good", "content": "in"}},
+                    metadata={"row": {"id": "good", "content": "in", "tenant_id": "t1"}},
                 )
             ],
             trace=HybridTrace(scope_penalized_ratio=0.0),

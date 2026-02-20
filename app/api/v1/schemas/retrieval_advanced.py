@@ -151,6 +151,7 @@ class ComprehensiveTrace(HybridTrace):
     missing_clause_refs_after: list[str] = Field(default_factory=list)
     coverage_policy: dict[str, Any] = Field(default_factory=dict)
     retrieval_policy: dict[str, Any] = Field(default_factory=dict)
+    fusion: dict[str, Any] = Field(default_factory=dict)
 
 
 class ComprehensiveRetrievalResponse(BaseModel):

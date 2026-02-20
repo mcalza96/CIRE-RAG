@@ -40,12 +40,9 @@ class _FakeContainer:
 
 
 def test_run_hybrid_propagates_engine_trace_warnings(monkeypatch) -> None:
-    monkeypatch.setattr(
-        CognitiveContainer,
-        "get_instance",
-        classmethod(lambda cls: _FakeContainer()),
-    )
     service = RetrievalContractService()
+    service._retrieval_tools = _FakeRetrievalTools()
+    
     response = asyncio.run(
         service.run_hybrid(
             HybridRetrievalRequest(
