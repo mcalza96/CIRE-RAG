@@ -78,10 +78,16 @@ class SupabaseRaptorRepository(IRaptorRepository):
     def _to_kg_entity_row(node: SummaryNode) -> dict:
         summary_id = str(node.id)
         tenant_id = str(node.tenant_id)
+        
+        # Suffix ensures summary nodes never collide with standard entities across the same tenant
+        # preventing uq_knowledge_entities_tenant_name_ci unique constraint errors.
+        title_suffix = f" (RAPTOR Level {node.level})" if node.level is not None else " (RAPTOR Summary)"
+        name = f"{node.title}{title_suffix}"
+        
         return {
             "id": summary_id,
             "tenant_id": tenant_id,
-            "name": node.title,
+            "name": name,
             "type": "RAPTOR_SUMMARY",
             "description": node.content,
             "embedding": node.embedding,

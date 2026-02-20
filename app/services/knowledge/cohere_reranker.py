@@ -31,20 +31,8 @@ class CohereReranker:
         self._timeout_seconds = max(1, int(timeout_seconds))
         self._session: aiohttp.ClientSession | None = None
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(total=self._timeout_seconds)
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self._api_key}",
-            }
-            self._session = aiohttp.ClientSession(timeout=timeout, headers=headers)
-        return self._session
-
     async def close(self) -> None:
-        if self._session is not None and not self._session.closed:
-            await self._session.close()
-        self._session = None
+        pass
 
     def is_enabled(self) -> bool:
         return bool(self._api_key and self._rerank_url and self._model_name)
@@ -70,28 +58,34 @@ class CohereReranker:
             or _DEFAULT_RERANK_MIN_RELEVANCE
         )
 
-        session = await self._get_session()
-        try:
-            async with session.post(self._rerank_url, json=payload) as response:
-                if response.status != 200:
-                    body = await response.text()
-                    logger.error("cohere_rerank_failed", status=response.status, error=body[:500])
+        timeout = aiohttp.ClientTimeout(total=self._timeout_seconds)
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._api_key}",
+        }
+
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            try:
+                async with session.post(self._rerank_url, json=payload) as response:
+                    if response.status != 200:
+                        body = await response.text()
+                        logger.error("cohere_rerank_failed", status=response.status, error=body[:500])
+                        return []
+                    data = await response.json()
+
+                results = data.get("results") if isinstance(data, dict) else None
+                if not isinstance(results, list):
                     return []
-                data = await response.json()
 
-            results = data.get("results") if isinstance(data, dict) else None
-            if not isinstance(results, list):
+                return [
+                    {
+                        "index": row.get("index", i),
+                        "relevance_score": float(row.get("relevance_score", 0.0) or 0.0),
+                    }
+                    for i, row in enumerate(results)
+                    if isinstance(row, dict)
+                    and float(row.get("relevance_score", 0.0) or 0.0) >= min_relevance
+                ]
+            except Exception as exc:
+                logger.error("cohere_rerank_exception", error=str(exc))
                 return []
-
-            return [
-                {
-                    "index": row.get("index", i),
-                    "relevance_score": float(row.get("relevance_score", 0.0) or 0.0),
-                }
-                for i, row in enumerate(results)
-                if isinstance(row, dict)
-                and float(row.get("relevance_score", 0.0) or 0.0) >= min_relevance
-            ]
-        except Exception as exc:
-            logger.error("cohere_rerank_exception", error=str(exc))
-            return []
