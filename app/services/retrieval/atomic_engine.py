@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import re
 from datetime import datetime, timezone
 from typing import Any, cast
 from uuid import UUID
@@ -19,14 +18,18 @@ from app.infrastructure.repositories.supabase_graph_retrieval_repository import 
 )
 from app.infrastructure.supabase.client import get_async_supabase_client
 from app.services.embedding_service import JinaEmbeddingService
+from app.domain.scope_utils import (
+    clause_near_standard,
+    extract_clause_refs,
+    extract_requested_standards,
+    extract_row_scope,
+    is_clause_heavy_query,
+    requested_scopes_from_context,
+    scope_penalty_ratio,
+)
 
 logger = structlog.get_logger(__name__)
 HYBRID_RPC_SIGNATURE_MISMATCH_HNSW = "HYBRID_RPC_SIGNATURE_MISMATCH_HNSW"
-_QUERY_STANDARD_RE = re.compile(r"\biso\s*[-:]?\s*(\d{4,5})\b", flags=re.IGNORECASE)
-_CLAUSE_RE = re.compile(r"\b\d+(?:\.\d+)+\b")
-_CLAUSE_HINT_RE = re.compile(
-    r"\b(cl(?:a|á)usula|clause|numeral|apartado|secci[oó]n)\b", flags=re.IGNORECASE
-)
 
 
 class AtomicRetrievalEngine:
@@ -443,15 +446,7 @@ class AtomicRetrievalEngine:
 
     @staticmethod
     def _is_clause_heavy_query(query_text: str) -> bool:
-        text = str(query_text or "")
-        if not text:
-            return False
-        clause_count = len(_CLAUSE_RE.findall(text))
-        if clause_count >= 2:
-            return True
-        if clause_count >= 1 and _CLAUSE_HINT_RE.search(text):
-            return True
-        return False
+        return is_clause_heavy_query(query_text)
 
     async def retrieve_context_from_plan(
         self,
@@ -588,76 +583,16 @@ class AtomicRetrievalEngine:
 
     @staticmethod
     def _extract_row_scope(item: dict[str, Any]) -> str:
-        metadata_raw = item.get("metadata")
-        metadata: dict[str, Any] = metadata_raw if isinstance(metadata_raw, dict) else {}
-        candidates = (
-            metadata.get("source_standard"),
-            metadata.get("standard"),
-            metadata.get("scope"),
-            metadata.get("norma"),
-            item.get("source_standard"),
-        )
-        for value in candidates:
-            if isinstance(value, str) and value.strip():
-                return value.strip().upper()
-        return ""
+        return extract_row_scope(item)
 
     @staticmethod
     def _requested_scopes(scope_context: dict[str, Any] | None) -> tuple[str, ...]:
-        if not isinstance(scope_context, dict):
-            return ()
-
-        values: list[str] = []
-        source_standards_raw = scope_context.get("source_standards")
-        if isinstance(source_standards_raw, list):
-            values.extend(
-                str(item).strip()
-                for item in source_standards_raw
-                if isinstance(item, str) and str(item).strip()
-            )
-
-        source_standard = scope_context.get("source_standard")
-        if isinstance(source_standard, str) and source_standard.strip():
-            values.append(source_standard.strip())
-
-        nested_raw = scope_context.get("filters")
-        nested = nested_raw if isinstance(nested_raw, dict) else {}
-        nested_standards_raw = nested.get("source_standards")
-        if isinstance(nested_standards_raw, list):
-            values.extend(
-                str(item).strip()
-                for item in nested_standards_raw
-                if isinstance(item, str) and str(item).strip()
-            )
-        nested_single = nested.get("source_standard")
-        if isinstance(nested_single, str) and nested_single.strip():
-            values.append(nested_single.strip())
-
-        if not values:
-            return ()
-        return tuple(dict.fromkeys(values))
+        return requested_scopes_from_context(scope_context)
 
     def _scope_penalty_ratio(
         self, rows: list[dict[str, Any]], requested_scopes: tuple[str, ...]
     ) -> float:
-        if not requested_scopes or not rows:
-            return 0.0
-
-        requested_upper = {scope.upper() for scope in requested_scopes}
-        considered = 0
-        penalized = 0
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            row_scope = self._extract_row_scope(row)
-            if not row_scope:
-                continue
-            considered += 1
-            if not any(scope in row_scope for scope in requested_upper):
-                penalized += 1
-        if considered == 0:
-            return 0.0
-        return penalized / considered
+        return scope_penalty_ratio(rows, requested_scopes)
 
     def _scope_context_for_subquery(
         self,
@@ -669,9 +604,8 @@ class AtomicRetrievalEngine:
             return scope_context
 
         scoped: dict[str, Any] = copy.deepcopy(scope_context)
-        standards = [f"ISO {match}" for match in _QUERY_STANDARD_RE.findall(subquery_text or "")]
-        standards = list(dict.fromkeys(standards))
-        clauses = list(dict.fromkeys(_CLAUSE_RE.findall(subquery_text or "")))
+        standards = list(extract_requested_standards(subquery_text or ""))
+        clauses = list(extract_clause_refs(subquery_text or ""))
 
         nested_raw = scoped.get("filters")
         nested: dict[str, Any] = dict(nested_raw) if isinstance(nested_raw, dict) else {}
@@ -694,9 +628,7 @@ class AtomicRetrievalEngine:
                 scoped.get("source_standard") or nested.get("source_standard") or ""
             ).strip()
             clause_for_standard = (
-                self._clause_near_standard(subquery_text, active_standard)
-                if active_standard
-                else None
+                clause_near_standard(subquery_text, active_standard) if active_standard else None
             )
             if active_standard and clause_for_standard:
                 metadata_raw = nested.get("metadata")
@@ -721,22 +653,7 @@ class AtomicRetrievalEngine:
 
     @staticmethod
     def _clause_near_standard(query: str, standard: str) -> str | None:
-        q = str(query or "")
-        s = str(standard or "").strip()
-        if not q or not s:
-            return None
-
-        std_match = re.search(re.escape(s), q, flags=re.IGNORECASE)
-        if not std_match:
-            return None
-
-        window_start = max(0, std_match.start() - 80)
-        window_end = min(len(q), std_match.end() + 120)
-        window = q[window_start:window_end]
-        clauses = list(dict.fromkeys(_CLAUSE_RE.findall(window)))
-        if len(clauses) == 1:
-            return str(clauses[0])
-        return None
+        return clause_near_standard(query, standard)
 
     async def _search_vectors(
         self, query_vector: list[float], source_ids: list[str], fetch_k: int

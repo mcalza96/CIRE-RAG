@@ -47,6 +47,16 @@ class HybridRetrievalRequest(BaseModel):
     graph: GraphOptions | None = None
 
 
+class CoverageRequirements(BaseModel):
+    requested_standards: list[str] = Field(default_factory=list)
+    require_all_scopes: bool = False
+    min_clause_refs: int = Field(default=0, ge=0, le=6)
+
+
+class ComprehensiveRetrievalRequest(HybridRetrievalRequest):
+    coverage_requirements: CoverageRequirements | None = None
+
+
 class SubQueryRequest(BaseModel):
     id: str = Field(..., min_length=1)
     query: str = Field(..., min_length=1)
@@ -100,6 +110,22 @@ class HybridTrace(BaseModel):
     scope_penalized_count: int | None = None
     scope_candidate_count: int | None = None
     scope_penalized_ratio: float | None = None
+    score_space: str | None = None
+
+
+class ComprehensiveTrace(HybridTrace):
+    coverage_repair_attempted: bool = False
+    coverage_repair_rounds: int = 0
+    missing_scopes_before: list[str] = Field(default_factory=list)
+    missing_scopes_after: list[str] = Field(default_factory=list)
+    missing_clause_refs_before: list[str] = Field(default_factory=list)
+    missing_clause_refs_after: list[str] = Field(default_factory=list)
+    coverage_policy: dict[str, Any] = Field(default_factory=dict)
+
+
+class ComprehensiveRetrievalResponse(BaseModel):
+    items: list[RetrievalItem]
+    trace: ComprehensiveTrace
 
 
 class HybridRetrievalResponse(BaseModel):
@@ -123,6 +149,7 @@ class MultiQueryTrace(BaseModel):
     timed_out_count: int = 0
     max_parallel: int = 1
     timings_ms: dict[str, float] = Field(default_factory=dict)
+    score_space: str | None = None
 
 
 class MultiQueryRetrievalResponse(BaseModel):

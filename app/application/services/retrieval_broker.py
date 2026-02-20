@@ -1,6 +1,5 @@
 import structlog
 import time
-import re
 import math
 from typing import List, Dict, Any, Optional
 from app.application.services.query_decomposer import (
@@ -22,6 +21,15 @@ from app.services.knowledge.retrieval_strategies import (
     IterativeRetrievalStrategy,
 )
 from app.services.retrieval.atomic_engine import AtomicRetrievalEngine
+from app.domain.scope_utils import (
+    apply_scope_penalty,
+    clause_near_standard,
+    count_scope_penalized,
+    extract_requested_standards,
+    extract_row_scope,
+    requested_scopes_from_context,
+    scope_key,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -67,15 +75,7 @@ class RetrievalBroker:
 
     @staticmethod
     def _extract_requested_standards(query: str) -> tuple[str, ...]:
-        seen: set[str] = set()
-        ordered: list[str] = []
-        for match in re.findall(r"\biso\s*[-:]?\s*(\d{4,5})\b", (query or ""), flags=re.IGNORECASE):
-            value = f"ISO {match}"
-            if value in seen:
-                continue
-            seen.add(value)
-            ordered.append(value)
-        return tuple(ordered)
+        return extract_requested_standards(query)
 
     @staticmethod
     def _normalize_standard_filters(filters: Dict[str, Any]) -> Dict[str, Any]:
@@ -108,124 +108,28 @@ class RetrievalBroker:
 
     @staticmethod
     def _clause_near_standard(query: str, standard: str) -> str | None:
-        q = str(query or "")
-        s = str(standard or "").strip()
-        if not q or not s:
-            return None
-
-        std_match = re.search(re.escape(s), q, flags=re.IGNORECASE)
-        if not std_match:
-            return None
-
-        window_start = max(0, std_match.start() - 80)
-        window_end = min(len(q), std_match.end() + 120)
-        window = q[window_start:window_end]
-        clauses = list(dict.fromkeys(re.findall(r"\b\d+(?:\.\d+)+\b", window)))
-        if len(clauses) == 1:
-            return clauses[0]
-        return None
+        return clause_near_standard(query, standard)
 
     @staticmethod
     def _extract_row_scope(item: Dict[str, Any]) -> str:
-        meta_raw = item.get("metadata")
-        metadata: Dict[str, Any] = meta_raw if isinstance(meta_raw, dict) else {}
-        candidates = [
-            metadata.get("source_standard"),
-            metadata.get("standard"),
-            metadata.get("scope"),
-            metadata.get("norma"),
-            item.get("source_standard"),
-        ]
-        for value in candidates:
-            if isinstance(value, str) and value.strip():
-                return value.strip().upper()
-        return ""
+        return extract_row_scope(item)
 
     @staticmethod
     def _scope_key(value: str) -> str:
-        text = str(value or "").strip().upper()
-        if not text:
-            return ""
-        iso_match = re.search(r"\bISO\s*[-:]?\s*(\d{4,5})\b", text, flags=re.IGNORECASE)
-        if iso_match:
-            return f"ISO-{iso_match.group(1)}"
-        digits_match = re.search(r"\b(\d{4,5})\b", text)
-        if digits_match:
-            return f"ISO-{digits_match.group(1)}"
-        compact = re.sub(r"[^A-Z0-9]", "", text)
-        return compact
+        return scope_key(value)
 
     @staticmethod
     def _requested_scopes_from_context(scope_context: Dict[str, Any]) -> tuple[str, ...]:
-        if not isinstance(scope_context, dict):
-            return ()
-
-        nested = (
-            scope_context.get("filters") if isinstance(scope_context.get("filters"), dict) else {}
-        )
-        raw_list = scope_context.get("source_standards")
-        if not raw_list and nested:
-            raw_list = nested.get("source_standards")
-
-        values: list[str] = []
-        if isinstance(raw_list, list):
-            values.extend(str(v).strip() for v in raw_list if isinstance(v, str) and str(v).strip())
-
-        single = scope_context.get("source_standard") or (
-            nested.get("source_standard") if nested else None
-        )
-        if isinstance(single, str) and single.strip():
-            values.append(single.strip())
-
-        if not values:
-            return ()
-        return tuple(dict.fromkeys(values))
+        return requested_scopes_from_context(scope_context)
 
     def _apply_scope_penalty(
         self, results: List[Dict[str, Any]], requested_scopes: tuple[str, ...]
     ) -> List[Dict[str, Any]]:
-        if not requested_scopes:
-            return results
-
-        requested_keys = {
-            self._scope_key(item) for item in requested_scopes if self._scope_key(item)
-        }
-        reranked: list[Dict[str, Any]] = []
-        for row in results:
-            row_scope = self._extract_row_scope(row)
-            if not row_scope:
-                reranked.append(row)
-                continue
-
-            row_scope_key = self._scope_key(row_scope)
-            row_scope_upper = row_scope.upper()
-            if row_scope_key and row_scope_key in requested_keys:
-                reranked.append(row)
-                continue
-            if any(str(scope).upper() in row_scope_upper for scope in requested_scopes):
-                reranked.append(row)
-                continue
-
-            adjusted = dict(row)
-            base_similarity = float(
-                adjusted.get(
-                    "jina_relevance_score", adjusted.get("similarity", adjusted.get("score", 0.0))
-                )
-                or 0.0
-            )
-            penalized = max(base_similarity * 0.25, 0.0)
-            adjusted["scope_penalized"] = True
-            adjusted["scope_penalty"] = 0.75
-            adjusted["similarity"] = penalized
-            adjusted["score"] = penalized
-            adjusted["jina_relevance_score"] = penalized
-            reranked.append(adjusted)
-
-        return reranked
+        return apply_scope_penalty(results, requested_scopes, penalty_factor=0.75)
 
     @staticmethod
     def _count_scope_penalized(results: List[Dict[str, Any]]) -> int:
-        return sum(1 for item in results if bool(item.get("scope_penalized")))
+        return count_scope_penalized(results)
 
     async def retrieve(
         self,
@@ -252,6 +156,7 @@ class RetrievalBroker:
             "planner_used": False,
             "planner_multihop": False,
             "fallback_used": False,
+            "score_space": "similarity",
             "timings_ms": {},
         }
         total_started = time.perf_counter()
@@ -746,6 +651,8 @@ class RetrievalBroker:
             )
 
             if not use_local:
+                if isinstance(trace_payload, dict):
+                    trace_payload["score_space"] = "jina_relevance"
                 return semantic_ranked[:k]
 
             raw_by_id = {str(item.get("id", "")): item for item in results}
@@ -778,6 +685,7 @@ class RetrievalBroker:
             merged: List[Dict[str, Any]] = []
             for rc in ranked[:k]:
                 payload = rc.model_dump()
+                payload.setdefault("score_space", "gravity")
                 source = raw_by_id.get(str(rc.id), {})
                 if "is_visual_anchor" in source:
                     payload["is_visual_anchor"] = bool(source.get("is_visual_anchor"))
@@ -786,6 +694,8 @@ class RetrievalBroker:
                 if "source_type" in source:
                     payload["source_type"] = source.get("source_type")
                 merged.append(payload)
+            if isinstance(trace_payload, dict):
+                trace_payload["score_space"] = "gravity"
             return merged
         except Exception as e:
             logger.warning("reranking_fallback", error=str(e))

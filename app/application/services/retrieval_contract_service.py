@@ -11,6 +11,9 @@ import structlog
 
 from app.api.v1.errors import ApiError
 from app.api.v1.schemas.retrieval_advanced import (
+    ComprehensiveRetrievalRequest,
+    ComprehensiveRetrievalResponse,
+    ComprehensiveTrace,
     ExplainRetrievalRequest,
     ExplainRetrievalResponse,
     ExplainedItemDetails,
@@ -36,6 +39,8 @@ from app.api.v1.schemas.retrieval_advanced import (
 )
 from app.core.middleware.security import LeakCanary, SecurityViolationError
 from app.core.settings import settings
+from app.domain.scope_utils import extract_requested_standards, normalize_scope_name
+from app.domain.scope_utils import extract_clause_refs, extract_row_scope
 from app.infrastructure.container import CognitiveContainer
 from app.services.knowledge.knowledge_service import KnowledgeService
 
@@ -91,15 +96,7 @@ class RetrievalContractService:
 
     @staticmethod
     def _extract_requested_standards(query: str) -> tuple[str, ...]:
-        seen: set[str] = set()
-        ordered: list[str] = []
-        for match in re.findall(r"\biso\s*[-:]?\s*(\d{4,5})\b", (query or ""), flags=re.IGNORECASE):
-            value = f"ISO {match}"
-            if value in seen:
-                continue
-            seen.add(value)
-            ordered.append(value)
-        return tuple(ordered)
+        return extract_requested_standards(query)
 
     @classmethod
     def _validate_metadata_values(cls, metadata: Any) -> tuple[dict[str, Any], list[ScopeIssue]]:
@@ -394,16 +391,7 @@ class RetrievalContractService:
 
     @staticmethod
     def _normalize_scope_name(value: Any) -> str:
-        text = str(value or "").strip().upper()
-        if not text:
-            return ""
-        match = re.search(r"\bISO\s*[-:]?\s*(\d{4,5})\b", text, flags=re.IGNORECASE)
-        if match:
-            return f"ISO {match.group(1)}"
-        digits = re.search(r"\b(\d{4,5})\b", text)
-        if digits:
-            return f"ISO {digits.group(1)}"
-        return text
+        return normalize_scope_name(value)
 
     @classmethod
     def _scope_clause_key(cls, item: SubQueryRequest) -> str:
@@ -416,6 +404,266 @@ class RetrievalContractService:
             return f"scope_clause::{scope}::{clause_id}"
         normalized_query = re.sub(r"\s+", " ", str(item.query or "").strip().lower())
         return f"query::{normalized_query}"
+
+    @staticmethod
+    def _item_identity(item: RetrievalItem) -> str:
+        row = _extract_row(item)
+        row_id = str(row.get("id") or "").strip()
+        if row_id:
+            return f"row::{row_id}"
+        source = str(item.source or "").strip()
+        content_key = str(item.content or "").strip()[:120]
+        return f"fallback::{source}::{content_key}"
+
+    @staticmethod
+    def _item_clause_refs(item: RetrievalItem) -> set[str]:
+        row = _extract_row(item)
+        refs: set[str] = set()
+        raw_meta = row.get("metadata")
+        metadata = raw_meta if isinstance(raw_meta, dict) else {}
+        clause_id = str(metadata.get("clause_id") or row.get("clause_id") or "").strip()
+        if clause_id:
+            refs.add(clause_id)
+        raw_clause_refs = metadata.get("clause_refs")
+        if isinstance(raw_clause_refs, list):
+            refs.update(str(val).strip() for val in raw_clause_refs if str(val).strip())
+        refs.update(extract_clause_refs(str(item.content or "")))
+        return refs
+
+    @classmethod
+    def _missing_scopes(
+        cls,
+        *,
+        items: list[RetrievalItem],
+        requested_standards: list[str],
+        require_all_scopes: bool,
+    ) -> list[str]:
+        if not require_all_scopes or not requested_standards:
+            return []
+        present: set[str] = set()
+        for item in items:
+            row = _extract_row(item)
+            scope = normalize_scope_name(extract_row_scope(row))
+            if scope:
+                present.add(scope)
+        return [scope for scope in requested_standards if scope not in present]
+
+    @classmethod
+    def _missing_clause_refs(
+        cls,
+        *,
+        items: list[RetrievalItem],
+        query_clause_refs: list[str],
+        min_clause_refs_required: int,
+    ) -> list[str]:
+        if min_clause_refs_required <= 0 or not query_clause_refs:
+            return []
+        query_clause_set = {
+            str(clause).strip() for clause in query_clause_refs if str(clause).strip()
+        }
+        if not query_clause_set:
+            return []
+        covered: set[str] = set()
+        for item in items:
+            covered.update(cls._item_clause_refs(item))
+        missing = [cl for cl in query_clause_refs if cl not in covered]
+        missing = list(dict.fromkeys(missing))
+        return missing if len(query_clause_set - covered) >= min_clause_refs_required else []
+
+    @classmethod
+    def _merge_retrieval_items(
+        cls,
+        *,
+        primary: list[RetrievalItem],
+        secondary: list[RetrievalItem],
+        top_k: int,
+    ) -> list[RetrievalItem]:
+        merged_by_id: dict[str, RetrievalItem] = {}
+        for item in [*primary, *secondary]:
+            item_id = cls._item_identity(item)
+            existing = merged_by_id.get(item_id)
+            if existing is None or float(item.score or 0.0) > float(existing.score or 0.0):
+                merged_by_id[item_id] = item
+        merged = sorted(
+            merged_by_id.values(),
+            key=lambda item: float(item.score or 0.0),
+            reverse=True,
+        )
+        return merged[: max(1, int(top_k))]
+
+    @classmethod
+    def _build_comprehensive_subqueries(
+        cls,
+        *,
+        request: ComprehensiveRetrievalRequest,
+        missing_scopes: list[str],
+        missing_clause_refs: list[str],
+    ) -> list[SubQueryRequest]:
+        filters_payload = (
+            request.filters.model_dump(mode="python", by_alias=True, exclude_none=True)
+            if request.filters
+            else {}
+        )
+
+        subqueries: list[SubQueryRequest] = []
+        for idx, scope in enumerate(missing_scopes, start=1):
+            scoped_filters = dict(filters_payload)
+            scoped_filters["source_standard"] = scope
+            scoped_filters.pop("source_standards", None)
+            subqueries.append(
+                SubQueryRequest(
+                    id=f"repair_scope_{idx}",
+                    query=f"{request.query} {scope}",
+                    k=max(4, int(request.k)),
+                    fetch_k=max(20, int(request.fetch_k)),
+                    filters=scoped_filters,
+                )
+            )
+
+        for idx, clause in enumerate(missing_clause_refs[:2], start=1):
+            clause_filters = dict(filters_payload)
+            metadata_raw = clause_filters.get("metadata")
+            metadata = dict(metadata_raw) if isinstance(metadata_raw, dict) else {}
+            metadata["clause_id"] = clause
+            clause_filters["metadata"] = metadata
+            subqueries.append(
+                SubQueryRequest(
+                    id=f"repair_clause_{idx}",
+                    query=f"{request.query} clausula {clause}",
+                    k=max(4, int(request.k)),
+                    fetch_k=max(20, int(request.fetch_k)),
+                    filters=clause_filters,
+                )
+            )
+
+        deduped: list[SubQueryRequest] = []
+        seen: set[str] = set()
+        for sq in subqueries:
+            key = cls._scope_clause_key(sq)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(sq)
+        return deduped[:8]
+
+    async def run_comprehensive(
+        self,
+        request: ComprehensiveRetrievalRequest,
+    ) -> ComprehensiveRetrievalResponse:
+        started = time.perf_counter()
+        coverage = request.coverage_requirements
+        query_scopes = list(extract_requested_standards(request.query))
+        requested_scopes_raw = list(coverage.requested_standards) if coverage else []
+        requested_scopes = [
+            normalize_scope_name(scope) for scope in [*requested_scopes_raw, *query_scopes]
+        ]
+        requested_scopes = [scope for scope in requested_scopes if scope]
+        requested_scopes = list(dict.fromkeys(requested_scopes))
+        require_all_scopes = (
+            bool(coverage.require_all_scopes) if coverage else len(requested_scopes) >= 2
+        )
+        min_clause_refs_required = int(coverage.min_clause_refs) if coverage else 0
+
+        hybrid = await self.run_hybrid(
+            HybridRetrievalRequest(
+                query=request.query,
+                tenant_id=request.tenant_id,
+                collection_id=request.collection_id,
+                k=request.k,
+                fetch_k=request.fetch_k,
+                filters=request.filters,
+                rerank=request.rerank,
+                graph=request.graph,
+            )
+        )
+
+        query_clause_refs = list(extract_clause_refs(request.query))
+        missing_scopes_before = self._missing_scopes(
+            items=hybrid.items,
+            requested_standards=requested_scopes,
+            require_all_scopes=require_all_scopes,
+        )
+        missing_clause_refs_before = self._missing_clause_refs(
+            items=hybrid.items,
+            query_clause_refs=query_clause_refs,
+            min_clause_refs_required=min_clause_refs_required,
+        )
+
+        coverage_repair_attempted = False
+        coverage_repair_rounds = 0
+        merged_items = list(hybrid.items)
+        trace_warnings = list(hybrid.trace.warnings or [])
+
+        if missing_scopes_before or missing_clause_refs_before:
+            coverage_repair_attempted = True
+            subqueries = self._build_comprehensive_subqueries(
+                request=request,
+                missing_scopes=missing_scopes_before,
+                missing_clause_refs=missing_clause_refs_before,
+            )
+            if subqueries:
+                coverage_repair_rounds = 1
+                try:
+                    mq = await self.run_multi_query(
+                        MultiQueryRetrievalRequest(
+                            tenant_id=request.tenant_id,
+                            collection_id=request.collection_id,
+                            queries=subqueries,
+                            merge=MergeOptions(
+                                strategy="rrf",
+                                rrf_k=60,
+                                top_k=max(1, int(request.k)),
+                            ),
+                        )
+                    )
+                    merged_items = self._merge_retrieval_items(
+                        primary=hybrid.items,
+                        secondary=mq.items,
+                        top_k=max(1, int(request.k)),
+                    )
+                except Exception as exc:
+                    trace_warnings.append(f"coverage_repair_failed:{str(exc)[:160]}")
+
+        missing_scopes_after = self._missing_scopes(
+            items=merged_items,
+            requested_standards=requested_scopes,
+            require_all_scopes=require_all_scopes,
+        )
+        missing_clause_refs_after = self._missing_clause_refs(
+            items=merged_items,
+            query_clause_refs=query_clause_refs,
+            min_clause_refs_required=min_clause_refs_required,
+        )
+
+        base_trace = hybrid.trace.model_dump()
+        base_trace["score_space"] = (
+            "mixed"
+            if coverage_repair_attempted and coverage_repair_rounds > 0
+            else base_trace.get("score_space")
+        )
+        base_trace["warnings"] = list(dict.fromkeys(trace_warnings))
+        base_trace["timings_ms"] = {
+            **dict(base_trace.get("timings_ms") or {}),
+            "total": round((time.perf_counter() - started) * 1000, 2),
+        }
+
+        return ComprehensiveRetrievalResponse(
+            items=merged_items,
+            trace=ComprehensiveTrace(
+                **base_trace,
+                coverage_repair_attempted=coverage_repair_attempted,
+                coverage_repair_rounds=coverage_repair_rounds,
+                missing_scopes_before=missing_scopes_before,
+                missing_scopes_after=missing_scopes_after,
+                missing_clause_refs_before=missing_clause_refs_before,
+                missing_clause_refs_after=missing_clause_refs_after,
+                coverage_policy={
+                    "requested_standards": requested_scopes,
+                    "require_all_scopes": require_all_scopes,
+                    "min_clause_refs": min_clause_refs_required,
+                },
+            ),
+        )
 
     async def run_hybrid(
         self,
@@ -505,6 +753,7 @@ class RetrievalContractService:
         scope_penalized_count = int(trace_payload.get("scope_penalized_count") or 0)
         scope_candidate_count = int(trace_payload.get("scope_candidate_count") or 0)
         scope_penalized_ratio = _finite_or_none(trace_payload.get("scope_penalized_ratio"))
+        score_space = str(trace_payload.get("score_space") or "").strip() or None
         return HybridRetrievalResponse(
             items=items,
             trace=HybridTrace(
@@ -526,6 +775,7 @@ class RetrievalContractService:
                 scope_penalized_count=scope_penalized_count,
                 scope_candidate_count=scope_candidate_count,
                 scope_penalized_ratio=scope_penalized_ratio,
+                score_space=score_space,
             ),
         )
 
@@ -557,7 +807,10 @@ class RetrievalContractService:
                     source=source.source,
                     content=source.content,
                     score=float(score_by_id[row_id]),
-                    metadata=source.metadata,
+                    metadata={
+                        **(source.metadata or {}),
+                        "score_space": "rrf",
+                    },
                 )
             )
         return merged
@@ -739,6 +992,7 @@ class RetrievalContractService:
                         timed_out_count=timed_out_count,
                         max_parallel=max_parallel,
                         timings_ms={"total": round((time.perf_counter() - started) * 1000, 2)},
+                        score_space="rrf",
                     ),
                 )
             raise ApiError(
@@ -776,6 +1030,7 @@ class RetrievalContractService:
                 timed_out_count=timed_out_count,
                 max_parallel=max_parallel,
                 timings_ms={"total": round((time.perf_counter() - started) * 1000, 2)},
+                score_space="rrf",
             ),
         )
 
