@@ -1,5 +1,7 @@
 from typing import List, Dict, Optional, Any
-import logging
+
+import structlog
+from app.core.settings import settings
 from app.domain.knowledge_schemas import (
     RAGSearchResult,
     RetrievalIntent,
@@ -7,8 +9,6 @@ from app.domain.knowledge_schemas import (
     TaskType,
     AuthorityLevel
 )
-
-import structlog
 
 logger = structlog.get_logger(__name__)
 
@@ -25,9 +25,9 @@ BALANCED_WEIGHTS = {
 }
 
 STRICT_WEIGHTS = {
-    AuthorityLevel.ADMINISTRATIVE: 10.0,
-    AuthorityLevel.CONSTITUTION: 10.0,
-    AuthorityLevel.POLICY: 5.0,
+    AuthorityLevel.ADMINISTRATIVE: 3.0,
+    AuthorityLevel.CONSTITUTION: 3.0,
+    AuthorityLevel.POLICY: 2.0,
     AuthorityLevel.CANONICAL: 1.0,
     AuthorityLevel.SUPPLEMENTARY: 0.0,
 }
@@ -37,22 +37,22 @@ CREATIVE_WEIGHTS = {
     AuthorityLevel.CONSTITUTION: 1.0,
     AuthorityLevel.POLICY: 1.2,
     AuthorityLevel.CANONICAL: 1.5,
-    AuthorityLevel.SUPPLEMENTARY: 2.5,
+    AuthorityLevel.SUPPLEMENTARY: 2.0,
 }
 
 PEDAGOGICAL_WEIGHTS = {
-    AuthorityLevel.ADMINISTRATIVE: 2.0,
-    AuthorityLevel.CONSTITUTION: 2.0,
-    AuthorityLevel.POLICY: 1.5,
-    AuthorityLevel.CANONICAL: 3.0,
+    AuthorityLevel.ADMINISTRATIVE: 1.5,
+    AuthorityLevel.CONSTITUTION: 1.5,
+    AuthorityLevel.POLICY: 1.2,
+    AuthorityLevel.CANONICAL: 2.0,
     AuthorityLevel.SUPPLEMENTARY: 1.0,
 }
 
 INTEGRITY_WEIGHTS = {
-    AuthorityLevel.ADMINISTRATIVE: 15.0,
-    AuthorityLevel.CONSTITUTION: 15.0,
-    AuthorityLevel.POLICY: 3.0,
-    AuthorityLevel.CANONICAL: 2.0,
+    AuthorityLevel.ADMINISTRATIVE: 4.0,
+    AuthorityLevel.CONSTITUTION: 4.0,
+    AuthorityLevel.POLICY: 2.0,
+    AuthorityLevel.CANONICAL: 1.5,
     AuthorityLevel.SUPPLEMENTARY: 0.1,
 }
 
@@ -66,7 +66,7 @@ GRAVITY_MATRIX = {
         "exclude_zero_weight": True,
         "max_results": 10
     },
-    
+
     # ACADEMIC AUDITOR
     f"{AgentRole.ACADEMIC_AUDITOR}::{TaskType.GRADING}": {
         "weights": STRICT_WEIGHTS,
@@ -75,8 +75,8 @@ GRAVITY_MATRIX = {
     },
     f"{AgentRole.ACADEMIC_AUDITOR}::{TaskType.FACT_CHECKING}": {
         "weights": {
-            AuthorityLevel.ADMINISTRATIVE: 20.0,
-            AuthorityLevel.CONSTITUTION: 20.0,
+            AuthorityLevel.ADMINISTRATIVE: 5.0,
+            AuthorityLevel.CONSTITUTION: 5.0,
             AuthorityLevel.POLICY: 2.0,
             AuthorityLevel.CANONICAL: 0.5,
             AuthorityLevel.SUPPLEMENTARY: 0.0,
@@ -96,11 +96,11 @@ GRAVITY_MATRIX = {
     },
     f"{AgentRole.SOCRATIC_MENTOR}::{TaskType.IDEATION}": {
         "weights": {
-            AuthorityLevel.ADMINISTRATIVE: 1.5,
-            AuthorityLevel.CONSTITUTION: 1.5,
+            AuthorityLevel.ADMINISTRATIVE: 1.2,
+            AuthorityLevel.CONSTITUTION: 1.2,
             AuthorityLevel.POLICY: 1.0,
-            AuthorityLevel.CANONICAL: 2.0,
-            AuthorityLevel.SUPPLEMENTARY: 1.5,
+            AuthorityLevel.CANONICAL: 1.5,
+            AuthorityLevel.SUPPLEMENTARY: 1.3,
         },
         "max_results": 12
     },
@@ -115,10 +115,10 @@ GRAVITY_MATRIX = {
     },
     f"{AgentRole.CONTENT_DESIGNER}::{TaskType.FACT_CHECKING}": {
         "weights": {
-            AuthorityLevel.ADMINISTRATIVE: 3.0,
-            AuthorityLevel.CONSTITUTION: 3.0,
+            AuthorityLevel.ADMINISTRATIVE: 2.5,
+            AuthorityLevel.CONSTITUTION: 2.5,
             AuthorityLevel.POLICY: 1.5,
-            AuthorityLevel.CANONICAL: 5.0,
+            AuthorityLevel.CANONICAL: 3.0,
             AuthorityLevel.SUPPLEMENTARY: 0.5,
         }
     },
@@ -130,7 +130,7 @@ GRAVITY_MATRIX = {
     # INTEGRITY GUARD
     f"{AgentRole.INTEGRITY_GUARD}::{TaskType.FACT_CHECKING}": {
         "weights": INTEGRITY_WEIGHTS,
-        "exclude_zero_weight": False, # Explicitly keep all
+        "exclude_zero_weight": False,
         "max_results": 10
     },
     f"{AgentRole.INTEGRITY_GUARD}::{TaskType.GRADING}": {
@@ -142,115 +142,112 @@ GRAVITY_MATRIX = {
     }
 }
 
+
+# Default minimum similarity score to keep a result after reranking.
+_DEFAULT_MIN_SCORE_THRESHOLD = 0.10
+
+
 class GravityReranker:
     """
-    Handles authority-aware reranking by applying weights from the GRAVITY_MATRIX.
+    Authority-aware reranker.
+
+    Applies business-rule multipliers from the GRAVITY_MATRIX on top of
+    the base similarity produced by the embedding search.  Results below
+    a configurable quality threshold are pruned before they reach the LLM.
     """
 
     def rerank(self, results: List[RAGSearchResult], intent: RetrievalIntent) -> List[RAGSearchResult]:
         if not results:
             return []
 
-        # 1. Resolve Config
+        min_score = float(
+            getattr(settings, "GRAVITY_MIN_SCORE_THRESHOLD", _DEFAULT_MIN_SCORE_THRESHOLD)
+            or _DEFAULT_MIN_SCORE_THRESHOLD
+        )
+
         config = self._resolve_config(intent.role, intent.task)
         weights = config.get("weights", BALANCED_WEIGHTS)
         exclude_zero = config.get("exclude_zero_weight", False)
-        
-        scored_results = []
+
+        scored_results: List[RAGSearchResult] = []
 
         for result in results:
-            # 2. Extract Authority
-            meta = result.metadata or {}
+            meta = dict(result.metadata or {})
             auth_str = meta.get("authority_level")
             auth_level = self._parse_authority_level(auth_str)
-            
-            # 3. Base Weight
-            weight = weights.get(auth_level, 1.0)
-            
-            # 4. Boosts
-            # Layer Boost
-            source_layer = result.source_layer or 'global'
-            layer_boost = 1.0
-            if source_layer == 'personal':
-                layer_boost = 1.2
-            elif source_layer == 'tenant':
-                layer_boost = 1.1
-            
-            # Constitutional Boost
-            # Note: Checking for boolean true in metadata
-            is_constitutional = meta.get('is_constitutional') is True
-            constitutional_multiplier = 1000.0 if is_constitutional else 1.0
-            
-            # RAPTOR Boost
-            is_summary = (meta.get('is_raptor_summary') is True) or (meta.get('is_summary') is True)
-            raptor_boost = 1.5 if is_summary else 1.0
 
-            # 5. Final Score Calculation
-            original_score = result.similarity
-            multiplier = weight * layer_boost * constitutional_multiplier * raptor_boost
-            final_score = original_score * multiplier
-            
-            # 6. Exclusion Check
+            weight = weights.get(auth_level, 1.0)
+
+            # --- Prune: zero-weight items ---
+            is_constitutional = meta.get("is_constitutional") is True
+            is_summary = (meta.get("is_raptor_summary") is True) or (meta.get("is_summary") is True)
             if exclude_zero and weight == 0.0 and not (is_constitutional or is_summary):
-                # Items with zero weight are excluded unless they are constitutional or summaries
-                # that might have implied relevancy despite their source authority level.
                 continue
 
-            # Update result with new score and metadata
-            # We create a copy or modify in place? Pydantic models are mutable by default.
-            # Ideally return new objects or update fields.
-            
-            # Update metadata for observability
-            result.metadata.update({
+            # --- Prune: below minimum quality threshold (on the RAW similarity) ---
+            original_score = float(result.similarity or 0.0)
+            if original_score < min_score:
+                continue
+
+            # --- Boosts (moderate, not score-destroying) ---
+            source_layer = result.source_layer or "global"
+            layer_boost = 1.0
+            if source_layer == "personal":
+                layer_boost = 1.15
+            elif source_layer == "tenant":
+                layer_boost = 1.08
+
+            constitutional_boost = 3.0 if is_constitutional else 1.0
+            raptor_boost = 1.4 if is_summary else 1.0
+
+            multiplier = weight * layer_boost * constitutional_boost * raptor_boost
+            final_score = original_score * multiplier
+
+            # --- Build a NEW result instead of mutating the original ---
+            new_meta = dict(meta)
+            new_meta.update({
                 "original_similarity": original_score,
                 "gravity_weight": weight,
                 "layer_boost": layer_boost,
-                "constitutional_boost": constitutional_multiplier,
+                "constitutional_boost": constitutional_boost,
                 "raptor_boost": raptor_boost,
                 "authority_level": auth_level,
-                "final_multiplier": multiplier
+                "final_multiplier": multiplier,
             })
-            
-            # Update similarity to final score
-            result.similarity = final_score
-            
-            scored_results.append(result)
 
-        # 7. Sort
+            scored_results.append(
+                RAGSearchResult(
+                    id=result.id,
+                    content=result.content,
+                    similarity=final_score,
+                    score=final_score,
+                    source_layer=result.source_layer,
+                    metadata=new_meta,
+                    source_id=result.source_id,
+                    semantic_context=result.semantic_context,
+                )
+            )
+
         scored_results.sort(key=lambda x: x.similarity, reverse=True)
-        
-        # 8. Limit (Config or global default)
-        # Note: The Orchestrator applies the hard cap (65). 
-        # Here we might apply a soft cap from the matrix if desired, but 
-        # usually we pass all ranked items to the orchestrator to decide final cut 
-        # or use the matrix max_results.
+
         matrix_limit = config.get("max_results")
         if matrix_limit:
-             scored_results = scored_results[:matrix_limit]
+            scored_results = scored_results[:matrix_limit]
 
         return scored_results
 
     def _resolve_config(self, role: AgentRole, task: TaskType) -> Dict[str, Any]:
-        # 1. Exact Match
         key = f"{role}::{task}"
         if key in GRAVITY_MATRIX:
             return GRAVITY_MATRIX[key]
-        
-        # 2. Role Fallback
         if role in GRAVITY_MATRIX:
             return GRAVITY_MATRIX[role]
-            
-        # 3. Default
         return GRAVITY_MATRIX["DEFAULT"]
 
     def _parse_authority_level(self, value: Optional[str]) -> AuthorityLevel:
         if not value:
             return AuthorityLevel.SUPPLEMENTARY
-        
         try:
-            # Handle potentially case-insensitive input, though Enums are strict
-            # Our Pydantic model might assume strict Enum values.
-            # But metadata comes from DB and might be raw string.
             return AuthorityLevel(value.lower())
         except ValueError:
             logger.warning("unknown_authority_level", value=value, fallback=AuthorityLevel.SUPPLEMENTARY)

@@ -6,8 +6,13 @@ import aiohttp
 import structlog
 
 from app.core.ai_models import AIModelConfig
+from app.core.settings import settings
 
 logger = structlog.get_logger(__name__)
+
+# Default minimum relevance score from the cross-encoder.
+# Results below this are considered noise and pruned.
+_DEFAULT_RERANK_MIN_RELEVANCE = 0.15
 
 
 class CohereReranker:
@@ -53,13 +58,17 @@ class CohereReranker:
         if not self.is_enabled() or not query.strip() or not documents:
             return []
 
-        # Cohere v2 rerank payload: https://docs.cohere.com/reference/rerank-2
         payload = {
             "model": self._model_name,
             "query": query,
             "documents": documents,
             "top_n": max(1, min(top_n, len(documents))),
         }
+
+        min_relevance = float(
+            getattr(settings, "RERANK_MIN_RELEVANCE_SCORE", _DEFAULT_RERANK_MIN_RELEVANCE)
+            or _DEFAULT_RERANK_MIN_RELEVANCE
+        )
 
         session = await self._get_session()
         try:
@@ -73,15 +82,15 @@ class CohereReranker:
             results = data.get("results") if isinstance(data, dict) else None
             if not isinstance(results, list):
                 return []
-            
-            # Normalize to common format: List[{"index": int, "relevance_score": float}]
+
             return [
                 {
-                    "index": getattr(row, "index", row.get("index")) if isinstance(row, dict) else i,
-                    "relevance_score": row.get("relevance_score") if isinstance(row, dict) else 0.0
+                    "index": row.get("index", i),
+                    "relevance_score": float(row.get("relevance_score", 0.0) or 0.0),
                 }
                 for i, row in enumerate(results)
                 if isinstance(row, dict)
+                and float(row.get("relevance_score", 0.0) or 0.0) >= min_relevance
             ]
         except Exception as exc:
             logger.error("cohere_rerank_exception", error=str(exc))

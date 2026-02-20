@@ -184,8 +184,9 @@ class KnowledgeService:
                 details=str(e),
             )
 
-        context_chunks = [r.get("content", "") for r in results if r.get("content")]
         context_map = {str(r.get("id")): r for r in results if r.get("id")}
+        # Build chunks from the deduplicated map to avoid sending duplicate text to the LLM
+        context_chunks = [str(r.get("content", "")) for r in context_map.values() if r.get("content")]
 
         return {
             "context_chunks": context_chunks,
@@ -261,8 +262,8 @@ class KnowledgeService:
             )
 
         # 3. Process results
-        context_chunks = [r["content"] for r in results]
-        context_map = {str(r.get("id")): r for r in results}
+        context_map = {str(r.get("id")): r for r in results if r.get("id")}
+        context_chunks = [str(r.get("content", "")) for r in context_map.values() if r.get("content")]
 
         return {
             "context_chunks": context_chunks,
@@ -303,13 +304,20 @@ class KnowledgeService:
     ) -> str:
         """
         Optimizes context by injecting global summaries if available.
+        Selects the global_summary from the highest-scored chunk to avoid
+        leading the LLM with context from a low-relevance result.
         """
         global_summary = None
         if context_map:
-            first_chunk = next(iter(context_map.values()), {})
-            global_summary = first_chunk.get("metadata", {}).get(
+            # Pick the chunk with the highest score to extract the global summary
+            best_chunk = max(
+                context_map.values(),
+                key=lambda r: float(r.get("similarity") or r.get("score") or 0.0),
+                default={},
+            )
+            global_summary = best_chunk.get("metadata", {}).get(
                 "global_summary"
-            ) or first_chunk.get("source_metadata", {}).get("global_summary")
+            ) or best_chunk.get("source_metadata", {}).get("global_summary")
 
         context_text = "\n\n".join(context_chunks) if context_chunks else "General Knowledge"
 

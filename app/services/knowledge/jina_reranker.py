@@ -6,8 +6,13 @@ import aiohttp
 import structlog
 
 from app.core.ai_models import AIModelConfig
+from app.core.settings import settings
 
 logger = structlog.get_logger(__name__)
+
+# Default minimum relevance score from the cross-encoder.
+# Results below this are considered noise and pruned.
+_DEFAULT_RERANK_MIN_RELEVANCE = 0.15
 
 
 class JinaReranker:
@@ -70,4 +75,13 @@ class JinaReranker:
         rows = data.get("results") if isinstance(data, dict) else None
         if not isinstance(rows, list):
             return []
-        return [row for row in rows if isinstance(row, dict)]
+
+        min_relevance = float(
+            getattr(settings, "RERANK_MIN_RELEVANCE_SCORE", _DEFAULT_RERANK_MIN_RELEVANCE)
+            or _DEFAULT_RERANK_MIN_RELEVANCE
+        )
+        return [
+            row for row in rows
+            if isinstance(row, dict)
+            and float(row.get("relevance_score", 0.0) or 0.0) >= min_relevance
+        ]
