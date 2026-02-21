@@ -61,7 +61,7 @@ from app.domain.retrieval.retrieval_validation import (
 from app.domain.retrieval.retrieval_fusion import fuse_late_results, to_retrieval_items
 from app.domain.retrieval.retrieval_trace import build_comprehensive_trace
 from app.infrastructure.container import CognitiveContainer
-from app.services.knowledge.knowledge_service import KnowledgeService
+from app.workflows.retrieval.grounded_retrieval import GroundedRetrievalWorkflow
 
 logger = structlog.get_logger(__name__)
 
@@ -84,10 +84,10 @@ def _extract_row(item: RetrievalItem) -> dict[str, Any]:
 class ContractManager:
     def __init__(
         self,
-        knowledge_service: Optional[KnowledgeService] = None,
+        knowledge_service: Optional[GroundedRetrievalWorkflow] = None,
         retrieval_tools: Optional[Any] = None,
     ) -> None:
-        self._knowledge_service = knowledge_service or KnowledgeService()
+        self._knowledge_service = knowledge_service or GroundedRetrievalWorkflow()
         self._retrieval_tools = retrieval_tools
 
     @property

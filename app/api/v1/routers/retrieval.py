@@ -14,7 +14,7 @@ from app.api.v1.schemas.retrieval_advanced import (
     ValidateScopeResponse,
 )
 from app.api.v1.tenant_guard import enforce_tenant_match
-from app.services.retrieval.orchestration.contract_manager import ContractManager
+from app.workflows.retrieval.contract_manager import ContractManager
 from app.api.dependencies import get_container
 
 logger = structlog.get_logger(__name__)
