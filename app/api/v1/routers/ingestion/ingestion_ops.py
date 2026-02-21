@@ -9,7 +9,7 @@ from app.api.v1.errors import ApiError
 from app.api.v1.tenant_guard import enforce_tenant_match, require_tenant_from_context
 from app.workflows.ingestion.trigger import IngestionTrigger
 from app.api.dependencies import get_container
-from app.services.database.taxonomy_manager import TaxonomyManager
+from app.infrastructure.supabase.repositories.taxonomy_repository import TaxonomyRepository
 
 logger = structlog.get_logger(__name__)
 
@@ -43,7 +43,7 @@ class ReplayEnrichmentRequest(BaseModel):
 def get_trigger(container=Depends(get_container)):
     return IngestionTrigger(
         repo=container.source_repository,
-        taxonomy_manager=TaxonomyManager()
+        taxonomy_manager=TaxonomyRepository()
     )
 
 
@@ -221,11 +221,11 @@ async def retry_ingestion_endpoint(
         # Actually, retry_ingestion in ingestion.py was using orchestrator.retry_ingestion.
         # Let's import BatchOrchestrator here too if needed, or use a dependency.
         
-        from app.services.ingestion.batch_orchestrator import BatchOrchestrator
+        from app.workflows.ingestion.batch_orchestrator import BatchOrchestrator
         from app.infrastructure.container import CognitiveContainer
         
         orchestrator = BatchOrchestrator(
-            taxonomy_manager=TaxonomyManager(),
+            taxonomy_manager=TaxonomyRepository(),
             source_repo=CognitiveContainer().source_repository
         )
         

@@ -20,8 +20,8 @@ from app.domain.schemas.knowledge_schemas import (
 )
 from app.infrastructure.supabase.client import get_async_supabase_client
 from app.ai.embeddings import JinaEmbeddingService
-from app.services.knowledge.graph_retrieval_strategies import LocalGraphSearch, GlobalGraphSearch
-from app.services.knowledge.gravity_reranker import GravityReranker
+from app.domain.retrieval.strategies.graph_retrieval_strategies import LocalGraphSearch, GlobalGraphSearch
+from app.infrastructure.ai.rerankers.gravity_reranker import GravityReranker
 
 logger = structlog.get_logger(__name__)
 

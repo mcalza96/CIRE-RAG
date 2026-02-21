@@ -5,20 +5,20 @@ from typing import List, Dict, Any, Optional
 from app.infrastructure.settings import settings
 from app.domain.schemas.query_plan import PlannedSubQuery, QueryPlan
 from app.ai.embeddings import JinaEmbeddingService
-from app.services.knowledge.cohere_reranker import CohereReranker
-from app.services.knowledge.gravity_reranker import GravityReranker
-from app.services.knowledge.jina_reranker import JinaReranker
-from app.services.ingestion.metadata_enricher import enrich_metadata
+from app.infrastructure.ai.rerankers.cohere_reranker import CohereReranker
+from app.infrastructure.ai.rerankers.gravity_reranker import GravityReranker
+from app.infrastructure.ai.rerankers.jina_reranker import JinaReranker
+from app.domain.ingestion.metadata_enricher import enrich_metadata
 from app.infrastructure.observability.forensic import ForensicRecorder
 from app.infrastructure.observability.scope_metrics import scope_metrics_store
 from app.domain.schemas.knowledge_schemas import RAGSearchResult, RetrievalIntent, AgentRole, TaskType
 from app.domain.interfaces.reranking_provider import IAuthorityReranker, ISemanticReranker
 from app.domain.interfaces.retrieval_interface import IRetrievalRepository
-from app.services.knowledge.retrieval_strategies import (
+from app.domain.retrieval.strategies.retrieval_strategies import (
     DirectRetrievalStrategy,
     IterativeRetrievalStrategy,
 )
-from app.services.retrieval.atomic_engine import AtomicRetrievalEngine
+from app.infrastructure.ai.retrieval.atomic_engine import AtomicRetrievalEngine
 from app.domain.retrieval.scope_utils import (
     apply_scope_penalty,
     clause_near_standard,

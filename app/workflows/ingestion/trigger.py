@@ -8,10 +8,10 @@ from fastapi import UploadFile
 
 from app.domain.types.ingestion_status import IngestionStatus
 from app.domain.schemas.ingestion_schemas import IngestionMetadata
-from app.services.database.taxonomy_manager import TaxonomyManager
+from app.infrastructure.supabase.repositories.taxonomy_repository import TaxonomyRepository
 from app.infrastructure.supabase.repositories.supabase_source_repository import SupabaseSourceRepository
 from app.infrastructure.supabase.queries.ingestion_query_service import ManualIngestionQueryService
-from app.services.ingestion.monitoring.backpressure import IngestionBackpressureService
+from app.infrastructure.observability.ingestion.backpressure import IngestionBackpressureService
 from app.infrastructure.settings import settings
 from app.utils.filename_utils import sanitize_filename
 from app.infrastructure.observability.correlation import get_correlation_id
@@ -27,12 +27,12 @@ class IngestionTrigger:
         self,
         repo: Optional[SupabaseSourceRepository] = None,
         query_service: Optional[ManualIngestionQueryService] = None,
-        taxonomy_manager: Optional[TaxonomyManager] = None,
+        taxonomy_manager: Optional[TaxonomyRepository] = None,
         backpressure_service: Optional[IngestionBackpressureService] = None,
     ):
         self.repo = repo or SupabaseSourceRepository()
         self.query_service = query_service or ManualIngestionQueryService()
-        self.taxonomy_manager = taxonomy_manager or TaxonomyManager()
+        self.taxonomy_manager = taxonomy_manager or TaxonomyRepository()
         self.backpressure = backpressure_service or IngestionBackpressureService(self.query_service)
 
     async def prepare_manual_upload(self, file: UploadFile, metadata_str: str) -> Tuple[str, str, IngestionMetadata]:

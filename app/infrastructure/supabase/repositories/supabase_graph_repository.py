@@ -5,7 +5,7 @@ from uuid import UUID, NAMESPACE_URL, uuid5
 
 from app.infrastructure.supabase.client import get_async_supabase_client
 from app.ai.embeddings import JinaEmbeddingService
-from app.services.knowledge.graph_extractor import ChunkGraphExtraction, Entity, Relation
+from app.domain.ingestion.builders.graph_extractor import ChunkGraphExtraction, Entity, Relation
 
 logger = logging.getLogger(__name__)
 

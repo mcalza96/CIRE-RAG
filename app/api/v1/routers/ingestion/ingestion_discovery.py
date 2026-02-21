@@ -6,9 +6,9 @@ from pydantic import BaseModel
 from app.api.v1.auth import require_service_auth
 from app.api.v1.errors import ApiError
 from app.api.v1.tenant_guard import enforce_tenant_match, require_tenant_from_context
-from app.services.ingestion.batch_orchestrator import BatchOrchestrator
+from app.workflows.ingestion.batch_orchestrator import BatchOrchestrator
 from app.api.dependencies import get_container
-from app.services.database.taxonomy_manager import TaxonomyManager
+from app.infrastructure.supabase.repositories.taxonomy_repository import TaxonomyRepository
 
 logger = structlog.get_logger(__name__)
 
@@ -25,7 +25,7 @@ class CleanupCollectionRequest(BaseModel):
 
 def get_batch_orchestrator(container=Depends(get_container)):
     return BatchOrchestrator(
-        taxonomy_manager=TaxonomyManager(),
+        taxonomy_manager=TaxonomyRepository(),
         source_repo=container.source_repository
     )
 

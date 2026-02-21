@@ -1,7 +1,7 @@
 from uuid import UUID
 from typing import Dict, Any
 import structlog
-from app.services.knowledge.clustering_service import ClusteringService
+from app.domain.ingestion.builders.clustering_service import ClusteringService
 from app.infrastructure.supabase.repositories.community_job_repository import CommunityJobRepository
 
 logger = structlog.get_logger(__name__)

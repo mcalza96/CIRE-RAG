@@ -9,7 +9,7 @@ from app.api.v1.auth import require_service_auth
 from app.api.v1.errors import ERROR_RESPONSES, ApiError
 from app.api.v1.tenant_guard import enforce_tenant_match
 from app.api.dependencies import get_knowledge_service
-from app.services.knowledge.knowledge_service import KnowledgeService
+from app.workflows.retrieval.grounded_retrieval import GroundedRetrievalWorkflow
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"], dependencies=[Depends(require_service_auth)])
@@ -138,7 +138,7 @@ def _build_retrieval_query(message: str, history: List[ChatMessage], max_turns: 
 )
 async def create_chat_completion(
     request: ChatCompletionRequest,
-    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
+    knowledge_service: GroundedRetrievalWorkflow = Depends(get_knowledge_service),
 ) -> ChatCompletionResponse:
     try:
         tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")

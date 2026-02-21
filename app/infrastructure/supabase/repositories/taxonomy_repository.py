@@ -9,7 +9,7 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
-class TaxonomyManager:
+class TaxonomyRepository:
     """
     Manages the flattened taxonomy relationships for documents.
     Handles inserting into 'source_documents' and 'document_taxonomy'.
@@ -309,7 +309,7 @@ class TaxonomyManager:
             if not docs:
                 return
 
-            logger.info(f"[TaxonomyManager] Found {len(docs)} previous versions of '{filename}'. Cleaning up...")
+            logger.info(f"[TaxonomyRepository] Found {len(docs)} previous versions of '{filename}'. Cleaning up...")
             
             content_repo = SupabaseContentRepository()
             for doc in docs:
@@ -318,14 +318,15 @@ class TaxonomyManager:
                 try:
                     await content_repo.delete_chunks_by_source_id(doc_id)
                 except Exception as e:
-                    logger.error(f"[TaxonomyManager] Error deleting chunks for {doc_id}: {e}")
+                    logger.error(f"[TaxonomyRepository] Error deleting chunks for {doc_id}: {e}")
                 
                 # 3. Delete document record
                 try:
                     await supabase.table("source_documents").delete().eq("id", doc_id).execute()
-                    logger.info(f"[TaxonomyManager] Deleted previous version {doc_id}")
+                    logger.info(f"[TaxonomyRepository] Deleted previous version {doc_id}")
                 except Exception as e:
-                    logger.error(f"[TaxonomyManager] Error deleting source record {doc_id}: {e}")
+                    logger.error(f"[TaxonomyRepository] Error deleting source record {doc_id}: {e}")
                     
         except Exception as e:
-            logger.error(f"[TaxonomyManager] Cleanup of previous versions failed: {e}")
+            logger.error(f"[TaxonomyRepository] Cleanup of previous versions failed: {e}")
+

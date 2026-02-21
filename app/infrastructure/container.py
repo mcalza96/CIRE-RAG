@@ -5,19 +5,19 @@ Centralizes service instantiation and dependency injection.
 Prevents static singletons in Domain nodes.
 """
 
-from app.services.knowledge.knowledge_service import KnowledgeService
-from app.services.ingestion.pdf_parser import PdfParserService
-from app.services.ingestion.router import DocumentStructureRouter
-from app.services.ingestion.structure_analyzer import PdfStructureAnalyzer
-from app.services.ingestion.toc_discovery import TocDiscoveryService
+from app.workflows.retrieval.grounded_retrieval import GroundedRetrievalWorkflow
+from app.infrastructure.document_parsers.pdf_parser import PdfParserService
+from app.domain.ingestion.router import DocumentStructureRouter
+from app.domain.ingestion.structure_analyzer import PdfStructureAnalyzer
+from app.domain.ingestion.toc_discovery import TocDiscoveryService
 from app.ai.embeddings import JinaEmbeddingService
-from app.services.knowledge.gravity_reranker import GravityReranker
-from app.services.knowledge.jina_reranker import JinaReranker
-from app.services.retrieval.atomic_engine import AtomicRetrievalEngine
+from app.infrastructure.ai.rerankers.gravity_reranker import GravityReranker
+from app.infrastructure.ai.rerankers.jina_reranker import JinaReranker
+from app.infrastructure.ai.retrieval.atomic_engine import AtomicRetrievalEngine
 from app.ai.tools.retrieval import RetrievalTools
-from app.services.ingestion.download.downloader import DocumentDownloadService
-from app.services.ingestion.state.state_manager import IngestionStateManager
-from app.services.retrieval.orchestration.retrieval_broker import RetrievalBroker
+from app.infrastructure.network.downloader import DocumentDownloadService
+from app.infrastructure.state_management.state_manager import IngestionStateManager
+from app.workflows.retrieval.retrieval_broker import RetrievalBroker
 from app.infrastructure.filesystem.storage import StorageService
 from app.infrastructure.supabase.repositories.supabase_source_repository import SupabaseSourceRepository
 from app.infrastructure.supabase.repositories.supabase_content_repository import SupabaseContentRepository
@@ -56,9 +56,9 @@ class CognitiveContainer:
         self._atomic_engine = None
 
     @property
-    def knowledge_service(self) -> KnowledgeService:
+    def knowledge_service(self) -> GroundedRetrievalWorkflow:
         if self._knowledge_service is None:
-            self._knowledge_service = KnowledgeService()
+            self._knowledge_service = GroundedRetrievalWorkflow()
         return self._knowledge_service
 
     @property

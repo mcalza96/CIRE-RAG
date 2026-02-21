@@ -1,15 +1,15 @@
 import structlog
 from typing import List, Dict, Any, Optional
-from app.services.ingestion.chunking.identity_service import ChunkIdentityService
-from app.services.ingestion.chunking.splitter_strategies import (
+from app.domain.ingestion.chunking.identity_service import ChunkIdentityService
+from app.domain.ingestion.chunking.splitter_strategies import (
     RecursiveTextSplitter,
     SemanticHeadingSplitter,
 )
-from app.services.ingestion.pdf_parser import PdfParserService
-from app.services.ingestion.structure_mapper import StructureMapper
+from app.infrastructure.document_parsers.pdf_parser import PdfParserService
+from app.domain.ingestion.structure_mapper import StructureMapper
 from app.domain.schemas.ingestion_schemas import IngestionMetadata
 from app.ai.contracts import AIModelConfig
-from app.services.ingestion.metadata_enricher import enrich_metadata
+from app.domain.ingestion.metadata_enricher import enrich_metadata
 from app.ai.embeddings import JinaEmbeddingService
 from pydantic import BaseModel, Field, field_validator, model_validator
 

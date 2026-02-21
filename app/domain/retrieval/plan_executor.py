@@ -5,7 +5,7 @@ from typing import Any, List, Dict, Optional
 
 from app.infrastructure.settings import settings
 from app.domain.schemas.query_plan import QueryPlan
-from app.services.retrieval.retrieval_scope_service import RetrievalScopeService
+from app.domain.retrieval.scope_service import RetrievalScopeService
 
 logger = structlog.get_logger(__name__)
 

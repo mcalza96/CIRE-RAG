@@ -14,11 +14,11 @@ from app.ai.factory import create_ingest_fallback_model, create_ingest_model
 from app.ai.contracts import BaseVLM, ModelAdapterError
 from app.ai.contracts import VerificationResult, VisualParseResult
 from app.infrastructure.settings import settings
-from app.services.ingestion.prompts import (
+from app.domain.prompts.ingestion.ingestion_prompts import (
     FORENSIC_VISUAL_SYSTEM_PROMPT,
     build_visual_parse_user_prompt,
 )
-from app.services.ingestion.verify_extraction import ExtractionVerifier
+from app.domain.ingestion.verification import ExtractionVerifier
 
 logger = structlog.get_logger(__name__)
 

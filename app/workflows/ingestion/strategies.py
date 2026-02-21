@@ -8,12 +8,12 @@ from app.domain.schemas.ingestion_schemas import IngestionMetadata
 from app.domain.models.ingestion_source import IngestionSource
 from app.domain.types.ingestion_status import IngestionStatus
 from app.utils.registry import register_strategy
-from app.services.ingestion.structure_mapper import StructureMapper
+from app.domain.ingestion.structure_mapper import StructureMapper
 from app.infrastructure.container import CognitiveContainer
-from app.services.ingestion.pdf_parser import PdfParserService
-from app.services.ingestion.toc_discovery import TocDiscoveryService
-from app.services.ingestion.chunking_service import ChunkingService
-from app.services.ingestion.router import DocumentStructureRouter, IngestionTask, ProcessingStrategy
+from app.infrastructure.document_parsers.pdf_parser import PdfParserService
+from app.domain.ingestion.toc_discovery import TocDiscoveryService
+from app.domain.ingestion.chunking.chunking_service import ChunkingService
+from app.domain.ingestion.router import DocumentStructureRouter, IngestionTask, ProcessingStrategy
 from app.ai.embeddings import JinaEmbeddingService
 from app.infrastructure.settings import settings
 

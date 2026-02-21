@@ -2,12 +2,12 @@ import structlog
 from typing import Optional, Dict, Any, List
 from fastapi import UploadFile
 
-from app.services.database.taxonomy_manager import TaxonomyManager
+from app.infrastructure.supabase.repositories.taxonomy_repository import TaxonomyRepository
 from app.infrastructure.supabase.repositories.supabase_source_repository import SupabaseSourceRepository
 from app.infrastructure.supabase.queries.ingestion_query_service import ManualIngestionQueryService
-from app.services.ingestion.monitoring.backpressure import IngestionBackpressureService
-from app.services.ingestion.observability.ingestion_tracer import IngestionObservabilityService
-from app.services.ingestion.state.batch_manager import IngestionBatchService
+from app.infrastructure.observability.ingestion.backpressure import IngestionBackpressureService
+from app.infrastructure.observability.ingestion.ingestion_tracer import IngestionObservabilityService
+from app.infrastructure.state_management.batch_manager import IngestionBatchService
 from app.domain.types.ingestion_status import IngestionStatus
 
 logger = structlog.get_logger(__name__)
@@ -20,14 +20,14 @@ class BatchOrchestrator:
     def __init__(
         self,
         query_service: Optional[ManualIngestionQueryService] = None,
-        taxonomy_manager: Optional[TaxonomyManager] = None,
+        taxonomy_manager: Optional[TaxonomyRepository] = None,
         source_repo: Optional[SupabaseSourceRepository] = None,
         backpressure_service: Optional[IngestionBackpressureService] = None,
         observability_service: Optional[IngestionObservabilityService] = None,
         batch_service: Optional[IngestionBatchService] = None
     ):
         self.query_service = query_service or ManualIngestionQueryService()
-        self.taxonomy_manager = taxonomy_manager or TaxonomyManager()
+        self.taxonomy_manager = taxonomy_manager or TaxonomyRepository()
         self.source_repo = source_repo or SupabaseSourceRepository()
         
         self.backpressure = backpressure_service or IngestionBackpressureService(self.query_service)

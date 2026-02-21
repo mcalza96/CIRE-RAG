@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Tuple
 class IScopeResolverPolicy(ABC):
     """
     Interface for domain-specific scope resolution logic. 
-    Allows the KnowledgeService to be agnostic of whether it's dealing 
+    Allows the GroundedRetrievalWorkflow to be agnostic of whether it's dealing 
     with ISO standards, financial regulations, or something else.
     """
 

@@ -1,6 +1,6 @@
 from typing import List, Dict, Any, Optional
 import pydantic
-from app.services.ingestion.toc_discovery import TocEntry, TocResult
+from app.domain.ingestion.toc_discovery import TocEntry, TocResult
 
 
 class StructureMapper:

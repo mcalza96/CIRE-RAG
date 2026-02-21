@@ -10,7 +10,7 @@ from app.infrastructure.container import CognitiveContainer
 from app.infrastructure.supabase.queue.job_store import SupabaseJobStore
 from app.infrastructure.concurrency.tenant_concurrency_manager import TenantConcurrencyManager
 from app.infrastructure.queue.base_worker import BaseWorkerProcessor
-from app.services.database.taxonomy_manager import TaxonomyManager
+from app.infrastructure.supabase.repositories.taxonomy_repository import TaxonomyRepository
 from app.workflows.ingestion.dispatcher import IngestionDispatcher
 from app.workflows.ingestion.job_dispatcher import WorkerJobDispatcher
 import app.workflows.ingestion.strategies  # Trigger strategy registration
@@ -78,7 +78,7 @@ class IngestionWorker:
             from app.infrastructure.supabase.repositories.supabase_raptor_repository import (
                 SupabaseRaptorRepository,
             )
-            from app.services.knowledge.raptor_processor import RaptorProcessor
+            from app.domain.ingestion.builders.raptor_processor import RaptorProcessor
 
             if resolved_container is None:
                 resolved_container = CognitiveContainer()
@@ -90,7 +90,7 @@ class IngestionWorker:
                 content_repo=resolved_container.content_repository,
                 storage_service=resolved_container.storage_service,
                 dispatcher=self.dispatcher,
-                taxonomy_manager=TaxonomyManager(),
+                taxonomy_manager=TaxonomyRepository(),
                 metadata_adapter=SupabaseMetadataAdapter(),
                 policy=self.policy,
                 raptor_processor=raptor_processor,

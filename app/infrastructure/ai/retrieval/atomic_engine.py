@@ -20,8 +20,8 @@ from app.infrastructure.supabase.repositories.supabase_atomic_retrieval_reposito
 )
 from app.ai.embeddings import JinaEmbeddingService
 
-from app.services.retrieval.retrieval_scope_service import RetrievalScopeService
-from app.services.retrieval.retrieval_plan_executor import RetrievalPlanExecutor
+from app.domain.retrieval.scope_service import RetrievalScopeService
+from app.domain.retrieval.plan_executor import RetrievalPlanExecutor
 from app.domain.retrieval.scope_utils import is_clause_heavy_query
 
 logger = structlog.get_logger(__name__)
