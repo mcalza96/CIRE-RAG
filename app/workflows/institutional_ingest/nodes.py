@@ -5,7 +5,7 @@ import structlog
 from app.workflows.institutional_ingest.orchestrator import (
     InstitutionalOrchestrator,
 )
-from app.domain.types.ingestion_status import IngestionStatus
+from app.domain.ingestion.types import IngestionStatus
 from app.workflows.institutional_ingest.state import InstitutionalState
 
 logger = structlog.get_logger(__name__)

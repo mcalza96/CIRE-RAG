@@ -1,6 +1,6 @@
 from typing import Dict, Any, Optional
 from app.domain.schemas.ingestion_schemas import IngestionMetadata
-from app.domain.types.authority import AuthorityLevel
+from app.domain.retrieval.types import AuthorityLevel
 from app.domain.ingestion.authority_classifier import AuthorityClassifier
 from app.infrastructure.settings import settings
 

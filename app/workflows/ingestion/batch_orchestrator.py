@@ -8,7 +8,7 @@ from app.infrastructure.supabase.queries.ingestion_query_service import ManualIn
 from app.infrastructure.observability.ingestion.backpressure import IngestionBackpressureService
 from app.infrastructure.observability.ingestion.ingestion_tracer import IngestionObservabilityService
 from app.infrastructure.state_management.batch_manager import IngestionBatchService
-from app.domain.types.ingestion_status import IngestionStatus
+from app.domain.ingestion.types import IngestionStatus
 
 logger = structlog.get_logger(__name__)
 

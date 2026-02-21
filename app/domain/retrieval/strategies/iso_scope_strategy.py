@@ -1,6 +1,6 @@
 import re
 from typing import Any, Dict, Tuple
-from app.domain.interfaces.scope_resolver_policy import IScopeResolverPolicy
+from app.domain.retrieval.ports import IScopeResolverPolicy
 
 class ISOScopeResolverPolicy(IScopeResolverPolicy):
     """

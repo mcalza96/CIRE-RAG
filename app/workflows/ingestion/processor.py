@@ -1,11 +1,11 @@
 from typing import Dict, Any, Optional
 import structlog
-from app.domain.repositories.source_repository import ISourceRepository
-from app.domain.repositories.content_repository import IContentRepository
+from app.domain.ingestion.ports import ISourceRepository
+from app.domain.ingestion.ports import IContentRepository
 from app.workflows.ingestion.post_processor import PostIngestionPipelineService
 from app.workflows.ingestion.dispatcher import IngestionDispatcher
-from app.domain.types.ingestion_status import IngestionStatus
-from app.domain.policies.ingestion_policy import IngestionPolicy
+from app.domain.ingestion.types import IngestionStatus
+from app.domain.ingestion.policies import IngestionPolicy
 from app.infrastructure.supabase.repositories.taxonomy_repository import TaxonomyRepository
 from app.infrastructure.supabase.adapters.metadata_adapter import SupabaseMetadataAdapter
 from app.infrastructure.filesystem.storage import StorageService

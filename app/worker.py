@@ -4,7 +4,7 @@ from typing import Any, Callable, Coroutine, Dict, Optional
 
 from app.workflows.ingestion.processor import DocumentProcessor
 from app.infrastructure.settings import settings
-from app.domain.policies.ingestion_policy import IngestionPolicy
+from app.domain.ingestion.policies import IngestionPolicy
 from app.infrastructure.supabase.adapters.metadata_adapter import SupabaseMetadataAdapter
 from app.infrastructure.container import CognitiveContainer
 from app.infrastructure.background_jobs.job_store import SupabaseJobStore

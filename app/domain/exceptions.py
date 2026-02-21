@@ -2,8 +2,7 @@ from typing import Optional
 
 class ForensicIntegrityError(Exception):
     """
-    Excepción lanzada cuando se detecta una violación de integridad forense
-    (p.ej. alucinación detectada en un stream de salida).
+    Excepción lanzada cuando se detecta una violación de integridad forense.
     """
     def __init__(
         self, 

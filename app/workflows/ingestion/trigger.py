@@ -6,7 +6,7 @@ from uuid import uuid4
 from typing import Optional, Dict, Any, Tuple
 from fastapi import UploadFile
 
-from app.domain.types.ingestion_status import IngestionStatus
+from app.domain.ingestion.types import IngestionStatus
 from app.domain.schemas.ingestion_schemas import IngestionMetadata
 from app.infrastructure.supabase.repositories.taxonomy_repository import TaxonomyRepository
 from app.infrastructure.supabase.repositories.supabase_source_repository import SupabaseSourceRepository

@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 import structlog
 
 from app.infrastructure.state_management.state_manager import IngestionStateManager
-from app.domain.repositories.content_repository import IContentRepository
+from app.domain.ingestion.ports import IContentRepository
 from app.infrastructure.supabase.repositories.supabase_raptor_repository import SupabaseRaptorRepository
 from app.infrastructure.supabase.repositories.job_repository import JobRepository
 from app.domain.ingestion.builders.graph_enricher import GraphEnrichmentService

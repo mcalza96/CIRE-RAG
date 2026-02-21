@@ -1,6 +1,6 @@
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
-from app.domain.forensic.exceptions import ForensicIntegrityError
+from app.domain.exceptions import ForensicIntegrityError
 import logging
 
 logger = logging.getLogger(__name__)

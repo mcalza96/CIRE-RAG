@@ -42,14 +42,14 @@ from app.api.v1.schemas.retrieval_advanced import (
 )
 from app.api.middleware.security import LeakCanary, SecurityViolationError
 from app.infrastructure.settings import settings
-from app.domain.retrieval.scope_utils import extract_requested_standards, normalize_scope_name
-from app.domain.retrieval.scope_utils import extract_clause_refs, extract_row_scope
-from app.domain.retrieval.retrieval_policy import (
+from app.domain.retrieval.scoping import extract_requested_standards, normalize_scope_name
+from app.domain.retrieval.scoping import extract_clause_refs, extract_row_scope
+from app.domain.retrieval.policies import (
     apply_search_hints,
     filter_rows_by_min_score,
     reduce_structural_noise_rows,
 )
-from app.domain.retrieval.retrieval_validation import (
+from app.domain.retrieval.validation import (
     validate_metadata_values,
     validate_time_range,
     validate_source_standards,
@@ -58,8 +58,8 @@ from app.domain.retrieval.retrieval_validation import (
     _ALLOWED_FILTER_KEYS,
     _RESERVED_METADATA_KEYS
 )
-from app.domain.retrieval.retrieval_fusion import fuse_late_results, to_retrieval_items
-from app.domain.retrieval.retrieval_trace import build_comprehensive_trace
+from app.domain.retrieval.fusion import fuse_late_results, to_retrieval_items
+from app.domain.retrieval.tracing import build_comprehensive_trace
 from app.infrastructure.container import CognitiveContainer
 from app.workflows.retrieval.grounded_retrieval import GroundedRetrievalWorkflow
 
@@ -68,7 +68,7 @@ logger = structlog.get_logger(__name__)
 _SCALAR_TYPES = (str, int, float, bool)
 
 
-from app.domain.retrieval.retrieval_fusion import extract_row, item_identity, item_clause_refs, _safe_float
+from app.domain.retrieval.fusion import extract_row, item_identity, item_clause_refs, _safe_float
 
 def _finite_or_none(value: Any) -> float | None:
     try:
@@ -247,7 +247,7 @@ class ContractManager:
         requested_standards: list[str],
         require_all_scopes: bool,
     ) -> list[str]:
-        from app.domain.retrieval.retrieval_fusion import missing_scopes
+        from app.domain.retrieval.fusion import missing_scopes
         return missing_scopes(items=items, requested_standards=requested_standards, require_all_scopes=require_all_scopes)
 
     @classmethod
@@ -258,7 +258,7 @@ class ContractManager:
         query_clause_refs: list[str],
         min_clause_refs_required: int,
     ) -> list[str]:
-        from app.domain.retrieval.retrieval_fusion import missing_clause_refs
+        from app.domain.retrieval.fusion import missing_clause_refs
         return missing_clause_refs(items=items, query_clause_refs=query_clause_refs, min_clause_refs_required=min_clause_refs_required)
 
     @staticmethod
@@ -268,7 +268,7 @@ class ContractManager:
         min_score: float | None,
         noise_reduction: bool,
     ) -> tuple[list[RetrievalItem], dict[str, Any]]:
-        from app.domain.retrieval.retrieval_fusion import apply_retrieval_policy_to_items
+        from app.domain.retrieval.fusion import apply_retrieval_policy_to_items
         return apply_retrieval_policy_to_items(items, min_score=min_score, noise_reduction=noise_reduction)
 
     @classmethod

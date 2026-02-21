@@ -1,8 +1,8 @@
 import os
 import structlog
 from typing import Optional
-from app.domain.models.ingestion_source import IngestionSource
-from app.domain.repositories.source_repository import ISourceRepository
+from app.domain.ingestion.entities import IngestionSource
+from app.domain.ingestion.ports import ISourceRepository
 from app.infrastructure.filesystem.storage import StorageService
 from app.infrastructure.settings import settings
 

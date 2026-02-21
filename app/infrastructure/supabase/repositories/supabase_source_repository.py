@@ -1,5 +1,5 @@
 from typing import Dict, Any, Optional
-from app.domain.repositories.source_repository import ISourceRepository
+from app.domain.ingestion.ports import ISourceRepository
 from app.infrastructure.observability.context_vars import get_tenant_id
 from app.infrastructure.supabase.client import get_async_supabase_client
 from app.domain.schemas import SourceDocument

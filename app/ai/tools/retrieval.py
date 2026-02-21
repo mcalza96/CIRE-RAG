@@ -10,8 +10,8 @@ from typing import List, Optional, Dict, Any
 import dspy
 
 from app.workflows.retrieval.retrieval_broker import RetrievalBroker
-from app.domain.interfaces.retrieval_interface import IRetrievalRepository
-from app.domain.retrieval.retrieval_config import retrieval_settings
+from app.domain.retrieval.ports import IRetrievalRepository
+from app.domain.retrieval.config import retrieval_settings
 
 class TenantContextMissingError(ValueError):
     """Raised when institutional retrieval is attempted without a tenant_id."""

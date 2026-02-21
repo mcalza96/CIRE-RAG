@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any, List
 from fastapi import UploadFile
 
 from app.infrastructure.settings import settings
-from app.domain.types.ingestion_status import IngestionStatus
+from app.domain.ingestion.types import IngestionStatus
 from app.infrastructure.supabase.queries.ingestion_query_service import ManualIngestionQueryService
 from app.infrastructure.supabase.repositories.taxonomy_repository import TaxonomyRepository
 from app.infrastructure.filesystem.filename_utils import sanitize_filename

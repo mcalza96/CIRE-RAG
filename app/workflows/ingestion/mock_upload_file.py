@@ -1,6 +1,6 @@
 import os
 from typing import BinaryIO, Optional
-from app.domain.models.ingestion_source import IngestionSource
+from app.domain.ingestion.entities import IngestionSource
 
 class MockUploadFile(IngestionSource):
     """

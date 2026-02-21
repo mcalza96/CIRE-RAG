@@ -1,6 +1,6 @@
 import structlog
 from typing import List, Dict, Any, Optional
-from app.domain.interfaces.retrieval_interface import IRetrievalRepository
+from app.domain.retrieval.ports import IRetrievalRepository
 
 logger = structlog.get_logger(__name__)
 

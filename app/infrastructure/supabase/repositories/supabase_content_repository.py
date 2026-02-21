@@ -1,6 +1,6 @@
 from typing import List, Dict, Any
 import structlog
-from app.domain.repositories.content_repository import IContentRepository
+from app.domain.ingestion.ports import IContentRepository
 from app.infrastructure.observability.context_vars import get_tenant_id
 from app.infrastructure.settings import settings
 from app.infrastructure.supabase.client import get_async_supabase_client

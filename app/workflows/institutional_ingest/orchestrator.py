@@ -8,7 +8,7 @@ from app.ai.generation import get_llm
 from app.domain.prompts.institutional import InstitutionalPrompts
 from app.infrastructure.settings import settings
 from app.domain.schemas import ContentChunk
-from app.domain.types.ingestion_status import IngestionStatus
+from app.domain.ingestion.types import IngestionStatus
 from app.infrastructure.supabase.repositories.supabase_content_repository import SupabaseContentRepository
 from app.infrastructure.supabase.repositories.supabase_source_repository import SupabaseSourceRepository
 from app.ai.embeddings import JinaEmbeddingService

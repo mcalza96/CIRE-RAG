@@ -5,7 +5,7 @@ from enum import Enum
 import re
 import html
 
-from app.domain.types.authority import AuthorityLevel
+from app.domain.retrieval.types import AuthorityLevel
 
 class IngestionType(str, Enum):
     CONTENT = "content"

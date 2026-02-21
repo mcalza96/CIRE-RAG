@@ -2,7 +2,7 @@ from enum import Enum
 
 class IngestionStatus(str, Enum):
     PENDING = "pending"
-    PENDING_INGESTION = "pending_ingestion" # Legacy, to be consolidated? Keeping for safe refactor
+    PENDING_INGESTION = "pending_ingestion" 
     QUEUED = "queued"
     PROCESSING = "processing"
     PROCESSING_V2 = "processing_v2"

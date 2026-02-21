@@ -1,8 +1,26 @@
+from abc import ABC, abstractmethod
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict, Field
 from uuid import UUID
-from typing import List, Optional, Dict, Any
 from enum import Enum
 from datetime import datetime
+
+class IngestionSource(ABC):
+    """
+    Abstract interface for a source file to be ingested.
+    """
+    
+    @abstractmethod
+    def get_filename(self) -> str:
+         pass
+         
+    @abstractmethod
+    def get_file_path(self) -> Optional[str]:
+         pass
+
+    @abstractmethod
+    async def get_content(self) -> bytes:
+        pass
 
 class SourceStatus(str, Enum):
     QUEUED = 'queued'

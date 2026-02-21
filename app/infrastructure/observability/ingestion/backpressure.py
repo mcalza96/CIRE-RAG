@@ -3,7 +3,7 @@ import structlog
 from typing import Optional, Dict
 
 from app.infrastructure.settings import settings
-from app.domain.types.ingestion_status import IngestionStatus
+from app.domain.ingestion.types import IngestionStatus
 from app.infrastructure.supabase.queries.ingestion_query_service import ManualIngestionQueryService
 
 logger = structlog.get_logger(__name__)

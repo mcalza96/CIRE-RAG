@@ -7,7 +7,7 @@ import aiohttp
 import structlog
 
 from app.infrastructure.settings import settings
-from app.domain.interfaces.embedding_provider import IEmbeddingProvider
+from app.domain.ingestion.ports import IEmbeddingProvider
 
 logger = structlog.get_logger(__name__)
 

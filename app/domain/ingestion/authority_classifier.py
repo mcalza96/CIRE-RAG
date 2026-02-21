@@ -10,7 +10,7 @@ import math
 import hashlib
 from collections import Counter
 
-from app.domain.types.authority import AuthorityLevel
+from app.domain.retrieval.types import AuthorityLevel
 
 
 class AuthorityClassifier:

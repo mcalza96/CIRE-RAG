@@ -2,7 +2,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 from app.infrastructure.supabase.client import get_async_supabase_client
 from app.domain.schemas.ingestion_schemas import IngestionMetadata
-from app.domain.types.ingestion_status import IngestionStatus
+from app.domain.ingestion.types import IngestionStatus
 from app.infrastructure.observability.correlation import get_correlation_id
 from app.infrastructure.supabase.repositories.supabase_content_repository import SupabaseContentRepository
 import structlog

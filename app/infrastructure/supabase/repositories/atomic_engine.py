@@ -9,7 +9,7 @@ import structlog
 from app.infrastructure.observability.retrieval_metrics import retrieval_metrics_store
 from app.infrastructure.observability.timing import elapsed_ms, perf_now
 from app.infrastructure.settings import settings
-from app.domain.interfaces.atomic_retrieval_repository import IAtomicRetrievalRepository
+from app.domain.retrieval.ports import IAtomicRetrievalRepository
 from app.domain.schemas.query_plan import QueryPlan
 from app.domain.schemas.retrieval_payloads import RetrievalRow
 from app.infrastructure.supabase.repositories.supabase_graph_retrieval_repository import (
@@ -20,9 +20,9 @@ from app.infrastructure.supabase.repositories.supabase_atomic_retrieval_reposito
 )
 from app.ai.embeddings import JinaEmbeddingService
 
-from app.domain.retrieval.scope_service import RetrievalScopeService
-from app.domain.retrieval.plan_executor import RetrievalPlanExecutor
-from app.domain.retrieval.scope_utils import is_clause_heavy_query
+from app.domain.retrieval.scoping import RetrievalScopeService
+from app.workflows.retrieval.plan_executor import RetrievalPlanExecutor
+from app.domain.retrieval.scoping import is_clause_heavy_query
 
 logger = structlog.get_logger(__name__)
 

@@ -4,7 +4,7 @@ import asyncio
 import textwrap
 import numpy as np
 from typing import List, Dict, Any, Optional, cast
-from app.domain.interfaces.embedding_provider import IEmbeddingProvider
+from app.domain.ingestion.ports import IEmbeddingProvider
 from app.ai.contracts import AIModelConfig
 from app.infrastructure.settings import settings
 

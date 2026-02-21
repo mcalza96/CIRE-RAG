@@ -6,7 +6,7 @@ from collections import OrderedDict
 from typing import List, Dict, Any, Optional, cast
 from app.infrastructure.observability.metrics import track_span
 from app.infrastructure.settings import settings
-from app.domain.interfaces.embedding_provider import IEmbeddingProvider
+from app.domain.ingestion.ports import IEmbeddingProvider
 from app.ai.providers.cohere import CohereCloudProvider
 from app.ai.providers.jina_cloud import JinaCloudProvider
 

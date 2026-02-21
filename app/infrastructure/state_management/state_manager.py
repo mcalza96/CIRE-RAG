@@ -1,7 +1,7 @@
 import structlog
 from typing import Dict, Any, Optional
-from app.domain.repositories.source_repository import ISourceRepository
-from app.domain.types.ingestion_status import IngestionStatus
+from app.domain.ingestion.ports import ISourceRepository
+from app.domain.ingestion.types import IngestionStatus
 
 logger = structlog.get_logger(__name__)
 

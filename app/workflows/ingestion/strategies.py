@@ -5,8 +5,8 @@ from typing import List, Dict, Any, Optional
 
 from app.ai.contracts import AIModelConfig
 from app.domain.schemas.ingestion_schemas import IngestionMetadata
-from app.domain.models.ingestion_source import IngestionSource
-from app.domain.types.ingestion_status import IngestionStatus
+from app.domain.ingestion.entities import IngestionSource
+from app.domain.ingestion.types import IngestionStatus
 from app.domain.ingestion.strategy_registry import register_strategy
 from app.domain.ingestion.structure_mapper import StructureMapper
 from app.infrastructure.container import CognitiveContainer
