@@ -220,11 +220,6 @@ class GravityReranker:
             if exclude_zero and weight == 0.0 and not (is_constitutional or is_summary):
                 continue
 
-            # --- Prune: below minimum quality threshold (on the RAW similarity) ---
-            original_score = float(result.similarity or 0.0)
-            if original_score < min_score:
-                continue
-
             # --- Boosts (moderate, not score-destroying) ---
             source_layer = result.source_layer or "global"
             layer_boost = 1.0
@@ -238,8 +233,16 @@ class GravityReranker:
 
             heading_boost = self._heading_boost(intent.query, result.content)
 
+            # --- Prune: below minimum quality threshold (on the RAW similarity) ---
+            original_score = float(result.similarity or 0.0)
+            if original_score < min_score and heading_boost <= 1.0:
+                continue
+
+            # Ensure minimal initial score to safely multiply if it was boosted structurally
+            effective_score = max(original_score, 0.15) if heading_boost > 1.0 else original_score
+
             multiplier = weight * layer_boost * constitutional_boost * raptor_boost * heading_boost
-            final_score = original_score * multiplier
+            final_score = effective_score * multiplier
 
             # --- Build a NEW result instead of mutating the original ---
             new_meta = dict(meta)

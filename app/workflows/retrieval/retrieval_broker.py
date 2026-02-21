@@ -488,13 +488,25 @@ class RetrievalBroker:
             idx = r.get("index")
             if 0 <= idx < len(candidates):
                 source = dict(candidates[idx])
-                source["semantic_relevance_score"] = _safe_float(r.get("relevance_score"), default=0.0)
+                jina_score = _safe_float(r.get("relevance_score"), default=0.0)
+                source["semantic_relevance_score"] = jina_score
+                
+                # Jina tends to sink structurally-matched chunks because semantically they are loose.
+                # Here we respect the heading_boost applied during GravityRerank Phase.
+                boost = float(source.get("metadata", {}).get("heading_boost", 1.0))
+                if boost > 1.0:
+                    jina_score *= boost  # Structural intent overrules raw semantic
+                    
                 if "jina" in active.__class__.__name__.lower():
-                    source["jina_relevance_score"] = source["semantic_relevance_score"]
+                    source["jina_relevance_score"] = jina_score
+                
+                source["combined_semantic_score"] = jina_score
                 reordered.append(source)
                 
+        # Re-sort to respect the structural boosts injected above
+        reordered.sort(key=lambda x: x.get("combined_semantic_score", 0.0), reverse=True)
+                
         # Fill the rest with non-reranked candidates just in case we need 'k' elements
-        # and Jina returned fewer (although Jina should respect top_n)
         return reordered + [c for i, c in enumerate(results) if i not in [r.get("index") for r in rows]]
 
     async def _execute_gravity_rerank(self, query, original_results, current_results, scope_context, k, trace):
@@ -513,12 +525,16 @@ class RetrievalBroker:
         ranked = self.reranker.rerank(candidates, intent)
         merged = []
         for rc in ranked[:k]:
-            p = rc.model_dump()
+            src_orig = raw_by_id.get(str(rc.id), {})
+            # Keep all original database fields intact
+            p = dict(src_orig)
+            # Update with Gravity's new metrics
+            p["metadata"] = rc.metadata if rc.metadata else p.get("metadata", {})
+            p["similarity"] = rc.similarity
+            p["score"] = rc.score
             p["score_space"] = "gravity"
-            src = raw_by_id.get(str(rc.id), {})
-            for field in ["is_visual_anchor", "parent_chunk_id", "source_type"]:
-                if field in src: p[field] = src[field]
             merged.append(p)
+            
         if isinstance(trace, dict): trace["score_space"] = "gravity"
         return merged
 
