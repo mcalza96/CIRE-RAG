@@ -18,13 +18,13 @@ logger = structlog.get_logger(__name__)
 # Maps query keywords to SECTION_PATH prefixes they should boost.
 # ============================================================================
 _HEADING_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "introducción": ("0 Int",),
-    "introduccion": ("0 Int",),
-    "introduction": ("0 Int",),
-    "generalidades": ("0.1 Gen", "0 Int"),
-    "preámbulo": ("Preámbulo", "Preambulo"),
-    "preambulo": ("Preámbulo", "Preambulo"),
-    "preamble": ("Preámbulo", "Preambulo"),
+    "introducción": ("0 Int", "0. Intro", "Introducción", "Introduccion"),
+    "introduccion": ("0 Int", "0. Intro", "Introducción", "Introduccion"),
+    "introduction": ("0 Int", "0. Int", "Introduction", "Intro"),
+    "generalidades": ("0.1 Gen", "0.1 Generalidades", "0 Int"),
+    "preámbulo": ("Preámbulo", "Preambulo", "0 Pre"),
+    "preambulo": ("Preámbulo", "Preambulo", "0 Pre"),
+    "preamble": ("Preámbulo", "Preambulo", "0 Pre"),
     "contexto": ("4 Con",),
     "context": ("4 Con",),
     "liderazgo": ("5 Lid",),

@@ -423,17 +423,18 @@ class RetrievalBroker:
             requested_scopes = requested_scopes_from_context(scope_context)
             rerank_started = time.perf_counter()
             skip_external_rerank = bool(scope_context.get("_skip_external_rerank"))
-            use_local = rerank_mode in {"local", "hybrid"}
 
             working_results = results
 
-            # 1. Local Gravity Reranking (Reglas duras, metadatos, heading boost)
-            if use_local:
-                working_results = await self._execute_gravity_rerank(
-                    query, results, working_results, scope_context,
-                    len(working_results),  # Evaluate all initial candidates
-                    trace_payload
-                )
+            # 1. Local Gravity Reranking — ALWAYS runs.
+            # This is the business-rule layer: heading_boost, authority weights,
+            # structural intent.  It is NOT optional; it forms the foundation
+            # that semantic rerankers refine on top of.
+            working_results = await self._execute_gravity_rerank(
+                query, results, working_results, scope_context,
+                len(working_results),  # Evaluate all initial candidates
+                trace_payload
+            )
 
             # 2. Scope Penalty & Metrics
             if requested_scopes:
@@ -495,7 +496,10 @@ class RetrievalBroker:
                 # Here we respect the heading_boost applied during GravityRerank Phase.
                 boost = float(source.get("metadata", {}).get("heading_boost", 1.0))
                 if boost > 1.0:
-                    jina_score *= boost  # Structural intent overrules raw semantic
+                    # Jina scores max out around 1.0. If the baseline semantic score is tiny (e.g., 0.05),
+                    # multiplying it by 3.0 or 5.0 still leaves it below purely semantic matches (e.g., 0.8).
+                    # We establish a functional floor so the boost propels it above semantic matches.
+                    jina_score = max(jina_score, 0.3) * boost  # Structural intent overrules raw semantic
                     
                 if "jina" in active.__class__.__name__.lower():
                     source["jina_relevance_score"] = jina_score
