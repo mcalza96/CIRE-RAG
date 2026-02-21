@@ -18,7 +18,7 @@ from pydantic import BaseModel, RootModel
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.infrastructure.settings import settings
-from app.infrastructure.ai.instructor_factory import (
+from app.ai.instructor_factory import (
     create_async_instructor_client,
     create_instructor_client,
 )

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from fastapi import UploadFile
 from app.workflows.ingestion.dispatcher import IngestionDispatcher
-from app.schemas.ingestion import IngestionMetadata
+from app.domain.schemas.ingestion_schemas import IngestionMetadata
 from app.services.database.taxonomy_manager import TaxonomyManager
 from app.workflows.ingestion.mock_upload_file import MockUploadFile
 
@@ -15,15 +15,15 @@ logger = structlog.get_logger(__name__)
 
 from app.domain.types.ingestion_status import IngestionStatus
 
-from app.infrastructure.repositories.supabase_source_repository import SupabaseSourceRepository
+from app.infrastructure.supabase.repositories.supabase_source_repository import SupabaseSourceRepository
 from uuid import uuid4
-from app.infrastructure.services.manual_ingestion_query_service import ManualIngestionQueryService
+from app.infrastructure.supabase.queries.ingestion_query_service import ManualIngestionQueryService
 from app.infrastructure.supabase.client import get_async_supabase_client
 
 
-from app.application.services.ingestion_backpressure_service import IngestionBackpressureService
-from app.application.services.ingestion_observability_service import IngestionObservabilityService
-from app.application.services.ingestion_batch_service import IngestionBatchService
+from app.services.ingestion.monitoring.backpressure import IngestionBackpressureService
+from app.services.ingestion.observability.ingestion_tracer import IngestionObservabilityService
+from app.services.ingestion.state.batch_manager import IngestionBatchService
 
 class ManualIngestionUseCase:
     def __init__(

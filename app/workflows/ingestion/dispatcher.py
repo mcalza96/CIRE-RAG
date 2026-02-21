@@ -1,7 +1,7 @@
 import structlog
 from typing import Dict, Any, Type, Optional
 
-from app.schemas.ingestion import IngestionMetadata, IngestionType
+from app.domain.schemas.ingestion_schemas import IngestionMetadata, IngestionType
 from app.workflows.ingestion.strategies import IngestionResult, IngestionStrategy
 from app.domain.models.ingestion_source import IngestionSource
 from app.utils.registry import registry

@@ -2,21 +2,21 @@ from typing import Dict, Any, Optional
 
 from app.domain.repositories.source_repository import ISourceRepository
 from app.domain.repositories.content_repository import IContentRepository
-from app.application.services.post_ingestion_pipeline_service import PostIngestionPipelineService
+from app.services.ingestion.post_processor import PostIngestionPipelineService
 from app.workflows.ingestion.dispatcher import IngestionDispatcher
 from app.domain.types.ingestion_status import IngestionStatus
 from app.domain.policies.ingestion_policy import IngestionPolicy
 from app.services.database.taxonomy_manager import TaxonomyManager
-from app.infrastructure.adapters.supabase_metadata_adapter import SupabaseMetadataAdapter
-from app.infrastructure.services.storage_service import StorageService
+from app.infrastructure.supabase.adapters.metadata_adapter import SupabaseMetadataAdapter
+from app.infrastructure.filesystem.storage import StorageService
 from app.infrastructure.observability.correlation import set_correlation_id
-from app.application.services.ingestion_context_resolver import IngestionContextResolver
+from app.services.ingestion.state.context_resolver import IngestionContextResolver
 import structlog
 from app.infrastructure.observability.logger_config import bind_context
-from app.infrastructure.repositories.supabase_raptor_repository import SupabaseRaptorRepository
-from app.application.services.document_download_service import DocumentDownloadService
-from app.application.services.ingestion_state_manager import IngestionStateManager
-from app.application.services.visual_anchor_service import VisualAnchorService
+from app.infrastructure.supabase.repositories.supabase_raptor_repository import SupabaseRaptorRepository
+from app.services.ingestion.download.downloader import DocumentDownloadService
+from app.services.ingestion.state.state_manager import IngestionStateManager
+from app.services.ingestion.anchors.anchor_service import VisualAnchorService
 from app.services.ingestion.visual_parser import VisualDocumentParser
 from app.services.ingestion.integrator import VisualGraphIntegrator
 from app.infrastructure.settings import settings

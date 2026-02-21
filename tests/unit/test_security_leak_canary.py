@@ -1,6 +1,6 @@
 import pytest
 
-from app.core.middleware.security import LeakCanary, SecurityViolationError
+from app.api.middleware.security import LeakCanary, SecurityViolationError
 
 
 def test_leak_canary_raises_when_doc_missing_tenant_and_not_global() -> None:

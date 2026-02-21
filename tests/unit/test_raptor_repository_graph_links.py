@@ -4,7 +4,7 @@ import asyncio
 from uuid import uuid4
 
 from app.domain.raptor_schemas import SummaryNode
-from app.infrastructure.repositories.supabase_raptor_repository import SupabaseRaptorRepository
+from app.infrastructure.supabase.repositories.supabase_raptor_repository import SupabaseRaptorRepository
 
 
 class _FakeQuery:

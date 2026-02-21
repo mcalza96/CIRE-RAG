@@ -2,7 +2,7 @@ import asyncio
 from typing import Any
 
 from app.api.v1.schemas.retrieval_advanced import HybridRetrievalRequest
-from app.application.services.retrieval_contract_service import RetrievalContractService
+from app.services.retrieval.orchestration.contract_manager import ContractManager as RetrievalContractService
 from app.infrastructure.container import CognitiveContainer
 
 

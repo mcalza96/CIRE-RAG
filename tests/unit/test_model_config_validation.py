@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.core.config.model_config import ModelSettings, ProviderName
+from app.ai.config import ModelSettings, ProviderName
 
 
 def test_openai_provider_rejects_gemini_model_name() -> None:

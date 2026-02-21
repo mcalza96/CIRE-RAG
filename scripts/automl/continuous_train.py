@@ -22,14 +22,14 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "../../"))
 import dspy
 from dspy.evaluate import Evaluate
 from dspy.teleprompt import BootstrapFewShotWithRandomSearch
-from app.adapters.telemetry_adapter import TelemetryLoader
-from app.core.prompts.socratic import SocraticModule, SocraticSignature, validate_socratic_response
-from app.core.optimization.train_socratic import socratic_assessment_metric
+from app.infrastructure.observability.telemetry_adapter import TelemetryLoader
+from app.domain.prompts.socratic import SocraticModule, SocraticSignature, validate_socratic_response
+# from app.domain.optimization.train_socratic import socratic_assessment_metric # TODO: Restore when module is found
 
 # Configuration
 THRESHOLD_PERCENT = 0.02  # 2% improvement required
 PROD_MODEL_PATH = os.path.join(
-    os.path.dirname(__file__), "../../app/core/prompts/optimized_socratic.json"
+    os.path.dirname(__file__), "../../app/domain/prompts/optimized_socratic.json"
 )
 LOG_Level = logging.INFO
 

@@ -3,12 +3,12 @@ import structlog
 import os
 
 from app.domain.types.ingestion_status import IngestionStatus
-from app.infrastructure.repositories.supabase_source_repository import SupabaseSourceRepository
-from app.infrastructure.services.manual_ingestion_query_service import (
+from app.infrastructure.supabase.repositories.supabase_source_repository import SupabaseSourceRepository
+from app.infrastructure.supabase.queries.ingestion_query_service import (
     ManualIngestionQueryService,
 )
-from app.application.services.ingestion_backpressure_service import IngestionBackpressureService
-from app.application.services.ingestion_batch_service import IngestionBatchService
+from app.services.ingestion.monitoring.backpressure import IngestionBackpressureService
+from app.services.ingestion.state.batch_manager import IngestionBatchService
 from app.infrastructure.observability.correlation import get_correlation_id
 from app.services.database.taxonomy_manager import TaxonomyManager
 from app.infrastructure.settings import settings

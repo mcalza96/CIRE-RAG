@@ -15,16 +15,16 @@ from app.services.knowledge.gravity_reranker import GravityReranker
 from app.services.knowledge.jina_reranker import JinaReranker
 from app.services.retrieval.atomic_engine import AtomicRetrievalEngine
 from app.ai.tools.retrieval import RetrievalTools
-from app.application.services.document_download_service import DocumentDownloadService
-from app.application.services.ingestion_state_manager import IngestionStateManager
-from app.application.services.retrieval_broker import RetrievalBroker
-from app.infrastructure.services.storage_service import StorageService
-from app.infrastructure.repositories.supabase_source_repository import SupabaseSourceRepository
-from app.infrastructure.repositories.supabase_content_repository import SupabaseContentRepository
-from app.infrastructure.repositories.supabase_retrieval_repository import (
+from app.services.ingestion.download.downloader import DocumentDownloadService
+from app.services.ingestion.state.state_manager import IngestionStateManager
+from app.services.retrieval.orchestration.retrieval_broker import RetrievalBroker
+from app.infrastructure.filesystem.storage import StorageService
+from app.infrastructure.supabase.repositories.supabase_source_repository import SupabaseSourceRepository
+from app.infrastructure.supabase.repositories.supabase_content_repository import SupabaseContentRepository
+from app.infrastructure.supabase.repositories.supabase_retrieval_repository import (
     SupabaseRetrievalRepository,
 )
-from app.infrastructure.repositories.supabase_atomic_retrieval_repository import (
+from app.infrastructure.supabase.repositories.supabase_atomic_retrieval_repository import (
     SupabaseAtomicRetrievalRepository,
 )
 

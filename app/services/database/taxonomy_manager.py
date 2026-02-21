@@ -1,10 +1,10 @@
 import uuid
 from typing import Any, Dict, List, Optional
 from app.infrastructure.supabase.client import get_async_supabase_client
-from app.schemas.ingestion import IngestionMetadata
+from app.domain.schemas.ingestion_schemas import IngestionMetadata
 from app.domain.types.ingestion_status import IngestionStatus
 from app.infrastructure.observability.correlation import get_correlation_id
-from app.infrastructure.repositories.supabase_content_repository import SupabaseContentRepository
+from app.infrastructure.supabase.repositories.supabase_content_repository import SupabaseContentRepository
 import structlog
 
 logger = structlog.get_logger(__name__)

@@ -12,10 +12,10 @@ from app.infrastructure.settings import settings
 from app.domain.interfaces.atomic_retrieval_repository import IAtomicRetrievalRepository
 from app.domain.schemas.query_plan import QueryPlan
 from app.domain.schemas.retrieval_payloads import RetrievalRow
-from app.infrastructure.repositories.supabase_graph_retrieval_repository import (
+from app.infrastructure.supabase.repositories.supabase_graph_retrieval_repository import (
     SupabaseGraphRetrievalRepository,
 )
-from app.infrastructure.repositories.supabase_atomic_retrieval_repository import (
+from app.infrastructure.supabase.repositories.supabase_atomic_retrieval_repository import (
     SupabaseAtomicRetrievalRepository,
 )
 from app.services.embedding_service import JinaEmbeddingService

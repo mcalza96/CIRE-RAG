@@ -19,7 +19,7 @@ Run before opening a PR:
 
 ```bash
 ruff check app tests scripts run_worker.py
-mypy --config-file mypy.ini -m app.schemas.ingestion -m app.core.config.model_config -m app.services.retrieval.atomic_engine -m app.services.ingestion.visual_parser
+mypy --config-file mypy.ini -m app.domain.schemas.ingestion_schemas -m app.core.config.model_config -m app.services.retrieval.atomic_engine -m app.services.ingestion.visual_parser
 pytest tests/unit tests/integration tests/tools -q
 ```
 

@@ -144,7 +144,7 @@ start_all() {
   : > "$COMMUNITY_WORKER_LOG"
   start_process "RAG API" "./scripts/start_api.sh" "$RAG_DIR" "$RAG_API_PID_FILE" "$RAG_API_LOG"
   start_process "RAG Worker" "./scripts/start_worker.sh" "$RAG_DIR" "$RAG_WORKER_PID_FILE" "$RAG_WORKER_LOG"
-  start_process "Community Worker" "venv/bin/python -m app.workers.community_worker" "$RAG_DIR" "$COMMUNITY_WORKER_PID_FILE" "$COMMUNITY_WORKER_LOG"
+  start_process "Community Worker" "venv/bin/python -m app.infrastructure.supabase.queue.community_worker" "$RAG_DIR" "$COMMUNITY_WORKER_PID_FILE" "$COMMUNITY_WORKER_LOG"
 }
 
 stop_all() {
@@ -155,7 +155,7 @@ stop_all() {
   # Fallback safety net: if scripts folder moved and PID files were lost,
   # ensure no background orphaned workers remain running.
   pkill -f "run_worker.py" 2>/dev/null || true
-  pkill -f "app.workers.community_worker" 2>/dev/null || true
+  pkill -f "app.infrastructure.supabase.queue.community_worker" 2>/dev/null || true
 }
 
 show_status() {

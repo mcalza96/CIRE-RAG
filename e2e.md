@@ -14,7 +14,7 @@ Flujo: Historial de Chat + Nueva Consulta → Re-escritura/Fusión de la consult
 Archivos clave a revisar:
 app/api/v1/routers/chat.py (La función _build_retrieval_query reescribe la pregunta basándose en los últimos n turnos).
 app/domain/services/authority_classifier.py y app/services/knowledge/iso_scope_strategy.py.
-app/application/services/retrieval_router.py.
+app.services.retrieval.routing.router.py.
 ¿Qué analizar para mejorar?
 Desambiguación: Asegúrate de que _build_retrieval_query genere una búsqueda autocontenida útil. Si el usuario dice "resume el artículo 8", la base de datos no sabe qué es "eso" si no se reescribe como "resume el artículo 8 de la norma ISO 9001".
 Falsos positivos en Scopes: Revisa si el enrutador está descartando búsquedas legítimas al intentar forzar un filtro institucional restrictivo.
@@ -22,7 +22,7 @@ Módulo 3: Recuperación de Información (Retrieval Execution)
 Aquí es donde los vectores y las bases de datos hacen el trabajo pesado para traer los candidatos crudos.
 Flujo: Motor RAG (Retrieval Broker) → Búsqueda Vectorial Pura o Híbrida (BM25 + Vector) → Exploración de Grafo (GraphRAG).
 Archivos clave a revisar:
-app/application/services/retrieval_broker.py y app/services/retrieval/retrieval_plan_executor.py.
+app.services.retrieval.orchestration.retrieval_broker.py y app/services/retrieval/retrieval_plan_executor.py.
 app/services/retrieval/atomic_engine.py (Llamadas a la DB).
 Funciones SQL en supabase/migrations/ (ej. 20260206_hybrid_retrieval_rpc.sql, 20260301_hybrid_search.sql).
 ¿Qué analizar para mejorar?

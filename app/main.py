@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.v1.errors import ApiError, api_error_exception_handler
 from app.api.v1.api_router import v1_router
-from app.infrastructure.middleware.business_context import BusinessContextMiddleware
+from app.api.middleware.business_context import BusinessContextMiddleware
 from app.infrastructure.observability.correlation import CorrelationMiddleware, get_correlation_id
 from app.infrastructure.observability.logger_config import configure_structlog
 from app.infrastructure.settings import settings

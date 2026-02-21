@@ -14,8 +14,8 @@ from app.api.v1.schemas.retrieval_advanced import (
     ValidateScopeResponse,
 )
 from app.api.v1.tenant_guard import enforce_tenant_match
-from app.application.services.retrieval_contract_service import RetrievalContractService
-from app.infrastructure.dependencies import get_container
+from app.services.retrieval.orchestration.contract_manager import ContractManager
+from app.api.dependencies import get_container
 
 logger = structlog.get_logger(__name__)
 
@@ -24,8 +24,8 @@ router = APIRouter(
 )
 
 
-def get_retrieval_contract_service(container=Depends(get_container)) -> RetrievalContractService:
-    return RetrievalContractService(knowledge_service=container.knowledge_service)
+def get_contract_manager(container=Depends(get_container)) -> ContractManager:
+    return ContractManager(knowledge_service=container.knowledge_service)
 
 
 @router.post(
@@ -35,7 +35,7 @@ def get_retrieval_contract_service(container=Depends(get_container)) -> Retrieva
 )
 async def validate_scope(
     request: ValidateScopeRequest,
-    service: RetrievalContractService = Depends(get_retrieval_contract_service),
+    service: ContractManager = Depends(get_retrieval_contract_service),
 ) -> ValidateScopeResponse:
     tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")
     normalized_request = request.model_copy(update={"tenant_id": tenant_id})
@@ -62,7 +62,7 @@ async def validate_scope(
 )
 async def retrieval_comprehensive(
     request: ComprehensiveRetrievalRequest,
-    service: RetrievalContractService = Depends(get_retrieval_contract_service),
+    service: ContractManager = Depends(get_retrieval_contract_service),
 ) -> ComprehensiveRetrievalResponse:
     tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")
     normalized_request = request.model_copy(update={"tenant_id": tenant_id})
@@ -91,7 +91,7 @@ async def retrieval_comprehensive(
 )
 async def retrieval_explain(
     request: ExplainRetrievalRequest,
-    service: RetrievalContractService = Depends(get_retrieval_contract_service),
+    service: ContractManager = Depends(get_retrieval_contract_service),
 ) -> ExplainRetrievalResponse:
     tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")
     normalized_request = request.model_copy(update={"tenant_id": tenant_id})

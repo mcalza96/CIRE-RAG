@@ -1,5 +1,5 @@
 import pytest
-from app.core.utils.filename_utils import sanitize_filename
+from app.utils.filename_utils import sanitize_filename
 
 def test_sanitize_filename_with_accents():
     # Basic cases

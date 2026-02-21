@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.settings import Settings
+from app.infrastructure.settings import Settings
 from app.services import embedding_service
 
 

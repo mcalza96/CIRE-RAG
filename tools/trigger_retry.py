@@ -2,7 +2,7 @@ import asyncio
 import httpx
 import sys
 import os
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 
 async def run():
     if len(sys.argv) < 2:

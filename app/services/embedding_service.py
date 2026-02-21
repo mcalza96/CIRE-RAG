@@ -7,8 +7,8 @@ from typing import List, Dict, Any, Optional, cast
 from app.infrastructure.observability.metrics import track_span
 from app.infrastructure.settings import settings
 from app.domain.interfaces.embedding_provider import IEmbeddingProvider
-from app.infrastructure.services.cohere_cloud_provider import CohereCloudProvider
-from app.infrastructure.services.jina_cloud_provider import JinaCloudProvider
+from app.ai.providers.cohere import CohereCloudProvider
+from app.ai.providers.jina_cloud import JinaCloudProvider
 
 logger = structlog.get_logger(__name__)
 
@@ -112,7 +112,7 @@ class JinaEmbeddingService:
 
     def _build_local_provider(self) -> IEmbeddingProvider:
         try:
-            from app.infrastructure.services.jina_local_provider import JinaLocalProvider
+            from app.ai.providers.jina_local import JinaLocalProvider
         except Exception as exc:
             raise RuntimeError(
                 "Failed to initialize local embedding provider. "

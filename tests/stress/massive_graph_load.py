@@ -5,7 +5,7 @@ import uuid
 import logging
 import random
 from typing import List
-from app.core.tools.retrieval import RetrievalTools
+from app.ai.tools.retrieval import RetrievalTools
 from app.infrastructure.supabase.client import get_async_supabase_client
 
 # CONFIGURE LOGGING

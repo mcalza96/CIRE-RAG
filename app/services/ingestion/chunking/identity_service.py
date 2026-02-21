@@ -2,7 +2,7 @@ import re
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
-from app.schemas.ingestion import IngestionMetadata
+from app.domain.schemas.ingestion_schemas import IngestionMetadata
 
 
 _ISO_DOC_PATTERN = re.compile(r"\bISO\s*[-:_]?\s*(\d{4,5})\b", re.IGNORECASE)

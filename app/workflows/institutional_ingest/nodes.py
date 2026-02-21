@@ -2,8 +2,8 @@ import os
 from typing import Any
 
 import structlog
-from app.application.services.institutional_ingestion_pipeline_service import (
-    InstitutionalIngestionPipelineService,
+from app.workflows.institutional_ingest.orchestrator import (
+    InstitutionalOrchestrator,
 )
 from app.domain.types.ingestion_status import IngestionStatus
 from app.workflows.institutional_ingest.state import InstitutionalState
@@ -11,7 +11,7 @@ from app.workflows.institutional_ingest.state import InstitutionalState
 logger = structlog.get_logger(__name__)
 
 
-pipeline_service = InstitutionalIngestionPipelineService()
+pipeline_service = InstitutionalOrchestrator()
 
 
 def _classify_structural_content(content: str) -> dict[str, Any]:

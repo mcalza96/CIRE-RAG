@@ -1,6 +1,6 @@
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
-from app.core.forensic.stream_validator import ForensicIntegrityError
+from app.domain.forensic.exceptions import ForensicIntegrityError
 import logging
 
 logger = logging.getLogger(__name__)

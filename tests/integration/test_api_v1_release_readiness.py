@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from app.api.v1.routers import documents as documents_router
 from app.api.v1.routers.ingestion import get_ingestion_use_case
 from app.main import app
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 
 
 class _FakeManualIngestionUseCase:

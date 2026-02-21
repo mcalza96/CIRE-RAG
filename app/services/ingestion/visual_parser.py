@@ -9,7 +9,7 @@ from typing import Any, Callable
 import structlog
 from pydantic import ValidationError
 
-from app.infrastructure.caching.middleware import cached_extraction
+from app.api.middleware.caching import cached_extraction
 from app.ai.factory import create_ingest_fallback_model, create_ingest_model
 from app.ai.interfaces import BaseVLM, ModelAdapterError
 from app.ai.schemas import VerificationResult, VisualParseResult

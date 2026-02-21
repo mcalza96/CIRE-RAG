@@ -54,7 +54,7 @@ order by 1 desc;
 
 ## Rollout recomendado para clave de cache v2
 
-1. Aplicar migracion SQL: `app/infrastructure/database/migrations/04_visual_cache_key_v2.sql`.
+1. Aplicar migracion SQL: `app/infrastructure/supabase/db_configs/migrations/04_visual_cache_key_v2.sql`.
 2. Verificar que `VISUAL_CACHE_KEY_V2_ENABLED=true` en entorno.
 3. Ejecutar un lote pequeno y confirmar que `metadata.visual_anchor.cache_hit/cache_miss` siguen poblados.
 

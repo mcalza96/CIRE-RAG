@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 from app.infrastructure.container import CognitiveContainer
 from app.main import app
 

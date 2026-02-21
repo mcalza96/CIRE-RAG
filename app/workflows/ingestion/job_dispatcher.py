@@ -8,7 +8,7 @@ from app.infrastructure.concurrency.tenant_concurrency_manager import (
     AlreadyProcessingError,
     TenantConcurrencyManager,
 )
-from app.infrastructure.queue.supabase_job_store import SupabaseJobStore
+from app.infrastructure.supabase.queue.job_store import SupabaseJobStore
 from app.workflows.ingestion.job_processor import SourceDocumentJobProcessor
 
 logger = structlog.get_logger(__name__)

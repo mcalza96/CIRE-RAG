@@ -1,5 +1,5 @@
 from app.api.v1.schemas.retrieval_advanced import ScopeFilters, ValidateScopeRequest
-from app.application.services.retrieval_contract_service import RetrievalContractService
+from app.services.retrieval.orchestration.contract_manager import ContractManager as RetrievalContractService
 
 
 def test_validate_scope_rejects_unknown_filter_keys() -> None:

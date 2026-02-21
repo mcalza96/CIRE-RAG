@@ -9,7 +9,7 @@ import structlog
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.ai.llm import get_llm
-from app.infrastructure.repositories.supabase_graph_retrieval_repository import SupabaseGraphRetrievalRepository
+from app.infrastructure.supabase.repositories.supabase_graph_retrieval_repository import SupabaseGraphRetrievalRepository
 from app.services.embedding_service import JinaEmbeddingService
 
 logger = structlog.get_logger(__name__)

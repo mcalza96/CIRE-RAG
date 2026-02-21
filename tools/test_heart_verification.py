@@ -26,7 +26,7 @@ class _JinaStub:
 _fake_embedding.JinaEmbeddingService = _JinaStub
 sys.modules.setdefault("app.services.embedding_service", _fake_embedding)
 
-from app.core.models.schemas import VerificationResult, VisualParseResult
+from app.ai.schemas import VerificationResult, VisualParseResult
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +48,7 @@ def _noop_cache_decorator(func):
 def _fresh_parser_class():
     """Force-reimport VisualDocumentParser to pick up fresh env vars and patches."""
     # Force reload settings to avoid singleton stale state
-    import app.core.settings as core_settings
+    import app.infrastructure.settings as core_settings
     importlib.reload(core_settings)
 
     # Patch the cache decorator to a no-op BEFORE reloading the module

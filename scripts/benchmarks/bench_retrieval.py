@@ -153,8 +153,8 @@ async def main() -> int:
     if not queries:
         raise SystemExit("no queries provided; pass --query or --queries")
 
-    from app.core.settings import settings
-    from app.core.observability.retrieval_metrics import retrieval_metrics_store
+    from app.infrastructure.settings import settings
+    from app.infrastructure.observability.retrieval_metrics import retrieval_metrics_store
     from app.services.retrieval.atomic_engine import AtomicRetrievalEngine
 
     if args.hybrid_rpc != "default":

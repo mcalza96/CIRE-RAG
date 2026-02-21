@@ -128,9 +128,9 @@ def _stub_heavy_modules_for_worker() -> None:
     fake_graph_extractor.GraphExtractor = object
     sys.modules.setdefault("app.services.knowledge.graph_extractor", fake_graph_extractor)
 
-    fake_graph_repo = types.ModuleType("app.infrastructure.repositories.supabase_graph_repository")
+    fake_graph_repo = types.ModuleType("app.infrastructure.supabase.repositories.supabase_graph_repository")
     fake_graph_repo.SupabaseGraphRepository = object
-    sys.modules.setdefault("app.infrastructure.repositories.supabase_graph_repository", fake_graph_repo)
+    sys.modules.setdefault("app.infrastructure.supabase.repositories.supabase_graph_repository", fake_graph_repo)
 
     fake_dispatcher = types.ModuleType("app.workflows.ingestion.dispatcher")
     fake_dispatcher.IngestionDispatcher = object
@@ -233,7 +233,7 @@ async def test_worker_inline_fallback_when_visual_integration_raises(monkeypatch
 
     import app.application.use_cases.process_document_worker_use_case as worker_module
 
-    monkeypatch.setattr("app.application.services.visual_anchor_service.get_async_supabase_client", _fake_get_client)
+    monkeypatch.setattr("app.services.ingestion.anchors.anchor_service.get_async_supabase_client", _fake_get_client)
 
     use_case = ProcessDocumentWorkerUseCase(
         repository=_Dummy(),
@@ -312,7 +312,7 @@ async def test_worker_inline_fallback_when_visual_parse_raises(monkeypatch) -> N
 
     import app.application.use_cases.process_document_worker_use_case as worker_module
 
-    monkeypatch.setattr("app.application.services.visual_anchor_service.get_async_supabase_client", _fake_get_client)
+    monkeypatch.setattr("app.services.ingestion.anchors.anchor_service.get_async_supabase_client", _fake_get_client)
 
     use_case = ProcessDocumentWorkerUseCase(
         repository=_Dummy(),

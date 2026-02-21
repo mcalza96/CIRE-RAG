@@ -5,9 +5,9 @@ from typing import Any, Callable, Coroutine, Dict, Optional
 from app.application.use_cases.process_document_worker_use_case import ProcessDocumentWorkerUseCase
 from app.infrastructure.settings import settings
 from app.domain.policies.ingestion_policy import IngestionPolicy
-from app.infrastructure.adapters.supabase_metadata_adapter import SupabaseMetadataAdapter
+from app.infrastructure.supabase.adapters.metadata_adapter import SupabaseMetadataAdapter
 from app.infrastructure.container import CognitiveContainer
-from app.infrastructure.queue.supabase_job_store import SupabaseJobStore
+from app.infrastructure.supabase.queue.job_store import SupabaseJobStore
 from app.infrastructure.concurrency.tenant_concurrency_manager import TenantConcurrencyManager
 from app.infrastructure.queue.base_worker import BaseWorkerProcessor
 from app.services.database.taxonomy_manager import TaxonomyManager
@@ -15,7 +15,7 @@ from app.workflows.ingestion.dispatcher import IngestionDispatcher
 from app.workflows.ingestion.job_dispatcher import WorkerJobDispatcher
 import app.workflows.ingestion.strategies  # Trigger strategy registration
 
-from app.schedules.community_scheduler import (
+from app.infrastructure.cron.community_scheduler import (
     CommunityScheduler,
 )
 
@@ -75,7 +75,7 @@ class IngestionWorker:
             resolved_container = resolved_container or CognitiveContainer()
 
         if self.process_use_case is None:
-            from app.infrastructure.repositories.supabase_raptor_repository import (
+            from app.infrastructure.supabase.repositories.supabase_raptor_repository import (
                 SupabaseRaptorRepository,
             )
             from app.services.knowledge.raptor_processor import RaptorProcessor

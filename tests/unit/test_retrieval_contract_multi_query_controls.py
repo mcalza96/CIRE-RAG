@@ -12,8 +12,8 @@ from app.api.v1.schemas.retrieval_advanced import (
     ScopeFilters,
     SubQueryRequest,
 )
-from app.application.services.retrieval_contract_service import RetrievalContractService
-from app.core.settings import settings
+from app.services.retrieval.orchestration.contract_manager import ContractManager as RetrievalContractService
+from app.infrastructure.settings import settings
 
 
 @pytest.mark.asyncio

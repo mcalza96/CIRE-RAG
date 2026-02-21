@@ -2,7 +2,7 @@ import pytest
 
 from app.api.v1.errors import ApiError
 from app.api.v1.tenant_guard import enforce_tenant_match, require_tenant_from_context
-from app.core.observability.context_vars import tenant_id_ctx
+from app.infrastructure.observability.context_vars import tenant_id_ctx
 
 
 def test_require_tenant_from_context_raises_when_missing() -> None:

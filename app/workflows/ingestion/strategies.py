@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 
 from app.ai.models import AIModelConfig
-from app.schemas.ingestion import IngestionMetadata
+from app.domain.schemas.ingestion_schemas import IngestionMetadata
 from app.domain.models.ingestion_source import IngestionSource
 from app.domain.types.ingestion_status import IngestionStatus
 from app.utils.registry import register_strategy

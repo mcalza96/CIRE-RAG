@@ -9,7 +9,7 @@ Enforces tenant isolation at the query level using the secure RPC.
 from typing import List, Optional, Dict, Any
 import dspy
 
-from app.application.services.retrieval_broker import RetrievalBroker
+from app.services.retrieval.orchestration.retrieval_broker import RetrievalBroker
 from app.domain.interfaces.retrieval_interface import IRetrievalRepository
 from app.domain.retrieval_config import retrieval_settings
 

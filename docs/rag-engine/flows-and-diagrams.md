@@ -257,5 +257,5 @@ erDiagram
 - Chunking: `app/services/ingestion/chunking_service.py`
 - Visual parser: `app/services/ingestion/visual_parser.py`
 - Atomic retrieval: `app/services/retrieval/atomic_engine.py`
-- Query decomposition: `app/application/services/query_decomposer.py`
-- Retrieval router: `app/application/services/retrieval_router.py`
+- Query decomposition: `app/services/retrieval/orchestration/query_decomposer.py`
+- Retrieval router: `app/services/retrieval/routing/router.py`

@@ -16,7 +16,7 @@ from app.domain.graph_schemas import (
     RegulatoryConstraint, 
     Severity
 )
-from app.infrastructure.mappers.graph_persistence_mapper import GraphPersistenceMapper
+from app.infrastructure.supabase.mappers.graph_persistence_mapper import GraphPersistenceMapper
 
 
 def test_mapper():

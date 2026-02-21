@@ -7,7 +7,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.worker import IngestionWorker
-from app.core.settings import settings
+from app.infrastructure.settings import settings
 
 
 async def main():
