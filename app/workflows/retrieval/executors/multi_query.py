@@ -4,9 +4,7 @@ from typing import Any, List, Tuple
 
 import structlog
 from app.api.v1.errors import ApiError
-from app.domain.retrieval.fusion import _safe_float, extract_row
-from app.domain.retrieval.scoping import scope_clause_key
-from app.domain.schemas.knowledge_schemas import (
+from app.api.v1.schemas.retrieval_advanced import (
     HybridRetrievalRequest,
     MultiQueryRetrievalRequest,
     MultiQueryRetrievalResponse,
@@ -16,7 +14,13 @@ from app.domain.schemas.knowledge_schemas import (
     SubQueryExecution,
     SubQueryRequest,
 )
-from app.infrastructure.observability.forensic import LeakCanary
+from app.domain.retrieval.fusion import (
+     _safe_float, 
+     extract_row,
+     to_retrieval_items
+)
+from app.domain.retrieval.scoping import scope_clause_key
+from app.api.middleware.security import LeakCanary
 from app.infrastructure.settings import settings
 
 logger = structlog.get_logger(__name__)

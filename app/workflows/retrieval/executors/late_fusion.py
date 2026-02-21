@@ -1,14 +1,18 @@
 import asyncio
 import structlog
 from typing import Any, List, Dict, Optional, Tuple
-from app.domain.schemas.knowledge_schemas import (
+from app.api.v1.schemas.retrieval_advanced import (
     RetrievalItem, 
     HybridRetrievalRequest, 
-    ComprehensiveRetrievalRequest,
+    ComprehensiveRetrievalRequest
+)
+from app.domain.retrieval.fusion import (
+    fuse_late_results, 
+    apply_retrieval_policy_to_items,
     to_retrieval_items
 )
-from app.domain.retrieval.fusion import fuse_late_results, apply_retrieval_policy_to_items
 from app.domain.retrieval.tracing import build_comprehensive_trace
+
 
 logger = structlog.get_logger(__name__)
 

@@ -119,7 +119,7 @@ def to_retrieval_items(rows: list[dict[str, Any]]) -> list[RetrievalItem]:
 
         items.append(
             RetrievalItem(
-                source=str(row.get("source") or f"R{idx + 1}"),
+                source=str(row.get("id") or row.get("source") or f"R{idx + 1}"),
                 content=content,
                 score=_safe_float(row.get("score") or row.get("similarity")),
                 metadata={
@@ -173,7 +173,7 @@ def apply_retrieval_policy_to_items(
         metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
         out_items.append(
             RetrievalItem(
-                source=str(row.get("source") or f"C{idx + 1}"),
+                source=str(row.get("id") or row.get("source") or f"C{idx + 1}"),
                 content=content,
                 score=_safe_float(row.get("score"), default=0.0),
                 metadata=metadata,

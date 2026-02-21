@@ -102,3 +102,22 @@ class RetrievalTools(dspy.Retrieve):
             page_size=page_size,
             novelty_threshold=novelty_threshold
         )
+
+    async def retrieve_graph_nodes(
+        self,
+        query: str,
+        tenant_id: str,
+        graph_options: dict[str, Any],
+        k: int = 5,
+        collection_id: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Delegates graph context retrieval to RetrievalBroker.
+        """
+        return await self.broker.retrieve_graph_nodes(
+            query=query,
+            tenant_id=tenant_id,
+            graph_options=graph_options,
+            k=k,
+            collection_id=collection_id,
+        )

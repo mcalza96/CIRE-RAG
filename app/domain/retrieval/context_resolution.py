@@ -5,7 +5,7 @@ from app.domain.retrieval.scoping import (
     requested_scopes_from_context,
     normalize_standard_filters,
 )
-from app.domain.retrieval.metadata import enrich_metadata
+from app.domain.ingestion.metadata_enricher import enrich_metadata
 
 def resolve_retrieval_filters(query: str, scope_context: Dict[str, Any]) -> Dict[str, Any]:
     """Resolves and merges filters from query text and scope context.
