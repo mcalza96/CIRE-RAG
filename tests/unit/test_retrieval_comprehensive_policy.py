@@ -13,7 +13,7 @@ from app.api.v1.schemas.retrieval_advanced import (
     RetrievalPolicy,
     SearchHint,
 )
-from app.services.retrieval.orchestration.contract_manager import ContractManager as RetrievalContractService
+from app.workflows.retrieval.contract_manager import ContractManager as RetrievalContractService
 
 
 @pytest.mark.asyncio

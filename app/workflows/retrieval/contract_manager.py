@@ -42,8 +42,13 @@ from app.api.v1.schemas.retrieval_advanced import (
 )
 from app.api.middleware.security import LeakCanary, SecurityViolationError
 from app.infrastructure.settings import settings
-from app.domain.retrieval.scoping import extract_requested_standards, normalize_scope_name
-from app.domain.retrieval.scoping import extract_clause_refs, extract_row_scope
+from app.domain.retrieval.scoping import (
+    extract_requested_standards, 
+    normalize_scope_name, 
+    extract_clause_refs, 
+    extract_row_scope,
+    scope_clause_key
+)
 from app.domain.retrieval.policies import (
     apply_search_hints,
     filter_rows_by_min_score,
@@ -53,22 +58,31 @@ from app.domain.retrieval.validation import (
     validate_metadata_values,
     validate_time_range,
     validate_source_standards,
+    validate_retrieval_filters,
     matches_time_range,
     metadata_keys_matched,
     _ALLOWED_FILTER_KEYS,
-    _RESERVED_METADATA_KEYS
 )
-from app.domain.retrieval.fusion import fuse_late_results, to_retrieval_items
+from app.domain.retrieval.fusion import (
+    fuse_late_results, 
+    to_retrieval_items, 
+    extract_row, 
+    item_identity, 
+    item_clause_refs,
+    rrf_merge,
+    apply_retrieval_policy_to_items,
+    missing_scopes,
+    missing_clause_refs,
+    _safe_float
+)
 from app.domain.retrieval.tracing import build_comprehensive_trace
 from app.infrastructure.container import CognitiveContainer
+from app.workflows.retrieval.executors.late_fusion import LateFusionExecutor
+from app.workflows.retrieval.executors.multi_query import MultiQueryExecutor
 from app.workflows.retrieval.grounded_retrieval import GroundedRetrievalWorkflow
 
 logger = structlog.get_logger(__name__)
 
-_SCALAR_TYPES = (str, int, float, bool)
-
-
-from app.domain.retrieval.fusion import extract_row, item_identity, item_clause_refs, _safe_float
 
 def _finite_or_none(value: Any) -> float | None:
     try:
@@ -76,9 +90,6 @@ def _finite_or_none(value: Any) -> float | None:
         return f if math.isfinite(f) else None
     except Exception:
         return None
-
-def _extract_row(item: RetrievalItem) -> dict[str, Any]:
-    return extract_row(item)
 
 
 class ContractManager:
@@ -97,79 +108,27 @@ class ContractManager:
             self._retrieval_tools = CognitiveContainer().retrieval_tools
         return self._retrieval_tools
 
-    @staticmethod
-    def _validate_metadata_values(metadata: Any) -> tuple[dict[str, Any], list[ScopeIssue]]:
-        return validate_metadata_values(metadata)
-
-    @staticmethod
-    def _validate_time_range(time_range: Any) -> tuple[dict[str, Any], list[ScopeIssue]]:
-        return validate_time_range(time_range)
-
-    def _validate_source_standards(self, raw_filters: dict[str, Any], violations: list[ScopeIssue]) -> tuple[str | None, list[str]]:
-        source_standard, source_standards, v = validate_source_standards(raw_filters)
-        violations.extend(v)
-        return source_standard, source_standards
 
     def validate_scope(
         self, request: ValidateScopeRequest | HybridRetrievalRequest | ExplainRetrievalRequest
     ) -> ValidateScopeResponse:
-        raw_filters = (
-            request.filters.model_dump(mode="python", by_alias=True, exclude_none=True)
-            if request.filters
-            else {}
-        )
-        violations: list[ScopeIssue] = []
+        raw_filters = request.filters.model_dump(mode="python", by_alias=True, exclude_none=True) if request.filters else {}
         warnings: list[ScopeIssue] = []
-        unknown_keys = sorted(set(raw_filters.keys()) - _ALLOWED_FILTER_KEYS)
-        for key in unknown_keys:
-            violations.append(
-                ScopeIssue(
-                    code="INVALID_SCOPE_FILTER",
-                    field=f"filters.{key}",
-                    message="filter key is not allowed",
-                )
-            )
 
-        metadata_norm, metadata_violations = self._validate_metadata_values(
-            raw_filters.get("metadata")
-        )
-        violations.extend(metadata_violations)
-        time_range_norm, time_range_violations = self._validate_time_range(
-            raw_filters.get("time_range")
-        )
-        violations.extend(time_range_violations)
+        filters_norm, violations = validate_retrieval_filters(raw_filters)
 
-        source_standard, source_standards = self._validate_source_standards(raw_filters, violations)
-
-        scope_resolution = self._knowledge_service._resolve_scope(request.query)
+        scope_res = self._knowledge_service._resolve_scope(request.query)
         query_scope = QueryScopeSummary(
-            requested_standards=list(scope_resolution.get("requested_standards") or []),
-            requires_scope_clarification=bool(scope_resolution.get("requires_scope_clarification")),
-            suggested_scopes=list(scope_resolution.get("suggested_scopes") or []),
+            requested_standards=list(scope_res.get("requested_standards") or []),
+            requires_scope_clarification=bool(scope_res.get("requires_scope_clarification")),
+            suggested_scopes=list(scope_res.get("suggested_scopes") or []),
         )
         if query_scope.requires_scope_clarification:
-            warnings.append(
-                ScopeIssue(
-                    code="SCOPE_CLARIFICATION_RECOMMENDED",
-                    field="query",
-                    message="Query appears ambiguous; caller should disambiguate requested standard",
-                )
-            )
-
-        normalized_scope = {
-            "tenant_id": request.tenant_id,
-            "collection_id": request.collection_id,
-            "filters": {
-                "metadata": metadata_norm or None,
-                "time_range": time_range_norm,
-                "source_standard": source_standard,
-                "source_standards": source_standards or None,
-            },
-        }
+            warnings.append(ScopeIssue(code="SCOPE_CLARIFICATION_RECOMMENDED", field="query", message="Query ambiguous"))
 
         return ValidateScopeResponse(
-            valid=len(violations) == 0,
-            normalized_scope=normalized_scope,
+            valid=not violations,
+            normalized_scope={"tenant_id": request.tenant_id, "collection_id": request.collection_id, "filters": filters_norm},
             violations=violations,
             warnings=warnings,
             query_scope=query_scope,
@@ -179,177 +138,31 @@ class ContractManager:
     def _build_scope_context(
         validated: ValidateScopeResponse, *, collection_id: str | None
     ) -> dict[str, Any]:
-        normalized_filters = (
-            validated.normalized_scope.get("filters")
-            if isinstance(validated.normalized_scope, dict)
-            else {}
-        )
-        filters = normalized_filters if isinstance(normalized_filters, dict) else {}
+        normalized_filters = validated.normalized_scope.get("filters", {}) if isinstance(validated.normalized_scope, dict) else {}
         scope_context: dict[str, Any] = {
             "type": "institutional",
-            "tenant_id": str(validated.normalized_scope.get("tenant_id") or "").strip(),
+            "tenant_id": str(validated.normalized_scope.get("tenant_id") or "").strip() if isinstance(validated.normalized_scope, dict) else "",
             "filters": {},
         }
         if collection_id:
             scope_context["filters"]["collection_id"] = collection_id
             scope_context["collection_id"] = collection_id
 
-        metadata = filters.get("metadata")
-        if isinstance(metadata, dict) and metadata:
-            scope_context["filters"]["metadata"] = metadata
-
-        time_range = filters.get("time_range")
-        if isinstance(time_range, dict) and time_range:
-            scope_context["filters"]["time_range"] = time_range
-
-        source_standards = filters.get("source_standards")
-        if isinstance(source_standards, list) and source_standards:
-            scope_context["filters"]["source_standards"] = list(source_standards)
-            scope_context["source_standards"] = list(source_standards)
-
-        source_standard = filters.get("source_standard")
-        if isinstance(source_standard, str) and source_standard:
-            scope_context["filters"]["source_standard"] = source_standard
-            scope_context["source_standard"] = source_standard
-
+        for key in ["metadata", "time_range", "source_standards", "source_standard"]:
+            val = normalized_filters.get(key)
+            if val:
+                scope_context["filters"][key] = val
+                if key in ["collection_id", "source_standards", "source_standard"]:
+                    scope_context[key] = val
         return scope_context
-
-    @staticmethod
-    def _to_retrieval_items(rows: list[dict[str, Any]]) -> list[RetrievalItem]:
-        return to_retrieval_items(rows)
-
-    @staticmethod
-    def _item_identity(item: RetrievalItem) -> str:
-        return item_identity(item)
-
-    @staticmethod
-    def _item_clause_refs(item: RetrievalItem) -> set[str]:
-        return item_clause_refs(item)
-
-    @staticmethod
-    def _scope_clause_key(item: SubQueryRequest) -> str:
-        """Deterministic key for deduplicating identical subquery intents."""
-        filters = item.filters
-        standard = normalize_scope_name(filters.source_standard if filters else "")
-        clause_id = ""
-        if filters and isinstance(filters.metadata, dict):
-            clause_id = str(filters.metadata.get("clause_id") or "").strip()
-        if standard and clause_id:
-            return f"scope_clause::{standard}::{clause_id}"
-        normalized_query = re.sub(r"\s+", " ", str(item.query or "").strip().lower())
-        return f"query::{normalized_query}"
-
-    @classmethod
-    def _missing_scopes(
-        cls,
-        *,
-        items: list[RetrievalItem],
-        requested_standards: list[str],
-        require_all_scopes: bool,
-    ) -> list[str]:
-        from app.domain.retrieval.fusion import missing_scopes
-        return missing_scopes(items=items, requested_standards=requested_standards, require_all_scopes=require_all_scopes)
-
-    @classmethod
-    def _missing_clause_refs(
-        cls,
-        *,
-        items: list[RetrievalItem],
-        query_clause_refs: list[str],
-        min_clause_refs_required: int,
-    ) -> list[str]:
-        from app.domain.retrieval.fusion import missing_clause_refs
-        return missing_clause_refs(items=items, query_clause_refs=query_clause_refs, min_clause_refs_required=min_clause_refs_required)
-
-    @staticmethod
-    def _apply_retrieval_policy_to_items(
-        items: list[RetrievalItem],
-        *,
-        min_score: float | None,
-        noise_reduction: bool,
-    ) -> tuple[list[RetrievalItem], dict[str, Any]]:
-        from app.domain.retrieval.fusion import apply_retrieval_policy_to_items
-        return apply_retrieval_policy_to_items(items, min_score=min_score, noise_reduction=noise_reduction)
-
-    @classmethod
-    def _fuse_late_results(
-        cls,
-        *,
-        chunks: list[RetrievalItem],
-        graph: list[RetrievalItem],
-        raptor: list[RetrievalItem],
-        k: int,
-    ) -> list[RetrievalItem]:
-        return fuse_late_results(chunks=chunks, graph=graph, raptor=raptor, k=k)
-
-    async def _pipeline_chunks(
-        self, 
-        request: HybridRetrievalRequest, 
-        trace_warnings: list[str]
-    ) -> list[RetrievalItem]:
-        try:
-            res = await self.run_hybrid(request)
-            items = res.items
-            for item in items:
-                item.metadata["fusion_source"] = "chunks"
-            return items, res.trace.model_dump()
-        except Exception as e:
-            trace_warnings.append(f"chunks_pipeline_failed:{str(e)[:160]}")
-            return [], {}
-
-    async def _pipeline_graph(
-        self,
-        query: str,
-        tenant_id: str,
-        collection_id: str | None,
-        graph_options: dict[str, Any],
-        k: int,
-        trace_warnings: list[str]
-    ) -> list[RetrievalItem]:
-        try:
-            raw_nodes = await self.retrieval_tools.retrieve_graph_nodes(
-                query=query,
-                tenant_id=tenant_id,
-                graph_options=graph_options,
-                k=k,
-                collection_id=collection_id,
-            )
-            items = self._to_retrieval_items(raw_nodes)
-            for item in items:
-                item.metadata["fusion_source"] = "graph"
-            return items
-        except Exception as e:
-            trace_warnings.append(f"graph_pipeline_failed:{str(e)[:160]}")
-            return []
-
-    async def _pipeline_raptor(
-        self,
-        query: str,
-        tenant_id: str,
-        collection_id: str | None,
-        k: int,
-        trace_warnings: list[str]
-    ) -> list[RetrievalItem]:
-        try:
-            raw_summaries = await self.retrieval_tools.retrieve_summaries(
-                query=query,
-                tenant_id=tenant_id,
-                k=k,
-                collection_id=collection_id,
-            )
-            items = self._to_retrieval_items(raw_summaries)
-            for item in items:
-                item.metadata["fusion_source"] = "raptor"
-            return items
-        except Exception as e:
-            trace_warnings.append(f"raptor_pipeline_failed:{str(e)[:160]}")
-            return []
 
     async def run_comprehensive(
         self,
         request: ComprehensiveRetrievalRequest,
     ) -> ComprehensiveRetrievalResponse:
-        started = time.perf_counter()
+        started_at = time.perf_counter()
+        
+        # 1. Search Hints (Expansion)
         retrieval_policy = request.retrieval_policy
         hints_payload = (
             [hint.model_dump(mode="python") for hint in retrieval_policy.search_hints]
@@ -358,110 +171,35 @@ class ContractManager:
         )
         expanded_query, hint_trace = apply_search_hints(request.query, hints_payload)
         
-        # 1. Preparar Requests
-        chunks_req = HybridRetrievalRequest(
-            query=expanded_query,
-            tenant_id=request.tenant_id,
-            collection_id=request.collection_id,
-            k=request.k,
-            fetch_k=request.fetch_k,
-            filters=request.filters,
-            rerank=RerankOptions(enabled=True),
-            graph=None,
-        )
-        
-        graph_payload = (
-            request.graph.model_dump(mode="python", exclude_none=True)
-            if request.graph is not None
-            else {}
-        )
-        graph_hops_cap = max(1, min(4, int(getattr(settings, "RETRIEVAL_COVERAGE_GRAPH_EXPANSION_MAX_HOPS", 2) or 2)))
-        graph_payload["max_hops"] = max(1, min(4, max(graph_hops_cap, int(graph_payload.get("max_hops") or 0))))
+        # 2. Execution
+        executor = LateFusionExecutor(self.retrieval_tools, self.run_hybrid)
+        merged_items, pipe_data, trace_warnings = await executor.execute(request, query=expanded_query)
 
-        trace_warnings = []
+        # 3. Policy application (noise reduction, min_score)
+        min_score = retrieval_policy.min_score if retrieval_policy else None
+        noise_reduction = bool(retrieval_policy.noise_reduction) if retrieval_policy else True
         
-        # 2. Ejecutar Pipelines Concurrentemente (Late Fusion)
-        results = await asyncio.gather(
-            self._pipeline_chunks(chunks_req, trace_warnings),
-            self._pipeline_graph(
-                expanded_query, request.tenant_id, request.collection_id, 
-                graph_payload, request.k, trace_warnings
-            ),
-            self._pipeline_raptor(
-                expanded_query, request.tenant_id, request.collection_id, 
-                request.k, trace_warnings
-            )
-        )
-        
-        (chunks_items, chunks_trace), graph_items, raptor_items = results
-
-        # 3. Ensamblaje determinista (Late Fusion)
-        merged_items = self._fuse_late_results(
-            chunks=chunks_items,
-            graph=graph_items,
-            raptor=raptor_items,
-            k=request.k
-        )
-        
-        min_score = retrieval_policy.min_score if retrieval_policy is not None else None
-        noise_reduction = bool(retrieval_policy.noise_reduction) if retrieval_policy is not None else True
-        merged_items, policy_trace = self._apply_retrieval_policy_to_items(
+        final_items, policy_trace = apply_retrieval_policy_to_items(
             merged_items,
             min_score=min_score,
             noise_reduction=noise_reduction,
         )
 
-        # 4. Construcción de Trace
-        trace = self._build_comprehensive_trace(
+        trace = build_comprehensive_trace(
             request=request,
-            merged_items=merged_items,
-            chunks_trace=chunks_trace,
-            graph_items=graph_items,
-            raptor_items=raptor_items,
-            trace_warnings=trace_warnings,
-            hint_trace=hint_trace,
-            policy_trace=policy_trace,
-            min_score=min_score,
-            noise_reduction=noise_reduction,
-            started_at=started
-        )
-
-        return ComprehensiveRetrievalResponse(
-            items=merged_items,
-            trace=trace,
-            latency_ms=round((time.perf_counter() - started) * 1000, 2),
-        )
-
-    def _build_comprehensive_trace(
-        self,
-        *,
-        request: ComprehensiveRetrievalRequest,
-        merged_items: list[RetrievalItem],
-        chunks_trace: dict[str, Any],
-        graph_items: list[RetrievalItem],
-        raptor_items: list[RetrievalItem],
-        trace_warnings: list[str],
-        hint_trace: dict[str, Any],
-        policy_trace: dict[str, Any],
-        min_score: float | None,
-        noise_reduction: bool,
-        started_at: float
-    ) -> ComprehensiveTrace:
-        return build_comprehensive_trace(
-            request=request,
-            merged_items=merged_items,
-            chunks_trace=chunks_trace,
-            graph_items=graph_items,
-            raptor_items=raptor_items,
+            merged_items=final_items,
+            chunks_trace=pipe_data["chunks_trace"],
+            graph_items=pipe_data["graph_items"],
+            raptor_items=pipe_data["raptor_items"],
             trace_warnings=trace_warnings,
             hint_trace=hint_trace,
             policy_trace=policy_trace,
             min_score=min_score,
             noise_reduction=noise_reduction,
             started_at=started_at,
-            missing_scopes_callback=self._missing_scopes,
-            missing_clause_refs_callback=self._missing_clause_refs
         )
+
+        return ComprehensiveRetrievalResponse(items=final_items, trace=trace)
 
     async def run_hybrid(
         self,
@@ -512,10 +250,7 @@ class ContractManager:
 
         rows = response.get("items", []) if isinstance(response, dict) else response
         trace_payload = response.get("trace", {}) if isinstance(response, dict) else {}
-        if not isinstance(rows, list):
-            rows = []
-
-        items = self._to_retrieval_items(rows)
+        items = to_retrieval_items(rows)
         LeakCanary.verify_isolation(request.tenant_id, [extract_row(i) for i in items])
         warnings_raw = trace_payload.get("warnings") if isinstance(trace_payload, dict) else None
         warning_codes_raw = (
@@ -574,258 +309,13 @@ class ContractManager:
         )
 
     @staticmethod
-    def _rrf_merge(
-        grouped_items: list[tuple[str, list[RetrievalItem]]],
-        *,
-        rrf_k: int,
-        top_k: int,
-    ) -> list[RetrievalItem]:
-        score_by_id: dict[str, float] = {}
-        item_by_id: dict[str, RetrievalItem] = {}
-        seq = 0
-        for _, items in grouped_items:
-            seq += 1
-            for rank, item in enumerate(items, start=1):
-                row = _extract_row(item)
-                row_id = str(row.get("id") or f"synthetic-{seq}-{rank}")
-                score_by_id[row_id] = score_by_id.get(row_id, 0.0) + (1.0 / (rrf_k + rank))
-                if row_id not in item_by_id:
-                    item_by_id[row_id] = item
-
-        ranked_ids = sorted(score_by_id.keys(), key=lambda key: score_by_id[key], reverse=True)
-        merged: list[RetrievalItem] = []
-        for row_id in ranked_ids[: max(1, top_k)]:
-            source = item_by_id[row_id]
-            merged.append(
-                RetrievalItem(
-                    source=source.source,
-                    content=source.content,
-                    score=float(score_by_id[row_id]),
-                    metadata={
-                        **(source.metadata or {}),
-                        "score_space": "rrf",
-                    },
-                )
-            )
-        return merged
 
     async def run_multi_query(
         self, request: MultiQueryRetrievalRequest
     ) -> MultiQueryRetrievalResponse:
-        started = time.perf_counter()
-        max_parallel = max(
-            1,
-            min(
-                8,
-                int(getattr(settings, "RETRIEVAL_MULTI_QUERY_MAX_PARALLEL", 4) or 4),
-            ),
-        )
-        subquery_timeout_ms = max(
-            200,
-            int(getattr(settings, "RETRIEVAL_MULTI_QUERY_SUBQUERY_TIMEOUT_MS", 8000) or 8000),
-        )
-        semaphore = asyncio.Semaphore(max_parallel)
-        drop_out_of_scope = bool(
-            getattr(settings, "RETRIEVAL_MULTI_QUERY_DROP_SCOPE_PENALIZED_BRANCHES", True)
-        )
-        scope_drop_threshold = float(
-            getattr(settings, "RETRIEVAL_MULTI_QUERY_SCOPE_PENALTY_DROP_THRESHOLD", 0.95) or 0.95
-        )
-        scope_drop_threshold = max(0.0, min(1.0, scope_drop_threshold))
-        subquery_rerank_enabled = bool(
-            getattr(settings, "RETRIEVAL_MULTI_QUERY_SUBQUERY_RERANK_ENABLED", False)
-        )
+        executor = MultiQueryExecutor(self.run_hybrid)
+        return await executor.execute(request)
 
-        deduped_queries: list[SubQueryRequest] = []
-        duplicate_subqueries: list[SubQueryExecution] = []
-        seen_query_keys: set[str] = set()
-        for item in request.queries:
-            key = self._scope_clause_key(item)
-            if key in seen_query_keys:
-                duplicate_subqueries.append(
-                    SubQueryExecution(
-                        id=item.id,
-                        status="error",
-                        items_count=0,
-                        latency_ms=0.0,
-                        error_code="SUBQUERY_SKIPPED_DUPLICATE",
-                        error_message="Duplicate subquery scope/clause fingerprint",
-                    )
-                )
-                continue
-            seen_query_keys.add(key)
-            deduped_queries.append(item)
-
-        async def _execute_subquery(item: Any) -> tuple[SubQueryExecution, list[RetrievalItem]]:
-            sq_started = time.perf_counter()
-            try:
-                hybrid_request = HybridRetrievalRequest(
-                    query=item.query,
-                    tenant_id=request.tenant_id,
-                    collection_id=request.collection_id,
-                    k=item.k or request.merge.top_k,
-                    fetch_k=item.fetch_k or max(request.merge.top_k * 4, 40),
-                    filters=item.filters,
-                    rerank=RerankOptions(enabled=subquery_rerank_enabled),
-                    graph=None,
-                )
-                async with semaphore:
-                    result = await asyncio.wait_for(
-                        self.run_hybrid(
-                            hybrid_request,
-                            skip_planner=True,
-                            skip_external_rerank=True,
-                        ),
-                        timeout=subquery_timeout_ms / 1000.0,
-                    )
-
-                scope_penalized_ratio: float | None = None
-                trace_payload = result.trace.model_dump() if result and result.trace else {}
-                if isinstance(trace_payload, dict):
-                    ratio_raw = trace_payload.get("scope_penalized_ratio")
-                    ratio = _finite_or_none(ratio_raw)
-                    if ratio is not None:
-                        scope_penalized_ratio = max(0.0, min(1.0, ratio))
-
-                if (
-                    drop_out_of_scope
-                    and scope_penalized_ratio is not None
-                    and scope_penalized_ratio >= scope_drop_threshold
-                ):
-                    return (
-                        SubQueryExecution(
-                            id=item.id,
-                            status="error",
-                            items_count=0,
-                            latency_ms=round((time.perf_counter() - sq_started) * 1000, 2),
-                            error_code="SUBQUERY_OUT_OF_SCOPE",
-                            error_message=(
-                                "Branch dropped: all candidates were penalized by scope filtering"
-                            ),
-                        ),
-                        [],
-                    )
-
-                return (
-                    SubQueryExecution(
-                        id=item.id,
-                        status="ok",
-                        items_count=len(result.items),
-                        latency_ms=round((time.perf_counter() - sq_started) * 1000, 2),
-                    ),
-                    result.items,
-                )
-            except TimeoutError:
-                return (
-                    SubQueryExecution(
-                        id=item.id,
-                        status="error",
-                        items_count=0,
-                        latency_ms=round((time.perf_counter() - sq_started) * 1000, 2),
-                        error_code="SUBQUERY_TIMEOUT",
-                        error_message="Subquery timed out",
-                    ),
-                    [],
-                )
-            except ApiError as exc:
-                return (
-                    SubQueryExecution(
-                        id=item.id,
-                        status="error",
-                        items_count=0,
-                        latency_ms=round((time.perf_counter() - sq_started) * 1000, 2),
-                        error_code=exc.code,
-                        error_message=exc.message,
-                    ),
-                    [],
-                )
-            except Exception as exc:
-                return (
-                    SubQueryExecution(
-                        id=item.id,
-                        status="error",
-                        items_count=0,
-                        latency_ms=round((time.perf_counter() - sq_started) * 1000, 2),
-                        error_code="SUBQUERY_FAILED",
-                        error_message=str(exc),
-                    ),
-                    [],
-                )
-
-        if deduped_queries:
-            executions = await asyncio.gather(
-                *[_execute_subquery(item) for item in deduped_queries]
-            )
-        else:
-            executions = []
-        grouped_items: list[tuple[str, list[RetrievalItem]]] = []
-        subqueries: list[SubQueryExecution] = list(duplicate_subqueries)
-        failed_count = 0
-        timed_out_count = 0
-        for execution, items in executions:
-            subqueries.append(execution)
-            if execution.status == "error":
-                failed_count += 1
-            if execution.error_code == "SUBQUERY_TIMEOUT":
-                timed_out_count += 1
-            if items:
-                grouped_items.append((execution.id, items))
-
-        if not grouped_items:
-            if failed_count < len(subqueries):
-                # Fail-soft: all subqueries may succeed but return no evidence.
-                # Return a valid empty payload so callers can trigger their own fallback policy.
-                return MultiQueryRetrievalResponse(
-                    items=[],
-                    subqueries=subqueries,
-                    partial=failed_count > 0,
-                    trace=MultiQueryTrace(
-                        merge_strategy=request.merge.strategy,
-                        rrf_k=request.merge.rrf_k,
-                        failed_count=failed_count,
-                        timed_out_count=timed_out_count,
-                        max_parallel=max_parallel,
-                        timings_ms={"total": round((time.perf_counter() - started) * 1000, 2)},
-                        score_space="rrf",
-                    ),
-                )
-            raise ApiError(
-                status_code=502,
-                code="MULTI_QUERY_ALL_FAILED",
-                message="All subqueries failed",
-                details={"subqueries": [sq.model_dump() for sq in subqueries]},
-            )
-
-        merged = self._rrf_merge(
-            grouped_items=grouped_items,
-            rrf_k=max(1, int(request.merge.rrf_k)),
-            top_k=max(1, int(request.merge.top_k)),
-        )
-        LeakCanary.verify_isolation(request.tenant_id, [extract_row(i) for i in merged])
-        return MultiQueryRetrievalResponse(
-            items=merged,
-            subqueries=subqueries,
-            partial=failed_count > 0,
-            trace=MultiQueryTrace(
-                merge_strategy=request.merge.strategy,
-                rrf_k=request.merge.rrf_k,
-                failed_count=failed_count,
-                timed_out_count=timed_out_count,
-                max_parallel=max_parallel,
-                timings_ms={"total": round((time.perf_counter() - started) * 1000, 2)},
-                score_space="rrf",
-            ),
-        )
-
-    @staticmethod
-    def _matches_time_range(row: dict[str, Any], time_range: dict[str, Any] | None) -> bool | None:
-        return matches_time_range(row, time_range)
-
-    @staticmethod
-    def _metadata_keys_matched(
-        row: dict[str, Any], metadata_filter: dict[str, Any] | None
-    ) -> list[str]:
-        return metadata_keys_matched(row, metadata_filter)
 
     async def run_explain(self, request: ExplainRetrievalRequest) -> ExplainRetrievalResponse:
         hybrid = await self.run_hybrid(
@@ -849,7 +339,7 @@ class ContractManager:
             else None
         )
         for item in items:
-            row = _extract_row(item)
+            row = extract_row(item)
             base_similarity = float(row.get("similarity") or row.get("score") or item.score or 0.0)
             jina_score = row.get("jina_relevance_score")
             scope_penalty = row.get("scope_penalty")
@@ -887,8 +377,8 @@ class ContractManager:
                                 )
                                 == request.collection_id
                             ),
-                            time_range_match=self._matches_time_range(row, time_range),
-                            metadata_keys_matched=self._metadata_keys_matched(row, metadata_filter),
+                            time_range_match=matches_time_range(row, time_range),
+                            metadata_keys_matched=metadata_keys_matched(row, metadata_filter),
                         ),
                     ),
                 )

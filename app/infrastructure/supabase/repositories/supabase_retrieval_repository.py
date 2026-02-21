@@ -115,3 +115,82 @@ class SupabaseRetrievalRepository(IRetrievalRepository):
         except Exception as e:
             logger.error("supabase_rpc_failed", rpc="match_summaries", error=str(e))
             return [] # Fail open for summaries as per requirement
+
+    async def resolve_summaries_to_chunk_ids(
+        self, 
+        summary_ids: List[str]
+    ) -> List[str]:
+        """
+        Recursively resolves RAPTOR summary IDs to their underlying leaf content_chunks.
+        """
+        if not summary_ids:
+            return []
+            
+        client = await get_async_supabase_client()
+        leaf_chunk_ids: set[str] = set()
+        
+        # We use a loop to traverse down the levels. RAPTOR depth is typically <= 3.
+        # Starting with the initial summary_ids
+        current_level_summary_ids = list(set(summary_ids))
+        max_depth = 5
+        current_depth = 0
+        
+        while current_level_summary_ids and current_depth < max_depth:
+            current_depth += 1
+            try:
+                # Fetch children_ids for current summaries
+                response = (
+                    await client.table("regulatory_nodes")
+                    .select("id, level, children_ids")
+                    .in_("id", current_level_summary_ids)
+                    .execute()
+                )
+                
+                rows = response.data or []
+                if not rows:
+                    break
+                    
+                next_level_summary_ids_batch: set[str] = set()
+                all_children_ids: set[str] = set()
+                
+                for row in rows:
+                    cid_list = row.get("children_ids") or []
+                    for cid_raw in cid_list:
+                        cid = str(cid_raw).strip()
+                        if cid:
+                            all_children_ids.add(cid)
+                
+                if not all_children_ids:
+                    break
+                    
+                # Now we need to know which of these children are ALSO summaries
+                # Summaries exist in `regulatory_nodes` with `level > 0`.
+                # Leaf chunks (or unresolvable entities) won't be found here or will have level 0.
+                children_list = list(all_children_ids)
+                
+                # Fetch which of these children are summaries
+                child_nodes_resp = (
+                    await client.table("regulatory_nodes")
+                    .select("id, level")
+                    .in_("id", children_list)
+                    .gt("level", 0)  # Only summaries have level > 0
+                    .execute()
+                )
+                
+                child_summary_rows = child_nodes_resp.data or []
+                child_summary_ids = {str(r.get("id")) for r in child_summary_rows}
+                
+                # Those that are summaries go to the next iteration
+                next_level_summary_ids_batch.update(child_summary_ids)
+                
+                # Those that are NOT summaries are assumed to be leaf chunks (content_chunks)
+                leaves = all_children_ids - child_summary_ids
+                leaf_chunk_ids.update(leaves)
+                
+                current_level_summary_ids = list(next_level_summary_ids_batch)
+                
+            except Exception as e:
+                logger.error("resolve_summaries_to_chunk_ids_failed", error=str(e), depth=current_depth)
+                break
+                
+        return list(leaf_chunk_ids)

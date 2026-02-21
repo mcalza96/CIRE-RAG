@@ -4,9 +4,10 @@ from typing import Any, cast
 
 import pytest
 
+from app.domain.retrieval.scoping import RetrievalScopeService
 from app.domain.schemas.query_plan import PlannedSubQuery, QueryPlan
 from app.infrastructure.settings import settings
-from app.services.retrieval.atomic_engine import AtomicRetrievalEngine
+from app.infrastructure.supabase.repositories.atomic_engine import AtomicRetrievalEngine
 
 
 class _DummyEmbeddingService:
@@ -20,7 +21,7 @@ def test_scope_context_for_subquery_drops_ambiguous_clause() -> None:
         "tenant_id": "t1",
         "filters": {"source_standard": "ISO 14001"},
     }
-    out = engine._scope_context_for_subquery(  # noqa: SLF001
+    out = engine._scope.scope_context_for_subquery(  # noqa: SLF001
         scope_context=scope_context,
         subquery_text="ISO 14001 8.1.2 8.1 8.5.1 control operacional",
     )
@@ -39,7 +40,7 @@ def test_scope_context_for_subquery_keeps_single_clause() -> None:
         "tenant_id": "t1",
         "filters": {"source_standard": "ISO 9001"},
     }
-    out = engine._scope_context_for_subquery(  # noqa: SLF001
+    out = engine._scope.scope_context_for_subquery(  # noqa: SLF001
         scope_context=scope_context,
         subquery_text="ISO 9001 8.5.1 validacion del proceso",
     )
@@ -161,6 +162,6 @@ def test_filter_structural_rows_drops_toc_and_frontmatter() -> None:
             "metadata": {"retrieval_eligible": True, "is_normative_body": True},
         },
     ]
-    kept, trace = AtomicRetrievalEngine._filter_structural_rows(rows)  # noqa: SLF001
+    kept, trace = RetrievalScopeService.filter_structural_rows(rows)  # noqa: SLF001
     assert [item["id"] for item in kept] == ["body-1"]
     assert trace["dropped"] == 2

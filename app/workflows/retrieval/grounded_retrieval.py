@@ -14,7 +14,7 @@ from app.domain.retrieval.routing import RetrievalRouter
 from app.domain.schemas.knowledge_schemas import RetrievalIntent, AgentRole, TaskType
 from app.domain.schemas.retrieval_payloads import GroundedContext
 from app.domain.retrieval.ports import IScopeResolverPolicy
-from app.domain.retrieval.strategies.iso_scope_strategy import ISOScopeResolverPolicy
+from app.domain.retrieval.strategies.agnostic_scope_strategy import GeneralScopeResolverPolicy
 
 logger = structlog.get_logger(__name__)
 
@@ -32,7 +32,7 @@ class GroundedRetrievalWorkflow:
         scope_policy: Optional[IScopeResolverPolicy] = None
     ) -> None:
         self._container = container
-        self._scope_policy = scope_policy or ISOScopeResolverPolicy()
+        self._scope_policy = scope_policy or GeneralScopeResolverPolicy()
 
     async def get_grounded_context(
         self, query: str, institution_id: str, k: int = retrieval_settings.TOP_K

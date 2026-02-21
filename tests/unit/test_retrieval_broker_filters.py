@@ -1,6 +1,6 @@
 from typing import Any
 
-from app.services.retrieval.orchestration.retrieval_broker import RetrievalBroker
+from app.workflows.retrieval.retrieval_broker import RetrievalBroker
 
 
 class _DummyRepository:

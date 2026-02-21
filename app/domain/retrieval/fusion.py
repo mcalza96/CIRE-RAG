@@ -221,3 +221,38 @@ def missing_clause_refs(
     if len(query_clause_set - covered) >= min_clause_refs_required:
          return missing
     return []
+
+def rrf_merge(
+    grouped_items: list[tuple[str, list[RetrievalItem]]],
+    *,
+    rrf_k: int,
+    top_k: int,
+) -> list[RetrievalItem]:
+    """Reciprocal Rank Fusion for merging results from multiple queries/sources."""
+    score_by_id: dict[str, float] = {}
+    item_by_id: dict[str, RetrievalItem] = {}
+    seq = 0
+    for _, items in grouped_items:
+        seq += 1
+        for rank, item in enumerate(items, start=1):
+            row_id = item_identity(item)
+            score_by_id[row_id] = score_by_id.get(row_id, 0.0) + (1.0 / (rrf_k + rank))
+            if row_id not in item_by_id:
+                item_by_id[row_id] = item
+
+    ranked_ids = sorted(score_by_id.keys(), key=lambda key: score_by_id[key], reverse=True)
+    merged: list[RetrievalItem] = []
+    for row_id in ranked_ids[: max(1, top_k)]:
+        source = item_by_id[row_id]
+        merged.append(
+            RetrievalItem(
+                source=source.source,
+                content=source.content,
+                score=float(score_by_id[row_id]),
+                metadata={
+                    **(source.metadata or {}),
+                    "score_space": "rrf",
+                },
+            )
+        )
+    return merged

@@ -333,6 +333,7 @@ class AtomicRetrievalEngine:
         graph_filter_node_types: list[str] | None = None,
         graph_max_hops: int | None = None,
     ) -> list[dict[str, Any]]:
+        """Late Grounding graph hop: navigates graph → resolves to real content chunks."""
         if not settings.ATOMIC_ENABLE_GRAPH_HOP:
             return []
 
@@ -345,6 +346,7 @@ class AtomicRetrievalEngine:
         except Exception:
             return []
 
+        # ── Stage 1: Graph Navigation (get entity IDs) ──
         try:
             node_types = graph_filter_node_types or scope_context.get("graph_filter_node_types")
             relation_types = graph_filter_relation_types or scope_context.get(
@@ -363,7 +365,7 @@ class AtomicRetrievalEngine:
                 graph_filter_node_types=node_types or [],
             )
 
-            rows = await self._graph_repo.search_multi_hop_context(
+            nav_rows = await self._graph_repo.search_multi_hop_context(
                 tenant_id=tenant_uuid,
                 query_vector=query_vector,
                 match_threshold=min(settings.ATOMIC_MATCH_THRESHOLD, 0.35),
@@ -377,33 +379,115 @@ class AtomicRetrievalEngine:
             logger.warning("atomic_graph_hop_failed", error=str(exc))
             return []
 
-        out: list[dict[str, Any]] = []
-        for row in rows:
+        if not nav_rows:
+            return []
+
+        # Build entity metadata index for enrichment
+        entity_meta: dict[str, dict[str, Any]] = {}
+        entity_ids: list[str] = []
+        for row in nav_rows:
             if not isinstance(row, dict):
                 continue
             entity_id = str(row.get("entity_id") or "")
             if not entity_id:
                 continue
-            hop_depth = int(row.get("hop_depth") or 0)
-            name = str(row.get("entity_name") or "Unknown")
-            description = str(row.get("entity_description") or "").strip()
-            out.append(
+            entity_ids.append(entity_id)
+            entity_meta[entity_id] = {
+                "entity_name": str(row.get("entity_name") or "Unknown"),
+                "entity_description": str(row.get("entity_description") or "").strip(),
+                "hop_depth": int(row.get("hop_depth") or 0),
+                "similarity": float(row.get("similarity") or 0.0),
+                "path_ids": row.get("path_ids") or [],
+            }
+
+        if not entity_ids:
+            return []
+
+        # ── Stage 2: Resolve entity → chunk lineage (Late Grounding) ──
+        provenance_links = await self._graph_repo.resolve_node_to_chunk_ids(entity_ids)
+
+        # Map entity_id → [chunk_ids] and chunk_id → [entity_ids]
+        chunk_to_entities: dict[str, list[str]] = {}
+        grounded_entity_ids: set[str] = set()
+        for link in provenance_links:
+            chunk_id = str(link.get("chunk_id") or "")
+            node_id = str(link.get("node_id") or "")
+            if not chunk_id or not node_id:
+                continue
+            grounded_entity_ids.add(node_id)
+            chunk_to_entities.setdefault(chunk_id, []).append(node_id)
+
+        grounded_chunk_ids = list(chunk_to_entities.keys())
+
+        # ── Stage 3: Hydrate real content chunks ──
+        grounded_rows: list[dict[str, Any]] = []
+        if grounded_chunk_ids:
+            raw_chunks = await self._retrieval_repository.fetch_chunks_by_ids(grounded_chunk_ids)
+            for chunk in raw_chunks:
+                chunk_id = str(chunk.get("id") or "")
+                linked_entities = chunk_to_entities.get(chunk_id, [])
+
+                # Pick the best similarity from linked entities
+                best_sim = max(
+                    (entity_meta.get(eid, {}).get("similarity", 0.0) for eid in linked_entities),
+                    default=0.0,
+                )
+                # Build graph reasoning from linked entities
+                reasoning_parts = []
+                for eid in linked_entities:
+                    meta = entity_meta.get(eid, {})
+                    name = meta.get("entity_name", "")
+                    desc = meta.get("entity_description", "")
+                    if name:
+                        reasoning_parts.append(f"{name}: {desc}" if desc else name)
+
+                chunk["similarity"] = best_sim
+                chunk["score"] = best_sim
+                chunk["source_layer"] = "graph_grounded"
+                chunk["source_type"] = "content_chunk"
+                # Enrich metadata with graph provenance (not visible to LLM, but useful for trace)
+                metadata = chunk.get("metadata") if isinstance(chunk.get("metadata"), dict) else {}
+                metadata["retrieved_via"] = "graph"
+                metadata["graph_reasoning"] = "; ".join(reasoning_parts[:3])
+                metadata["graph_entity_ids"] = linked_entities
+                chunk["metadata"] = metadata
+                grounded_rows.append(chunk)
+
+        # ── Fallback: Ungrounded entities (no chunk lineage) ──
+        ungrounded_entity_ids = [eid for eid in entity_ids if eid not in grounded_entity_ids]
+        ungrounded_rows: list[dict[str, Any]] = []
+        for entity_id in ungrounded_entity_ids:
+            meta = entity_meta.get(entity_id, {})
+            hop_depth = meta.get("hop_depth", 0)
+            name = meta.get("entity_name", "Unknown")
+            description = meta.get("entity_description", "")
+            ungrounded_rows.append(
                 {
                     "id": f"graph:{entity_id}",
                     "content": f"[{('anchor' if hop_depth == 0 else f'hop-{hop_depth}')}] {name}: {description}",
                     "metadata": {
                         "citations": [entity_id],
-                        "path_ids": row.get("path_ids") or [],
+                        "path_ids": meta.get("path_ids", []),
                         "hop_depth": hop_depth,
+                        "retrieved_via": "graph",
+                        "grounded": False,
                     },
-                    "similarity": float(row.get("similarity") or 0.0),
-                    "score": float(row.get("similarity") or 0.0),
+                    "similarity": meta.get("similarity", 0.0),
+                    "score": meta.get("similarity", 0.0),
                     "source_layer": "graph",
-                    "source_type": "knowledge_entity",
+                    "source_type": "knowledge_entity_ungrounded",
                     "source_id": entity_id,
                 }
             )
-        return out
+
+        all_rows = grounded_rows + ungrounded_rows
+        logger.info(
+            "graph_hop_late_grounding",
+            total_entities=len(entity_ids),
+            grounded_chunks=len(grounded_rows),
+            ungrounded_entities=len(ungrounded_rows),
+        )
+        return all_rows
 
     async def _embed_query(self, query: str) -> list[float]:
         vectors = await self._embedding_service.embed_texts([query], task="retrieval.query")

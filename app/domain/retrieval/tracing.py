@@ -27,8 +27,6 @@ def build_comprehensive_trace(
     min_score: float | None,
     noise_reduction: bool,
     started_at: float,
-    missing_scopes_callback: Any, # We'll pass the method from service
-    missing_clause_refs_callback: Any,
 ) -> ComprehensiveTrace:
     """Standardized trace builder for late fusion retrieval."""
     coverage = request.coverage_requirements

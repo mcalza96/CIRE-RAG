@@ -9,6 +9,7 @@ class IAtomicRetrievalRepository(Protocol):
     async def retrieve_hybrid_optimized(self, payload: dict[str, Any]) -> list[dict[str, Any]]: ...
     async def search_vectors_only(self, payload: dict[str, Any]) -> list[dict[str, Any]]: ...
     async def search_fts_only(self, payload: dict[str, Any]) -> list[dict[str, Any]]: ...
+    async def fetch_chunks_by_ids(self, chunk_ids: list[str]) -> list[dict[str, Any]]: ...
 
 class IAuthorityReranker(Protocol):
     def rerank(
@@ -51,6 +52,11 @@ class IRetrievalRepository(Protocol):
         limit: int,
         collection_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
+        ...
+    async def resolve_summaries_to_chunk_ids(
+        self,
+        summary_ids: List[str]
+    ) -> List[str]:
         ...
 
 class IScopeResolverPolicy(ABC):

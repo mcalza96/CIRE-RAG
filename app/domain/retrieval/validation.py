@@ -135,6 +135,44 @@ def validate_source_standards(
         
     return source_standard, source_standards, violations
 
+def validate_retrieval_filters(
+    raw_filters: dict[str, Any]
+) -> tuple[dict[str, Any], list[ScopeIssue]]:
+    """Validate and normalize all retrieval filters."""
+    violations: list[ScopeIssue] = []
+    
+    unknown_keys = sorted(set(raw_filters.keys()) - _ALLOWED_FILTER_KEYS)
+    for key in unknown_keys:
+        violations.append(
+            ScopeIssue(
+                code="INVALID_SCOPE_FILTER",
+                field=f"filters.{key}",
+                message="filter key is not allowed",
+            )
+        )
+
+    metadata_norm, metadata_violations = validate_metadata_values(
+        raw_filters.get("metadata")
+    )
+    violations.extend(metadata_violations)
+    
+    time_range_norm, time_range_violations = validate_time_range(
+        raw_filters.get("time_range")
+    )
+    violations.extend(time_range_violations)
+
+    source_standard, source_standards, standard_violations = validate_source_standards(raw_filters)
+    violations.extend(standard_violations)
+
+    normalized = {
+        "metadata": metadata_norm or None,
+        "time_range": time_range_norm,
+        "source_standard": source_standard,
+        "source_standards": source_standards or None,
+    }
+    
+    return normalized, violations
+
 def matches_time_range(row: dict[str, Any], time_range: dict[str, Any] | None) -> bool | None:
     """Check if a row matches a time range filter."""
     if not time_range:

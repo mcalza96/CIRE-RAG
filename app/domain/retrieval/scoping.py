@@ -11,22 +11,25 @@ import re
 from datetime import datetime, timezone
 from typing import Any, List, Dict, Optional, Tuple
 
-# ── Compiled patterns (reused everywhere) ────────────────────────────────
-_ISO_STANDARD_RE = re.compile(r"\biso\s*[-:]?\s*(\d{4,5})\b", flags=re.IGNORECASE)
-_CLAUSE_RE = re.compile(r"\b\d+(?:\.\d+)+\b")
+from app.infrastructure.settings import settings
+
+# ── Compiled patterns (Agnostic, from settings) ───────────────────────────
+_SCOPE_STANDARD_RE = re.compile(settings.SCOPE_EXTRACTION_REGEX, flags=re.IGNORECASE)
+_CLAUSE_RE = re.compile(settings.SCOPE_AMBIGUITY_REGEX)
 _CLAUSE_HINT_RE = re.compile(
-    r"\b(cl(?:a|á)usula|clause|numeral|apartado|secci[oó]n)\b",
+    r"\b(cl(?:a|á)usula|clause|numeral|apartado|secci[oó]n|standard|scope)\b",
     flags=re.IGNORECASE,
 )
 
 # ── Standard extraction ──────────────────────────────────────────────────
 
 def extract_requested_standards(query: str) -> tuple[str, ...]:
-    """Return ordered, deduplicated ``ISO NNNNN`` labels found in *query*."""
+    """Return ordered, deduplicated scope labels found in *query*."""
     seen: set[str] = set()
     ordered: list[str] = []
-    for match in _ISO_STANDARD_RE.findall(query or ""):
-        value = f"ISO {match}"
+    # Use finditer or re-eval the pattern to capture the full match
+    for match in _SCOPE_STANDARD_RE.findall(query or ""):
+        value = str(match).strip().upper()
         if value not in seen:
             seen.add(value)
             ordered.append(value)
@@ -39,31 +42,42 @@ def extract_clause_refs(text: str) -> tuple[str, ...]:
 # ── Scope key / normalisation ─────────────────────────────────────────────
 
 def scope_key(value: str) -> str:
-    """Normalise a scope label to a comparable key like ``ISO-45001``."""
+    """Normalise a scope label to a comparable key."""
     text = str(value or "").strip().upper()
     if not text:
         return ""
-    iso_match = re.search(r"\bISO\s*[-:]?\s*(\d{4,5})\b", text, flags=re.IGNORECASE)
-    if iso_match:
-        return f"ISO-{iso_match.group(1)}"
-    digits_match = re.search(r"\b(\d{4,5})\b", text)
-    if digits_match:
-        return f"ISO-{digits_match.group(1)}"
+    
+    # Generic normalization: remove spaces/special chars, keep alphanumeric
+    # But try to capture the pattern first if it exists
+    match = _SCOPE_STANDARD_RE.search(text)
+    if match:
+        return re.sub(r"[^A-Z0-9]", "-", match.group(0).strip().upper())
+        
     compact = re.sub(r"[^A-Z0-9]", "", text)
     return compact
 
 def normalize_scope_name(value: Any) -> str:
-    """Normalise a raw scope/standard value to human-readable ``ISO NNNNN``."""
+    """Normalise a raw scope/standard value to human-readable format."""
     text = str(value or "").strip().upper()
     if not text:
         return ""
-    match = re.search(r"\bISO\s*[-:]?\s*(\d{4,5})\b", text, flags=re.IGNORECASE)
+    match = _SCOPE_STANDARD_RE.search(text)
     if match:
-        return f"ISO {match.group(1)}"
-    digits = re.search(r"\b(\d{4,5})\b", text)
-    if digits:
-        return f"ISO {digits.group(1)}"
+        return match.group(0).strip().upper()
     return text
+
+def scope_clause_key(query: str, filters: Any = None) -> str:
+    """Deterministic key for deduplicating identical subquery intents."""
+    standard = normalize_scope_name(filters.source_standard if filters and hasattr(filters, "source_standard") else "")
+    clause_id = ""
+    if filters and hasattr(filters, "metadata") and isinstance(filters.metadata, dict):
+        clause_id = str(filters.metadata.get("clause_id") or "").strip()
+    
+    if standard and clause_id:
+        return f"scope_clause::{standard}::{clause_id}"
+    
+    normalized_query = re.sub(r"\s+", " ", str(query or "").strip().lower())
+    return f"query::{normalized_query}"
 
 # ── Row scope extraction ─────────────────────────────────────────────────
 
@@ -146,6 +160,35 @@ def requested_scopes_from_context(
     if not values:
         return ()
     return tuple(dict.fromkeys(values))
+
+def normalize_standard_filters(filters: dict[str, Any]) -> dict[str, Any]:
+    """Standardize source_standard vs source_standards in filter dictionaries."""
+    normalized: dict[str, Any] = dict(filters)
+    standards_raw = normalized.get("source_standards")
+    standards: list[str] = []
+    if isinstance(standards_raw, list):
+        standards = [
+            str(item).strip()
+            for item in standards_raw
+            if isinstance(item, str) and str(item).strip()
+        ]
+        standards = list(dict.fromkeys(standards))
+    
+    single = str(normalized.get("source_standard") or "").strip()
+    if single and single not in standards:
+        standards.insert(0, single)
+
+    if len(standards) > 1:
+        normalized["source_standards"] = standards
+        normalized.pop("source_standard", None)
+    elif len(standards) == 1:
+        normalized["source_standard"] = standards[0]
+        normalized.pop("source_standards", None)
+    else:
+        normalized.pop("source_standard", None)
+        normalized.pop("source_standards", None)
+
+    return normalized
 
 # ── Scope penalty helpers ────────────────────────────────────────────────
 

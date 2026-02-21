@@ -132,6 +132,37 @@ class SupabaseGraphRetrievalRepository:
         )
         return self._rows(response.data)
 
+    async def resolve_node_to_chunk_ids(
+        self, node_ids: list[str]
+    ) -> list[dict[str, Any]]:
+        """Resolve knowledge entity IDs → content chunk IDs via knowledge_node_provenance.
+
+        Returns list of dicts with keys: chunk_id, node_id (entity_id).
+        """
+        if not node_ids:
+            return []
+
+        client = await self._get_client()
+        try:
+            response = (
+                await client.table("knowledge_node_provenance")
+                .select("entity_id,chunk_id")
+                .in_("entity_id", node_ids)
+                .execute()
+            )
+            rows = self._rows(response.data)
+            return [
+                {
+                    "chunk_id": str(row.get("chunk_id") or ""),
+                    "node_id": str(row.get("entity_id") or ""),
+                }
+                for row in rows
+                if row.get("chunk_id")
+            ]
+        except Exception as exc:
+            logger.warning("resolve_node_to_chunk_ids_failed", error=str(exc), node_count=len(node_ids))
+            return []
+
     async def search_multi_hop_context(
         self,
         tenant_id: UUID,

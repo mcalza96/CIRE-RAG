@@ -171,6 +171,11 @@ class Settings(BaseSettings):
     RAPTOR_SUMMARIZATION_MAX_CONCURRENCY: int = 8
     AUTHORITY_CLASSIFIER_MODE: str = "rules"  # rules | embedding_first
 
+    # Scope Resolution (Agnostic)
+    SCOPE_EXTRACTION_REGEX: str = r"\b([A-Z]{2,}\s*[-:]?\s*\d{3,6})\b"
+    SCOPE_AMBIGUITY_REGEX: str = r"\b\d+(?:\.\d+){1,}\b"
+    SCOPE_KEYWORD_MAP: str = "{}" # JSON string of scope_name -> [keywords]
+
     # Visual router
     VISUAL_ROUTER_MAX_VISUAL_RATIO: float = 0.35
     VISUAL_ROUTER_MAX_VISUAL_PAGES: int = 12
