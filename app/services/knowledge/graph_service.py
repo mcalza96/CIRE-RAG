@@ -1,26 +1,29 @@
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from uuid import UUID
 
-from app.services.embedding_service import JinaEmbeddingService
+from app.ai.embeddings.embedding_service import JinaEmbeddingService
 from app.services.knowledge.graph_extractor import ChunkGraphExtraction
 
 logger = logging.getLogger(__name__)
 
-class PersistGraphUseCase:
+@dataclass
+class GraphPersistenceResult:
+    nodes_upserted: int = 0
+    edges_inserted: int = 0
+    links_upserted: int = 0
+    errors: List[str] = field(default_factory=list)
+
+class GraphKnowledgeService:
     """
-    Use Case for persisting extracted regulatory knowledge graphs.
-    
-    Orchestrates:
-    1. Deterministic ID generation.
-    2. Vector embedding generation (optional).
-    3. Repository persistence (Atomic batching handled by repository).
+    Service for managing and persisting extracted regulatory knowledge graphs.
+    Formerly PersistGraphUseCase.
     """
 
     def __init__(
         self,
-        repository,
+        repository: Any,
         embedding_service: Optional[JinaEmbeddingService] = None,
         generate_embeddings: bool = True,
     ):
@@ -30,20 +33,14 @@ class PersistGraphUseCase:
             JinaEmbeddingService.get_instance() if generate_embeddings else None
         )
 
-    @dataclass
-    class GraphPersistenceResult:
-        nodes_upserted: int = 0
-        edges_inserted: int = 0
-        links_upserted: int = 0
-        errors: list[str] = field(default_factory=list)
-
-    async def execute(
+    async def persist_graph(
         self,
         extraction: ChunkGraphExtraction,
         tenant_id: str,
         chunk_id: Optional[str] = None,
-    ) -> "PersistGraphUseCase.GraphPersistenceResult":
-        result = self.GraphPersistenceResult()
+    ) -> GraphPersistenceResult:
+        """Orchestrates persistence of knowledge entities and relations."""
+        result = GraphPersistenceResult()
         
         if extraction.is_empty():
             logger.info("Empty extraction, nothing to persist")
@@ -52,7 +49,7 @@ class PersistGraphUseCase:
         tenant_uuid = UUID(str(tenant_id))
         chunk_uuid = UUID(str(chunk_id)) if chunk_id else None
 
-        entity_embeddings: dict[str, list[float]] = {}
+        entity_embeddings: Dict[str, List[float]] = {}
         if self.generate_embeddings and self.embedding_service and extraction.entities:
             try:
                 embedding_texts = [f"{entity.name}. {entity.description}" for entity in extraction.entities]
@@ -77,14 +74,7 @@ class PersistGraphUseCase:
             if stats.get("errors"):
                 result.errors.extend(stats["errors"])
         except Exception as e:
-            logger.error("PersistGraphUseCase failed to persist knowledge subgraph: %s", e)
+            logger.error("GraphKnowledgeService failed to persist knowledge subgraph: %s", e)
             result.errors.append(str(e))
-
-        logger.info(
-            "PersistGraphUseCase: Persisted %s entities, %s relations, %s provenance links",
-            result.nodes_upserted,
-            result.edges_inserted,
-            result.links_upserted,
-        )
 
         return result

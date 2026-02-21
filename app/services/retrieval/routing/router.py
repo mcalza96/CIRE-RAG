@@ -19,7 +19,7 @@ from app.domain.schemas.knowledge_schemas import (
     TaskType,
 )
 from app.infrastructure.supabase.client import get_async_supabase_client
-from app.services.embedding_service import JinaEmbeddingService
+from app.ai.embeddings.embedding_service import JinaEmbeddingService
 from app.services.knowledge.graph_retrieval_strategies import LocalGraphSearch, GlobalGraphSearch
 from app.services.knowledge.gravity_reranker import GravityReranker
 

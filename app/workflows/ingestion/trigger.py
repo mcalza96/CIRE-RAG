@@ -1,70 +1,113 @@
-from typing import Dict, Any, Optional
-import structlog
 import os
+import shutil
+import tempfile
+import structlog
+from uuid import uuid4
+from typing import Optional, Dict, Any, Tuple
+from fastapi import UploadFile
 
 from app.domain.types.ingestion_status import IngestionStatus
-from app.infrastructure.supabase.repositories.supabase_source_repository import SupabaseSourceRepository
-from app.infrastructure.supabase.queries.ingestion_query_service import (
-    ManualIngestionQueryService,
-)
-from app.services.ingestion.monitoring.backpressure import IngestionBackpressureService
-from app.services.ingestion.state.batch_manager import IngestionBatchService
-from app.infrastructure.observability.correlation import get_correlation_id
+from app.domain.schemas.ingestion_schemas import IngestionMetadata
 from app.services.database.taxonomy_manager import TaxonomyManager
+from app.infrastructure.supabase.repositories.supabase_source_repository import SupabaseSourceRepository
+from app.infrastructure.supabase.queries.ingestion_query_service import ManualIngestionQueryService
+from app.services.ingestion.monitoring.backpressure import IngestionBackpressureService
 from app.infrastructure.settings import settings
 from app.utils.filename_utils import sanitize_filename
+from app.infrastructure.observability.correlation import get_correlation_id
 
 logger = structlog.get_logger(__name__)
 
-
-class InstitutionalIngestionUseCase:
+class IngestionTrigger:
     """
-    Use Case for Institutional Ingestion.
-
-    DEPRECATED: The old LangGraph pipeline (institutional_ingest/nodes.py) is replaced
-    by the unified PreProcessedContentStrategy which uses heading-based semantic chunking.
+    Workflow for triggering and preparing document ingestion.
+    Consolidates logic for Manual and Institutional ingestion entry points.
     """
-
     def __init__(
         self,
         repo: Optional[SupabaseSourceRepository] = None,
         query_service: Optional[ManualIngestionQueryService] = None,
         taxonomy_manager: Optional[TaxonomyManager] = None,
         backpressure_service: Optional[IngestionBackpressureService] = None,
-        batch_service: Optional[IngestionBatchService] = None,
     ):
         self.repo = repo or SupabaseSourceRepository()
-        shared_query = query_service or ManualIngestionQueryService()
-        shared_taxonomy = taxonomy_manager or TaxonomyManager()
-        self.batch_service = batch_service or IngestionBatchService(shared_query, shared_taxonomy)
-        self.query_service = self.batch_service.query_service
-        self.taxonomy_manager = self.batch_service.taxonomy_manager
+        self.query_service = query_service or ManualIngestionQueryService()
+        self.taxonomy_manager = taxonomy_manager or TaxonomyManager()
         self.backpressure = backpressure_service or IngestionBackpressureService(self.query_service)
 
-    async def execute(
+    async def prepare_manual_upload(self, file: UploadFile, metadata_str: str) -> Tuple[str, str, IngestionMetadata]:
+        """Parses metadata and saves file to temp location."""
+        try:
+            parsed_metadata = IngestionMetadata.parse_raw(metadata_str)
+            logger.info(f"[IngestionTrigger] Received manual upload: {file.filename}")
+        except Exception as e:
+            logger.error(f"[IngestionTrigger] Metadata parsing error: {e}")
+            raise ValueError(f"Invalid metadata: {e}")
+
+        tenant_id = str(parsed_metadata.institution_id) if parsed_metadata.institution_id else None
+        extra_meta = parsed_metadata.metadata or {}
+        collection_key_raw = extra_meta.get("collection_key") or extra_meta.get("collection_id")
+        collection_name_raw = extra_meta.get("collection_name")
+        
+        if tenant_id and collection_key_raw:
+            await self.taxonomy_manager.ensure_collection_open(
+                tenant_id=tenant_id,
+                collection_key=str(collection_key_raw),
+                collection_name=str(collection_name_raw) if collection_name_raw else None,
+            )
+
+        temp_dir = tempfile.gettempdir()
+        unique_id = uuid4()
+        safe_filename = f"ingest_{unique_id}_{file.filename}"
+        file_path = os.path.join(temp_dir, safe_filename)
+
+        try:
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+        except Exception as e:
+            logger.error(f"[IngestionTrigger] Error saving temp file: {e}")
+            raise RuntimeError("Could not save uploaded file locally.")
+
+        original_filename = file.filename or safe_filename
+        return file_path, original_filename, parsed_metadata
+
+    async def trigger_manual_ingestion(self, file_path: str, original_filename: str, metadata: IngestionMetadata) -> Dict[str, Any]:
+        """Registers the document for asynchronous processing by the worker."""
+        try:
+            tenant_id = str(metadata.institution_id) if metadata.institution_id else None
+            await self.backpressure.enforce_limit(tenant_id=tenant_id)
+
+            metadata.storage_path = file_path
+            doc_id = await self.taxonomy_manager.register_document(
+                filename=original_filename,
+                metadata=metadata,
+                initial_status=IngestionStatus.QUEUED,
+            )
+
+            queue = await self.backpressure.get_pending_snapshot(tenant_id=tenant_id)
+            return {"document_id": str(doc_id), "queue": queue}
+        except Exception as e:
+            logger.error(f"[IngestionTrigger] Registration failed for {original_filename}: {e}")
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            raise e
+
+    async def trigger_institutional_ingestion(
         self,
         tenant_id: str,
         file_path: str,
         document_id: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        Prepares and queues institutional ingestion for the Worker pipeline.
-        This ensures parity with manual ingestion and enables all new tooling:
-        Graph enrichment, atomic upsert, metrics, retries, and community jobs.
-        """
-        logger.info(
-            "trigger_unified_institutional_ingestion", document_id=document_id, tenant_id=tenant_id
-        )
+        """Prepares and queues institutional ingestion (usually from webhook)."""
+        logger.info("[IngestionTrigger] Triggering institutional ingestion", document_id=document_id, tenant_id=tenant_id)
 
         try:
             await self.backpressure.enforce_limit(tenant_id=str(tenant_id))
 
-            # 1. Determine strategy up-front so first QUEUED write already contains it.
             ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
             strategy_key = "PRE_PROCESSED" if ext in ("md", "txt") else "CONTENT"
 
-            # 2. Create Source Traceability Record
             merged_metadata = {
                 "status": IngestionStatus.QUEUED.value,
                 "institution_id": tenant_id,
@@ -84,9 +127,7 @@ class InstitutionalIngestionUseCase:
                     merged_metadata["metadata"].update(incoming_nested)
 
             raw_nested_meta = merged_metadata.get("metadata")
-            nested_meta: Dict[str, Any] = (
-                raw_nested_meta if isinstance(raw_nested_meta, dict) else {}
-            )
+            nested_meta: Dict[str, Any] = raw_nested_meta if isinstance(raw_nested_meta, dict) else {}
             nested_meta["strategy_override"] = strategy_key
             nested_meta["embedding_mode"] = (metadata or {}).get("embedding_mode", "LOCAL")
             merged_metadata["metadata"] = nested_meta
@@ -97,9 +138,8 @@ class InstitutionalIngestionUseCase:
                 or merged_metadata.get("collection_id")
                 or nested_meta.get("collection_id")
             )
-            collection_name = merged_metadata.get("collection_name") or nested_meta.get(
-                "collection_name"
-            )
+            collection_name = merged_metadata.get("collection_name") or nested_meta.get("collection_name")
+            
             collection_id = None
             if collection_key:
                 collection = await self.taxonomy_manager.ensure_collection_open(
@@ -117,27 +157,15 @@ class InstitutionalIngestionUseCase:
             filename = os.path.basename(file_path)
             sanitized_filename = sanitize_filename(filename)
 
-            # 1.1 Ensure source_document exists without forcing invalid course_id FKs
             await self.query_service.upsert_source_document(
                 document_id=str(document_id),
                 filename=sanitized_filename,
                 tenant_id=str(tenant_id),
                 metadata=merged_metadata,
                 collection_id=str(collection_id) if collection_id else None,
-                course_id=str((metadata or {}).get("course_id"))
-                if (metadata or {}).get("course_id")
-                else None,
+                course_id=str((metadata or {}).get("course_id")) if (metadata or {}).get("course_id") else None,
             )
 
-            logger.info(
-                "institutional_ingest_routed",
-                strategy=strategy_key,
-                extension=ext,
-                tenant_id=tenant_id,
-                document_id=document_id,
-            )
-
-            # 3. Ensure document remains queued with latest metadata.
             await self.repo.update_status_and_metadata(
                 document_id,
                 IngestionStatus.QUEUED.value,
@@ -150,13 +178,12 @@ class InstitutionalIngestionUseCase:
 
             return {
                 "status": "accepted",
-                "message": "Institutional ingestion queued (worker pipeline)",
+                "message": "Institutional ingestion queued",
                 "document_id": document_id,
                 "queued": True,
                 "strategy": strategy_key,
                 "queue": await self.backpressure.get_pending_snapshot(tenant_id=str(tenant_id)),
             }
-
         except Exception as e:
-            logger.error("institutional_ingest_preparation_failed", error=str(e), exc_info=True)
+            logger.error("[IngestionTrigger] Institutional preparation failed", error=str(e), exc_info=True)
             raise e

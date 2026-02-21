@@ -10,7 +10,7 @@ from app.services.ingestion.structure_mapper import StructureMapper
 from app.domain.schemas.ingestion_schemas import IngestionMetadata
 from app.ai.models import AIModelConfig
 from app.services.ingestion.metadata_enricher import enrich_metadata
-from app.services.embedding_service import JinaEmbeddingService
+from app.ai.embeddings.embedding_service import JinaEmbeddingService
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 import re

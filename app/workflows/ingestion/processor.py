@@ -1,5 +1,5 @@
 from typing import Dict, Any, Optional
-
+import structlog
 from app.domain.repositories.source_repository import ISourceRepository
 from app.domain.repositories.content_repository import IContentRepository
 from app.services.ingestion.post_processor import PostIngestionPipelineService
@@ -11,7 +11,6 @@ from app.infrastructure.supabase.adapters.metadata_adapter import SupabaseMetada
 from app.infrastructure.filesystem.storage import StorageService
 from app.infrastructure.observability.correlation import set_correlation_id
 from app.services.ingestion.state.context_resolver import IngestionContextResolver
-import structlog
 from app.infrastructure.observability.logger_config import bind_context
 from app.infrastructure.supabase.repositories.supabase_raptor_repository import SupabaseRaptorRepository
 from app.services.ingestion.download.downloader import DocumentDownloadService
@@ -23,14 +22,11 @@ from app.infrastructure.settings import settings
 
 logger = structlog.get_logger(__name__)
 
-
-class ProcessDocumentWorkerUseCase:
+class DocumentProcessor:
     """
-    Orchestrates the document ingestion workflow.
-    Refactored to enforce SRP, Atomic State correctness, and Retry awareness.
-    Uses explicit dependencies to keep orchestration testable and simple.
+    Workflow orchestrator for document ingestion and enrichment.
+    Formerly ProcessDocumentWorkerUseCase.
     """
-
     def __init__(
         self,
         repository: ISourceRepository,
@@ -69,11 +65,12 @@ class ProcessDocumentWorkerUseCase:
         self.visual_anchor_service = self._build_visual_anchor_service()
         self.post_ingestion_service = self._build_post_ingestion_service(resolved_raptor_repo)
 
-    async def execute(self, record: Dict[str, Any]):
+    async def process(self, record: Dict[str, Any]):
+        """Executes the ingestion pipeline for a given document record."""
         # 0. Context Recovery & Observability
         doc_id, correlation_id, course_id = self.resolver.extract_observability_context(record)
         if not doc_id:
-            logger.error(f"[UseCase] Record missing ID: {record}")
+            logger.error(f"[DocumentProcessor] Record missing ID: {record}")
             return
 
         set_correlation_id(correlation_id)
@@ -92,7 +89,7 @@ class ProcessDocumentWorkerUseCase:
         if not self.policy.should_process(
             str(current_status or ""), str(meta.get("status") or ""), metadata=meta
         ):
-            logger.debug(f"[UseCase] Document {doc_id} ignored by policy.")
+            logger.debug(f"[DocumentProcessor] Document {doc_id} ignored by policy.")
             return
 
         # 2. Context Resolution

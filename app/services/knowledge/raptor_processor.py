@@ -17,7 +17,7 @@ from app.domain.schemas.raptor_schemas import BaseChunk, SummaryNode, RaptorTree
 from app.domain.repositories.raptor_repository import IRaptorRepository
 from app.services.knowledge.clustering_service import GMMClusteringService
 from app.services.knowledge.summarization_service import SummarizationAgent
-from app.services.embedding_service import JinaEmbeddingService
+from app.ai.embeddings.embedding_service import JinaEmbeddingService
 from app.infrastructure.settings import settings
 
 logger = logging.getLogger(__name__)

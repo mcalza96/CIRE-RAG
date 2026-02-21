@@ -3,7 +3,7 @@ from typing import Any, Dict
 
 import structlog
 
-from app.application.use_cases.process_document_worker_use_case import ProcessDocumentWorkerUseCase
+from app.workflows.ingestion.processor import DocumentProcessor
 from app.infrastructure.concurrency.tenant_concurrency_manager import (
     AlreadyProcessingError,
     TenantConcurrencyManager,
@@ -20,14 +20,14 @@ class WorkerJobDispatcher:
         *,
         job_store: SupabaseJobStore,
         concurrency_manager: TenantConcurrencyManager,
-        process_use_case: ProcessDocumentWorkerUseCase,
+        processor: DocumentProcessor,
         global_semaphore: asyncio.Semaphore,
         enrichment_semaphore: asyncio.Semaphore,
         max_source_lookup_requeues: int,
     ):
         self.job_store = job_store
         self.concurrency_manager = concurrency_manager
-        self.process_use_case = process_use_case
+        self.processor = processor
         self.global_semaphore = global_semaphore
         self.enrichment_semaphore = enrichment_semaphore
         self.job_processor = SourceDocumentJobProcessor(
@@ -51,7 +51,7 @@ class WorkerJobDispatcher:
             ) as tenant_key:
                 try:
                     await self._emit_runtime_metrics(tenant_key, "start", source_doc_id)
-                    await self.process_use_case.execute(record)
+                    await self.processor.process(record)
                     await self.job_store.update_batch_progress(record, success=True)
                     return {
                         "ok": True,
@@ -76,7 +76,7 @@ class WorkerJobDispatcher:
             return {"ok": False, "reason": "source_document_not_found"}
 
         async with self.enrichment_semaphore:
-            return await self.process_use_case.post_ingestion_service.run_deferred_enrichment(
+            return await self.processor.post_ingestion_service.run_deferred_enrichment(
                 doc_id=source_doc_id,
                 tenant_id=record.get("institution_id"),
                 collection_id=payload.get("collection_id") or record.get("collection_id"),

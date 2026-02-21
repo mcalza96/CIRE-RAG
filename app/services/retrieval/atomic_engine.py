@@ -18,7 +18,7 @@ from app.infrastructure.supabase.repositories.supabase_graph_retrieval_repositor
 from app.infrastructure.supabase.repositories.supabase_atomic_retrieval_repository import (
     SupabaseAtomicRetrievalRepository,
 )
-from app.services.embedding_service import JinaEmbeddingService
+from app.ai.embeddings.embedding_service import JinaEmbeddingService
 
 from app.services.retrieval.retrieval_scope_service import RetrievalScopeService
 from app.services.retrieval.retrieval_plan_executor import RetrievalPlanExecutor

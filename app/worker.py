@@ -2,7 +2,7 @@ import asyncio
 import structlog
 from typing import Any, Callable, Coroutine, Dict, Optional
 
-from app.application.use_cases.process_document_worker_use_case import ProcessDocumentWorkerUseCase
+from app.workflows.ingestion.processor import DocumentProcessor
 from app.infrastructure.settings import settings
 from app.domain.policies.ingestion_policy import IngestionPolicy
 from app.infrastructure.supabase.adapters.metadata_adapter import SupabaseMetadataAdapter
@@ -33,7 +33,7 @@ class IngestionWorker:
         container: Optional[CognitiveContainer] = None,
         job_store: Optional[SupabaseJobStore] = None,
         concurrency_manager: Optional[TenantConcurrencyManager] = None,
-        process_use_case: Optional[ProcessDocumentWorkerUseCase] = None,
+        processor: Optional[DocumentProcessor] = None,
         community_scheduler: Optional[CommunityScheduler] = None,
         dispatcher: Optional[IngestionDispatcher] = None,
         policy: Optional[IngestionPolicy] = None,
@@ -68,13 +68,13 @@ class IngestionWorker:
 
         self.dispatcher = dispatcher or IngestionDispatcher()
         self.policy = policy or IngestionPolicy()
-        self.process_use_case = process_use_case
+        self.processor = processor
 
         resolved_container = container
-        if self.process_use_case is None or community_scheduler is None:
+        if self.processor is None or community_scheduler is None:
             resolved_container = resolved_container or CognitiveContainer()
 
-        if self.process_use_case is None:
+        if self.processor is None:
             from app.infrastructure.supabase.repositories.supabase_raptor_repository import (
                 SupabaseRaptorRepository,
             )
@@ -85,7 +85,7 @@ class IngestionWorker:
 
             raptor_repo = SupabaseRaptorRepository()
             raptor_processor = RaptorProcessor(repository=raptor_repo)
-            self.process_use_case = ProcessDocumentWorkerUseCase(
+            self.processor = DocumentProcessor(
                 repository=resolved_container.source_repository,
                 content_repo=resolved_container.content_repository,
                 storage_service=resolved_container.storage_service,
@@ -99,6 +99,7 @@ class IngestionWorker:
                 state_manager=resolved_container.state_manager,
             )
 
+
         if resolved_container is None:
             resolved_container = CognitiveContainer()
 
@@ -108,7 +109,7 @@ class IngestionWorker:
         self.job_dispatcher = WorkerJobDispatcher(
             job_store=self.job_store,
             concurrency_manager=self.concurrency_manager,
-            process_use_case=self.process_use_case,
+            processor=self.processor,
             global_semaphore=self._global_semaphore,
             enrichment_semaphore=self._enrichment_semaphore,
             max_source_lookup_requeues=self.max_source_lookup_requeues,

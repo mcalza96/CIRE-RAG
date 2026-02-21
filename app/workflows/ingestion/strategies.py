@@ -14,7 +14,7 @@ from app.services.ingestion.pdf_parser import PdfParserService
 from app.services.ingestion.toc_discovery import TocDiscoveryService
 from app.services.ingestion.chunking_service import ChunkingService
 from app.services.ingestion.router import DocumentStructureRouter, IngestionTask, ProcessingStrategy
-from app.services.embedding_service import JinaEmbeddingService
+from app.ai.embeddings.embedding_service import JinaEmbeddingService
 from app.infrastructure.settings import settings
 
 logger = structlog.get_logger(__name__)

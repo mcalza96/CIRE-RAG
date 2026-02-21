@@ -11,7 +11,7 @@ from app.domain.schemas import ContentChunk
 from app.domain.types.ingestion_status import IngestionStatus
 from app.infrastructure.supabase.repositories.supabase_content_repository import SupabaseContentRepository
 from app.infrastructure.supabase.repositories.supabase_source_repository import SupabaseSourceRepository
-from app.services.embedding_service import JinaEmbeddingService
+from app.ai.embeddings.embedding_service import JinaEmbeddingService
 from app.services.ingestion.pdf_parser import PdfParserService
 from langchain_core.messages import HumanMessage, SystemMessage
 
