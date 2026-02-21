@@ -1,5 +1,5 @@
 import re
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, List
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -84,6 +84,7 @@ def enrich_metadata(
 class MetadataEnricher:
     """Compatibility wrapper around enrich_metadata."""
 
+
     def enrich(
         self,
         text: str,
@@ -96,3 +97,30 @@ class MetadataEnricher:
             current_metadata,
             allow_clause_extraction=allow_clause_extraction,
         )
+
+    @staticmethod
+    def extract_toc_entries(source_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if not isinstance(source_metadata, dict):
+            return []
+        toc_raw = source_metadata.get("toc_structure")
+        if not isinstance(toc_raw, dict):
+            return []
+        entries_raw = toc_raw.get("entries")
+        if not isinstance(entries_raw, list):
+            return []
+        entries: List[Dict[str, Any]] = []
+        for item in entries_raw:
+            if isinstance(item, dict):
+                entries.append(item)
+        return entries
+
+    @staticmethod
+    def extract_visual_tasks(source_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+        routing = (
+            source_metadata.get("routing")
+            if isinstance(source_metadata.get("routing"), dict)
+            else {}
+        )
+        tasks_raw = routing.get("visual_tasks") if isinstance(routing, dict) else []
+        tasks = tasks_raw if isinstance(tasks_raw, list) else []
+        return [task for task in tasks if isinstance(task, dict)]

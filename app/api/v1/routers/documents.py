@@ -10,9 +10,9 @@ from pydantic import BaseModel, Field
 from app.api.v1.auth import require_service_auth
 from app.api.v1.errors import ERROR_RESPONSES, ApiError
 from app.api.v1.tenant_guard import require_tenant_from_context
-from app.api.v1.routers.ingestion import get_ingestion_use_case
+from app.api.dependencies import get_ingestion_trigger
 from app.infrastructure.caching.idempotency import get_idempotency_store, reset_idempotency_store_for_tests
-from app.application.use_cases.manual_ingestion_use_case import ManualIngestionUseCase
+from app.workflows.ingestion.trigger import IngestionTrigger
 from app.infrastructure.supabase.repositories.supabase_content_repository import SupabaseContentRepository
 from app.infrastructure.supabase.repositories.supabase_source_repository import SupabaseSourceRepository
 
@@ -131,7 +131,7 @@ async def create_document(
     file: UploadFile = File(...),
     metadata: str = Form(..., description="JSON metadata string for ingestion context"),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
-    use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
+    trigger: IngestionTrigger = Depends(get_ingestion_trigger),
 ) -> DocumentCreateResponse:
     try:
         tenant_id = require_tenant_from_context()
@@ -153,8 +153,8 @@ async def create_document(
             response.headers["X-Idempotency-Replayed"] = "true"
             return cast(DocumentCreateResponse, replayed)
 
-        file_path, original_filename, parsed_metadata = await use_case.execute(file, metadata)
-        enqueue_result = await use_case.process_background(
+        file_path, original_filename, parsed_metadata = await trigger.prepare_manual_upload(file, metadata)
+        enqueue_result = await trigger.trigger_manual_ingestion(
             file_path=file_path,
             original_filename=original_filename,
             metadata=parsed_metadata,
@@ -220,11 +220,11 @@ async def create_document(
 )
 async def list_documents(
     limit: int = 20,
-    use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
+    trigger: IngestionTrigger = Depends(get_ingestion_trigger),
 ) -> DocumentListResponse:
     try:
         require_tenant_from_context()
-        return DocumentListResponse(items=await use_case.get_documents(limit=limit))
+        return DocumentListResponse(items=await trigger.query_service.list_recent_documents(limit=limit))
     except ApiError:
         raise
     except Exception as e:

@@ -13,7 +13,7 @@ from app.infrastructure.supabase.repositories.supabase_source_repository import 
 from app.infrastructure.supabase.queries.ingestion_query_service import ManualIngestionQueryService
 from app.infrastructure.observability.ingestion.backpressure import IngestionBackpressureService
 from app.infrastructure.settings import settings
-from app.utils.filename_utils import sanitize_filename
+from app.infrastructure.filesystem.filename_utils import sanitize_filename
 from app.infrastructure.observability.correlation import get_correlation_id
 
 logger = structlog.get_logger(__name__)

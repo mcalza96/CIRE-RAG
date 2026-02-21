@@ -7,15 +7,15 @@ from app.infrastructure.settings import settings
 from app.domain.policies.ingestion_policy import IngestionPolicy
 from app.infrastructure.supabase.adapters.metadata_adapter import SupabaseMetadataAdapter
 from app.infrastructure.container import CognitiveContainer
-from app.infrastructure.supabase.queue.job_store import SupabaseJobStore
-from app.infrastructure.concurrency.tenant_concurrency_manager import TenantConcurrencyManager
+from app.infrastructure.background_jobs.job_store import SupabaseJobStore
+from app.infrastructure.background_jobs.tenant_concurrency_manager import TenantConcurrencyManager
 from app.infrastructure.queue.base_worker import BaseWorkerProcessor
 from app.infrastructure.supabase.repositories.taxonomy_repository import TaxonomyRepository
 from app.workflows.ingestion.dispatcher import IngestionDispatcher
 from app.workflows.ingestion.job_dispatcher import WorkerJobDispatcher
 import app.workflows.ingestion.strategies  # Trigger strategy registration
 
-from app.infrastructure.cron.community_scheduler import (
+from app.infrastructure.background_jobs.community_scheduler import (
     CommunityScheduler,
 )
 
@@ -103,9 +103,7 @@ class IngestionWorker:
         if resolved_container is None:
             resolved_container = CognitiveContainer()
 
-        self.community_scheduler = community_scheduler or CommunityScheduler(
-            source_repository=resolved_container.source_repository
-        )
+        self.community_scheduler = community_scheduler or CommunityScheduler()
         self.job_dispatcher = WorkerJobDispatcher(
             job_store=self.job_store,
             concurrency_manager=self.concurrency_manager,

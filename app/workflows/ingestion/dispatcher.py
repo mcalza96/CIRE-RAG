@@ -4,7 +4,7 @@ from typing import Dict, Any, Type, Optional
 from app.domain.schemas.ingestion_schemas import IngestionMetadata, IngestionType
 from app.workflows.ingestion.strategies import IngestionResult, IngestionStrategy
 from app.domain.models.ingestion_source import IngestionSource
-from app.utils.registry import registry
+from app.domain.ingestion.strategy_registry import registry
 
 
 logger = structlog.get_logger(__name__)

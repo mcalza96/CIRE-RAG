@@ -48,6 +48,19 @@ def create_ingest_model(settings: ModelSettings | None = None) -> BaseVLM:
     )
 
 
+def create_ingest_fallback_model(settings: ModelSettings | None = None) -> BaseVLM | None:
+    resolved_settings = settings or get_model_settings()
+    fallback_model_name = resolved_settings.resolved_ingest_fallback_model_name
+    if not fallback_model_name:
+        return None
+    return _create_vlm_provider_model(
+        provider=resolved_settings.resolved_ingest_provider,
+        model_name=fallback_model_name,
+        temperature=resolved_settings.resolved_ingest_temperature,
+        settings=resolved_settings,
+    )
+
+
 def create_chat_model(settings: ModelSettings | None = None) -> BaseVLM:
     resolved_settings = settings or get_model_settings()
     return _create_vlm_provider_model(

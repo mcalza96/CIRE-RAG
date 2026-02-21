@@ -11,13 +11,14 @@ from app.domain.ingestion.router import DocumentStructureRouter
 from app.domain.ingestion.structure_analyzer import PdfStructureAnalyzer
 from app.domain.ingestion.toc_discovery import TocDiscoveryService
 from app.ai.embeddings import JinaEmbeddingService
-from app.infrastructure.ai.rerankers.gravity_reranker import GravityReranker
-from app.infrastructure.ai.rerankers.jina_reranker import JinaReranker
-from app.infrastructure.ai.retrieval.atomic_engine import AtomicRetrievalEngine
+from app.ai.rerankers.gravity_reranker import GravityReranker
+from app.ai.rerankers.jina_reranker import JinaReranker
+from app.infrastructure.supabase.repositories.atomic_engine import AtomicRetrievalEngine
 from app.ai.tools.retrieval import RetrievalTools
 from app.infrastructure.network.downloader import DocumentDownloadService
 from app.infrastructure.state_management.state_manager import IngestionStateManager
 from app.workflows.retrieval.retrieval_broker import RetrievalBroker
+from app.workflows.ingestion.trigger import IngestionTrigger
 from app.infrastructure.filesystem.storage import StorageService
 from app.infrastructure.supabase.repositories.supabase_source_repository import SupabaseSourceRepository
 from app.infrastructure.supabase.repositories.supabase_content_repository import SupabaseContentRepository
@@ -54,6 +55,7 @@ class CognitiveContainer:
         self._authority_reranker = None
         self._semantic_reranker = None
         self._atomic_engine = None
+        self._ingestion_trigger = None
 
     @property
     def knowledge_service(self) -> GroundedRetrievalWorkflow:
@@ -163,6 +165,16 @@ class CognitiveContainer:
         if self._state_manager is None:
             self._state_manager = IngestionStateManager(repository=self.source_repository)
         return self._state_manager
+
+    @property
+    def ingestion_trigger(self) -> IngestionTrigger:
+        if self._ingestion_trigger is None:
+            from app.infrastructure.supabase.repositories.taxonomy_repository import TaxonomyRepository
+            self._ingestion_trigger = IngestionTrigger(
+                repo=self.source_repository,
+                taxonomy_manager=TaxonomyRepository()
+            )
+        return self._ingestion_trigger
 
     @property
     def retrieval_broker(self) -> RetrievalBroker:

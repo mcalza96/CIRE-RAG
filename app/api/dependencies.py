@@ -26,3 +26,6 @@ def get_source_repository(container: Annotated[CognitiveContainer, Depends(get_c
 
 def get_content_repository(container: Annotated[CognitiveContainer, Depends(get_container)]):
     return container.content_repository
+
+def get_ingestion_trigger(container: Annotated[CognitiveContainer, Depends(get_container)]):
+    return container.ingestion_trigger

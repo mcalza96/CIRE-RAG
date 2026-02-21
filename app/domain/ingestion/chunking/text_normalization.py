@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import re
-from typing import Any, Mapping
-from uuid import UUID
+import json
+from typing import Any, Mapping, List, Optional
+from uuid import UUID, uuid4
 
 
 def inject_anchor_token(text: str, context: Mapping[str, Any] | None, node_id: UUID | str) -> str:
@@ -52,8 +52,64 @@ def _sanitize_desc(value: str) -> str:
     return cleaned[:180]
 
 
+
 def _sanitize_label(value: str, fallback: str) -> str:
     """Normalize short label values for token metadata."""
 
     cleaned = re.sub(r"[^a-zA-Z0-9_\-]", "", value.strip().lower())
     return cleaned or fallback
+
+
+def normalize_embedding(raw_embedding: Any) -> List[float]:
+    """Ensures embedding is a list of floats, handling many raw formats."""
+    if isinstance(raw_embedding, list):
+        out: List[float] = []
+        for value in raw_embedding:
+            try:
+                out.append(float(value))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    if isinstance(raw_embedding, str):
+        text = raw_embedding.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            out: List[float] = []
+            for value in parsed:
+                try:
+                    out.append(float(value))
+                except (TypeError, ValueError):
+                    continue
+            return out
+        if text.startswith("[") and text.endswith("]"):
+            inner = text[1:-1]
+            out: List[float] = []
+            for token in inner.split(","):
+                token = token.strip()
+                if not token:
+                    continue
+                try:
+                    out.append(float(token))
+                except (TypeError, ValueError):
+                    continue
+            return out
+
+    return []
+
+
+def ensure_chunk_ids(chunks: List[Any]) -> None:
+    """Modifica la lista de chunks in-place para asegurar que cada uno tenga un ID (UUID)."""
+    for chunk in chunks:
+        cid = chunk.get("id") if isinstance(chunk, dict) else getattr(chunk, "id", None)
+        if not cid:
+            new_id = str(uuid4())
+            if isinstance(chunk, dict):
+                chunk["id"] = new_id
+            else:
+                setattr(chunk, "id", new_id)

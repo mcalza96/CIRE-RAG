@@ -7,9 +7,9 @@ from pydantic import BaseModel, Field
 from app.api.v1.auth import require_service_auth
 from app.api.v1.errors import ERROR_RESPONSES, ApiError
 from app.api.v1.tenant_guard import enforce_tenant_match
-from app.api.v1.routers.ingestion import get_ingestion_use_case
+from app.api.dependencies import get_ingestion_trigger
 from app.infrastructure.observability.retrieval_metrics import retrieval_metrics_store
-from app.application.use_cases.manual_ingestion_use_case import ManualIngestionUseCase
+from app.workflows.ingestion.trigger import IngestionTrigger
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/management", tags=["management"], dependencies=[Depends(require_service_auth)])
@@ -78,10 +78,10 @@ class RetrievalMetricsResponse(BaseModel):
 )
 async def list_tenants(
     limit: int = Query(default=200, ge=1, le=1000),
-    use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
+    trigger: IngestionTrigger = Depends(get_ingestion_trigger),
 ) -> TenantsResponse:
     try:
-        return TenantsResponse(items=await use_case.list_tenants(limit=limit))
+        return TenantsResponse(items=await trigger.query_service.list_tenants(limit=limit))
     except Exception as e:
         logger.error("management_list_tenants_failed", error=str(e), limit=limit)
         raise ApiError(status_code=500, code="TENANT_LIST_FAILED", message="Failed to list tenants")
@@ -118,11 +118,11 @@ async def list_tenants(
 )
 async def list_collections(
     tenant_id: str = Query(..., examples=["tenant-demo"]),
-    use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
+    trigger: IngestionTrigger = Depends(get_ingestion_trigger),
 ) -> CollectionsResponse:
     try:
         tenant_ctx = enforce_tenant_match(tenant_id, "query.tenant_id")
-        return CollectionsResponse(items=await use_case.list_collections(tenant_id=tenant_ctx))
+        return CollectionsResponse(items=await trigger.query_service.list_collections(tenant_id=tenant_ctx))
     except ApiError:
         raise
     except ValueError as e:
@@ -162,11 +162,11 @@ async def list_collections(
 )
 async def get_queue_status(
     tenant_id: str = Query(..., examples=["tenant-demo"]),
-    use_case: ManualIngestionUseCase = Depends(get_ingestion_use_case),
+    trigger: IngestionTrigger = Depends(get_ingestion_trigger),
 ) -> QueueStatusResponse:
     try:
         tenant_ctx = enforce_tenant_match(tenant_id, "query.tenant_id")
-        queue = await use_case.get_queue_status(tenant_id=tenant_ctx)
+        queue = await trigger.backpressure.get_pending_snapshot(tenant_id=tenant_ctx)
         return QueueStatusResponse(
             status="ok",
             tenant_id=tenant_ctx,

@@ -5,9 +5,9 @@ from typing import List, Dict, Any, Optional
 from app.infrastructure.settings import settings
 from app.domain.schemas.query_plan import PlannedSubQuery, QueryPlan
 from app.ai.embeddings import JinaEmbeddingService
-from app.infrastructure.ai.rerankers.cohere_reranker import CohereReranker
-from app.infrastructure.ai.rerankers.gravity_reranker import GravityReranker
-from app.infrastructure.ai.rerankers.jina_reranker import JinaReranker
+from app.ai.rerankers.cohere_reranker import CohereReranker
+from app.ai.rerankers.gravity_reranker import GravityReranker
+from app.ai.rerankers.jina_reranker import JinaReranker
 from app.domain.ingestion.metadata_enricher import enrich_metadata
 from app.infrastructure.observability.forensic import ForensicRecorder
 from app.infrastructure.observability.scope_metrics import scope_metrics_store
@@ -18,7 +18,7 @@ from app.domain.retrieval.strategies.retrieval_strategies import (
     DirectRetrievalStrategy,
     IterativeRetrievalStrategy,
 )
-from app.infrastructure.ai.retrieval.atomic_engine import AtomicRetrievalEngine
+from app.infrastructure.supabase.repositories.atomic_engine import AtomicRetrievalEngine
 from app.domain.retrieval.scope_utils import (
     apply_scope_penalty,
     clause_near_standard,

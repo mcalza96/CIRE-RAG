@@ -2,9 +2,9 @@ import asyncio
 import structlog
 from typing import Callable, Dict, Any, Optional
 
-from app.infrastructure.supabase.queue.job_store import SupabaseJobStore
+from app.infrastructure.background_jobs.job_store import SupabaseJobStore
 from app.infrastructure.queue.base_worker import BaseWorkerProcessor
-from app.domain.use_cases.community.rebuild_communities import RebuildCommunitiesUseCase
+from app.workflows.community.rebuild_communities import RebuildCommunitiesUseCase
 from app.workflows.ingestion.contracts import (
     JobLoopProcessorProtocol,
     WorkerJobStoreProtocol,
@@ -14,6 +14,7 @@ from app.workflows.ingestion.job_processor import TenantScopedJobProcessor
 logger = structlog.get_logger(__name__)
 
 
+class CommunityWorker:
     def __init__(
         self,
         job_store: Optional[WorkerJobStoreProtocol] = None,

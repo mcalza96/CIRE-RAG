@@ -4,7 +4,7 @@ from typing import List
 
 from app.infrastructure.settings import settings
 from app.infrastructure.supabase.client import get_async_supabase_client
-from app.domain.use_cases.community.rebuild_communities import RebuildCommunitiesUseCase
+from app.workflows.community.rebuild_communities import RebuildCommunitiesUseCase
 
 import structlog
 

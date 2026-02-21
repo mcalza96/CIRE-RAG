@@ -8,7 +8,7 @@ from app.api.v1.auth import require_service_auth
 from app.api.v1.errors import ApiError
 from app.api.v1.tenant_guard import enforce_tenant_match, require_tenant_from_context
 from app.workflows.ingestion.trigger import IngestionTrigger
-from app.api.dependencies import get_container
+from app.api.dependencies import get_container, get_ingestion_trigger
 from app.infrastructure.supabase.repositories.taxonomy_repository import TaxonomyRepository
 
 logger = structlog.get_logger(__name__)
@@ -40,12 +40,6 @@ class ReplayEnrichmentRequest(BaseModel):
 
 # --- DEPENDENCIES ---
 
-def get_trigger(container=Depends(get_container)):
-    return IngestionTrigger(
-        repo=container.source_repository,
-        taxonomy_manager=TaxonomyRepository()
-    )
-
 
 # --- ENDPOINTS ---
 
@@ -74,7 +68,7 @@ async def ingest_document(
     response: Response,
     file: UploadFile = File(...),
     metadata: str = Form(...),
-    trigger: IngestionTrigger = Depends(get_trigger),
+    trigger: IngestionTrigger = Depends(get_ingestion_trigger),
 ):
     """
     Standard Ingestion (Curricular/Public).
@@ -146,7 +140,7 @@ async def ingest_document(
 async def ingest_institutional_document(
     request: InstitutionalIngestionRequest,
     response: Response,
-    trigger: IngestionTrigger = Depends(get_trigger),
+    trigger: IngestionTrigger = Depends(get_ingestion_trigger),
 ):
     """
     Endpoint for Institutional Ingestion triggered via Webhook.
@@ -209,7 +203,7 @@ async def ingest_institutional_document(
 @router.post("/retry/{doc_id}")
 async def retry_ingestion_endpoint(
     doc_id: str, 
-    trigger: IngestionTrigger = Depends(get_trigger)
+    trigger: IngestionTrigger = Depends(get_ingestion_trigger)
 ):
     """
     Retry ingestion for an existing document ID.

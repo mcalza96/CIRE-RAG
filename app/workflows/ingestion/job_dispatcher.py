@@ -4,11 +4,11 @@ from typing import Any, Dict
 import structlog
 
 from app.workflows.ingestion.processor import DocumentProcessor
-from app.infrastructure.concurrency.tenant_concurrency_manager import (
+from app.infrastructure.background_jobs.tenant_concurrency_manager import (
     AlreadyProcessingError,
     TenantConcurrencyManager,
 )
-from app.infrastructure.supabase.queue.job_store import SupabaseJobStore
+from app.infrastructure.background_jobs.job_store import SupabaseJobStore
 from app.workflows.ingestion.job_processor import SourceDocumentJobProcessor
 
 logger = structlog.get_logger(__name__)
