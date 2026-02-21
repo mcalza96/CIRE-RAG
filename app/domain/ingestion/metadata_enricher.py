@@ -19,7 +19,7 @@ PATTERNS = {
 ISO_PATTERN = re.compile(r"\bISO\s*[-:]?\s*(\d{4,5})(?::\s*\d{4})?\b", re.IGNORECASE)
 CLAUSE_PATTERN = re.compile(r"\b\d+(?:\.\d+)+\b")
 CLAUSE_TITLE_PATTERN = re.compile(
-    r"(?:^|\n)\s*(\d+(?:\.\d+)+)\s*[\)\.:\-]?\s*([^\n]{4,140})",
+    r"(?:^|\n)\s*(\d+(?:\.\d+)*)\s*[\)\.:\-]?\s*([^\n]{4,140})",
     re.IGNORECASE,
 )
 

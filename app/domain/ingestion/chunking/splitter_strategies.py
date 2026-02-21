@@ -56,17 +56,21 @@ class RecursiveTextSplitter:
 
 
 class SemanticHeadingSplitter:
-    # Matches:
-    #   - Markdown headings: ## Foo, ### Bar, #### Baz
-    #   - Numbered clauses with trailing dot: 4.1. Context
-    #   - Numbered clauses WITHOUT trailing dot: 4.1 Context, 10.2 Nonconformity
-    #   - Bold numbered clauses: **4.1 Context**
-    #   - Top-level single-digit clauses: 1 Scope (but not arbitrary numbers)
+    # Regex ultra-estrictos para ISO que bloquean el Índice (ToC)
+    # Bloqueamos líneas que terminan en número (típico de Index: "4.1 Contexto ... 5")
     _heading_pattern = re.compile(
         r"^(?:"
-        r"#{2,4}\s+(.+)"           # markdown headings
+        r"#{1,4}\s+(.+)"           # markdown headings
         r"|"
-        r"\*{0,2}(\d+(?:\.\d+)*\.?)\s+([A-ZÁÉÍÓÚÑÜ].+?)\*{0,2}"  # numbered clauses (optional bold)
+        # Explicación:
+        # ^\*{0,2} -> inicio de línea
+        # (\d+(?:\.\d+)*\.?) -> Cláusula (incluye 0, 1, 4.1, etc)
+        # \s+ -> espacio
+        # ([A-ZÁÉÍÓÚÑÜ][^\n]{2,100}?) -> Título corto
+        # (?!\s*(?:\.{2,}|\s{2,})\d+\s*$) -> NO seguido de puntos/espacios y un número al final de línea (INDEX CHECK)
+        # \*{0,2} -> opcional negrita
+        # \s*$ -> fin de línea limpio (SIN NÚMERO DE PÁGINA)
+        r"\*{0,2}(\d+(?:\.\d+)*\.?)\s+([A-ZÁÉÍÓÚÑÜ][^\n]{2,100}?)\*{0,2}\s*(?<!\s\d)$"
         r")",
         re.MULTILINE,
     )
@@ -93,20 +97,20 @@ class SemanticHeadingSplitter:
                 )
 
         heading_stack: list[str] = []
+        pending_sections: list[dict[str, Any]] = []
+
         for i, match in enumerate(matches):
             raw = match.group(0)
 
             if raw.startswith("#"):
-                # Markdown heading: determine level from hash count
                 hash_match = re.match(r"^#+", raw)
                 level = len(hash_match.group(0)) if hash_match else 2
                 title = (match.group(1) or "").strip()
             else:
-                # Numbered clause: infer level from dot-separated depth
                 clause_num = (match.group(2) or "").strip().rstrip(".")
                 clause_title = (match.group(3) or "").strip().rstrip("*")
-                depth = clause_num.count(".") + 1  # "4" = 1, "4.1" = 2, "4.1.2" = 3
-                level = depth + 1  # offset so top-level clauses = level 2
+                depth = clause_num.count(".") + 1
+                level = depth + 1
                 title = f"{clause_num} {clause_title}"
 
             if not title:
@@ -119,8 +123,25 @@ class SemanticHeadingSplitter:
             section_start = match.start()
             section_end = matches[i + 1].start() if i + 1 < len(matches) else len(markdown_text)
             section_content = markdown_text[section_start:section_end].strip()
-            if not section_content:
+            
+            # Si la sección es extremadamente corta (solo el título) y no es la última, 
+            # la acumulamos para unirla a la siguiente que tenga contenido.
+            if len(section_content) < 150 and (i + 1 < len(matches)):
+                pending_sections.append({
+                    "content": section_content,
+                    "heading_path": heading_path,
+                    "char_start": section_start,
+                })
                 continue
+
+            # Si hay secciones pendientes, las unimos a esta
+            if pending_sections:
+                combined_content = "\n\n".join([s["content"] for s in pending_sections] + [section_content])
+                # Usamos el start de la primera sección pendiente
+                actual_start = pending_sections[0]["char_start"]
+                pending_sections = []
+                section_content = combined_content
+                section_start = actual_start
 
             if len(section_content) > max_chars:
                 sections.extend(
@@ -140,6 +161,16 @@ class SemanticHeadingSplitter:
                         "char_end": section_end,
                     }
                 )
+        
+        # Si al final sobraron secciones pendientes (no hubo una posterior con cuerpo)
+        if pending_sections:
+            combined_content = "\n\n".join([s["content"] for s in pending_sections])
+            sections.append({
+                "content": combined_content,
+                "heading_path": pending_sections[-1]["heading_path"],
+                "char_start": pending_sections[0]["char_start"],
+                "char_end": len(markdown_text),
+            })
 
         return sections
 

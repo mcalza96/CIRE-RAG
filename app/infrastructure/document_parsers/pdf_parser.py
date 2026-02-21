@@ -102,6 +102,9 @@ class PdfParserService:
                     }
                 )
 
+                # Limpieza agresiva de ruido ISO "Traducción oficial" antes de guardar
+                page_text = re.sub(r"(?i)Traducci[oó]n\s+oficial\s*/\s*Official\s+translation.*?\n", "\n", page_text)
+                
                 full_text += page_text + "\n\n"
                 current_char = len(full_text)
 
@@ -212,8 +215,28 @@ class PdfParserService:
         try:
             for page_num in range(doc.page_count):
                 page = doc.load_page(page_num)
-                # Clean NULL characters and extract text
-                page_text = page.get_text().replace("\x00", "")
+                
+                # 1. Usar extracción por bloques con ordenamiento visual (Reading Order fix)
+                # Ignoramos los márgenes (10% superior e inferior) para evitar headers/footers
+                page_rect = page.rect
+                y_margin = page_rect.height * 0.08  # 8% de margen
+                
+                blocks = page.get_text("blocks", sort=True)
+                page_blocks = []
+                
+                for b in blocks:
+                    # b = (x0, y0, x1, y1, "text", block_no, block_type)
+                    block_rect = fitz.Rect(b[:4])
+                    block_text = b[4].replace("\x00", "").strip()
+                    
+                    # Filtrar bloques que estén muy arriba o muy abajo (Boilerplate/Noise)
+                    if block_rect.y1 < y_margin or block_rect.y0 > (page_rect.height - y_margin):
+                        continue
+                        
+                    if block_text:
+                        page_blocks.append(block_text)
+
+                page_text = "\n\n".join(page_blocks)
                 if not page_text.strip():
                     continue
 
@@ -268,6 +291,9 @@ class PdfParserService:
             "international standard",
             "traduccion oficial",
             "traducción oficial",
+            "official translation",
+            "traduction officielle",
+            "copyright",
             "iso",
         )
         candidate_counts: dict[str, int] = {}

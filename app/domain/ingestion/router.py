@@ -189,7 +189,27 @@ class DocumentStructureRouter:
                         },
                     )
                 else:
-                    page_text = page.get_text("text").replace("\x00", "").strip()
+                    # 1. Usar extracción por bloques con ordenamiento visual (Reading Order fix)
+                    # Filtramos márgenes (8% superior/inferior) directamente en el router
+                    page_rect = page.rect
+                    y_margin = page_rect.height * 0.08
+                    
+                    blocks = page.get_text("blocks", sort=True)
+                    page_blocks = []
+                    
+                    for b in blocks:
+                        # b = (x0, y0, x1, y1, "text", block_no, block_type)
+                        block_rect = fitz.Rect(b[:4])
+                        block_text = b[4].replace("\x00", "").strip()
+                        
+                        # Ignorar encabezados/pies de página ruidosos
+                        if block_rect.y1 < y_margin or block_rect.y0 > (page_rect.height - y_margin):
+                            continue
+                            
+                        if block_text:
+                            page_blocks.append(block_text)
+
+                    page_text = "\n\n".join(page_blocks)
                     task = IngestionTask(
                         page_number=page_number,
                         strategy=decision.strategy,

@@ -5,8 +5,8 @@ import asyncio
 import json
 from pathlib import Path
 
-from app.services.ingestion.chunking_service import ChunkingService
-from app.services.ingestion.pdf_parser import PdfParserService
+from app.domain.ingestion.chunking.facade import ChunkingService
+from app.infrastructure.document_parsers.pdf_parser import PdfParserService
 
 
 def _parse_args() -> argparse.Namespace:
