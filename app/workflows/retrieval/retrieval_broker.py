@@ -420,36 +420,43 @@ class RetrievalBroker:
     ) -> List[Dict]:
         try:
             rerank_mode = self._rerank_mode()
-            semantic_ranked = results
             requested_scopes = requested_scopes_from_context(scope_context)
             rerank_started = time.perf_counter()
             skip_external_rerank = bool(scope_context.get("_skip_external_rerank"))
             use_local = rerank_mode in {"local", "hybrid"}
 
-            # 1. Semantic External Reranking
-            if not skip_external_rerank and results:
-                semantic_ranked = await self._execute_external_rerank(query, results, rerank_mode, k)
+            working_results = results
+
+            # 1. Local Gravity Reranking (Reglas duras, metadatos, heading boost)
+            if use_local:
+                working_results = await self._execute_gravity_rerank(
+                    query, results, working_results, scope_context,
+                    len(working_results),  # Evaluate all initial candidates
+                    trace_payload
+                )
 
             # 2. Scope Penalty & Metrics
             if requested_scopes:
                 penalty_factor = float(getattr(settings, "RETRIEVAL_SCOPE_PENALTY_FACTOR", 0.25) or 0.25)
-                semantic_ranked = apply_scope_penalty(semantic_ranked, requested_scopes, penalty_factor=penalty_factor)
+                working_results = apply_scope_penalty(working_results, requested_scopes, penalty_factor=penalty_factor)
                 
-            candidate_count = len(semantic_ranked)
-            penalized_count = count_scope_penalized(semantic_ranked)
+            candidate_count = len(working_results)
+            penalized_count = count_scope_penalized(working_results)
             
             self._record_rerank_metrics(scope_context, penalized_count, candidate_count, requested_scopes, trace_payload)
 
             if requested_scopes and settings.SCOPE_STRICT_FILTERING:
-                semantic_ranked = [i for i in semantic_ranked if not bool(i.get("scope_penalized"))] or semantic_ranked
+                working_results = [i for i in working_results if not bool(i.get("scope_penalized"))] or working_results
 
-            # 3. Local Gravity Reranking
-            if use_local:
-                return await self._execute_gravity_rerank(query, results, semantic_ranked, scope_context, k, trace_payload)
+            # 3. Semantic External Reranking (Jina/Cohere)
+            # Solo enviamos el top 20 del resultado pre-filtrado para evaluar finamente.
+            if not skip_external_rerank and working_results:
+                working_results = await self._execute_external_rerank(query, working_results, rerank_mode, k)
 
             if isinstance(trace_payload, dict):
-                trace_payload["score_space"] = "semantic_relevance"
-            return semantic_ranked[:k]
+                trace_payload["score_space"] = "semantic_relevance" if not skip_external_rerank else "gravity"
+
+            return working_results[:k]
 
         except Exception as e:
             logger.warning("reranking_fallback", error=str(e))
@@ -462,37 +469,33 @@ class RetrievalBroker:
         
         if not active: return results
         
-        max_c = max(1, int(settings.RERANK_MAX_CANDIDATES or 40))
+        # Estrategia 3: Enviamos solo un top muy acotado a Jina (pre-filtrado por Gravity)
+        # para reducir latencia y costo. Limitamos a un máximo razonable como 20.
+        config_max = int(getattr(settings, "RERANK_MAX_CANDIDATES", 20) or 20)
+        max_c = max(1, min(config_max, max(20, k * 2)))
         candidates = results[:max_c]
         
-        # Request all candidates from external layer. Truncation should only happen after GravityReranker.
-        rows = await active.rerank_documents(query=query, documents=[str(i.get("content") or "") for i in candidates], top_n=len(candidates))
+        rows = await active.rerank_documents(
+            query=query, 
+            documents=[str(i.get("content") or "") for i in candidates], 
+            top_n=min(k, len(candidates))
+        )
         
         if not rows: return results
         
         reordered = []
-        returned_indices = set()
-        
         for r in rows:
             idx = r.get("index")
             if 0 <= idx < len(candidates):
-                returned_indices.add(idx)
                 source = dict(candidates[idx])
                 source["semantic_relevance_score"] = _safe_float(r.get("relevance_score"), default=0.0)
                 if "jina" in active.__class__.__name__.lower():
                     source["jina_relevance_score"] = source["semantic_relevance_score"]
                 reordered.append(source)
                 
-        # Append any items that were sent to the external reranker but got dropped by its internal Top N logic
-        for idx in range(len(candidates)):
-            if idx not in returned_indices:
-                source = dict(candidates[idx])
-                source["semantic_relevance_score"] = 0.0 # dropped items get zero semantic score
-                if "jina" in active.__class__.__name__.lower():
-                    source["jina_relevance_score"] = 0.0
-                reordered.append(source)
-                
-        return reordered + results[len(candidates):]
+        # Fill the rest with non-reranked candidates just in case we need 'k' elements
+        # and Jina returned fewer (although Jina should respect top_n)
+        return reordered + [c for i, c in enumerate(results) if i not in [r.get("index") for r in rows]]
 
     async def _execute_gravity_rerank(self, query, original_results, current_results, scope_context, k, trace):
         raw_by_id = {str(item.get("id", "")): item for item in original_results}

@@ -233,14 +233,13 @@ class GravityReranker:
             elif source_layer == "tenant":
                 layer_boost = 1.08
 
+            constitutional_boost = 3.0 if is_constitutional else 1.0
+            raptor_boost = 1.4 if is_summary else 1.0
+
             heading_boost = self._heading_boost(intent.query, result.content)
 
-            multiplier = weight * layer_boost * constitutional_boost * raptor_boost
-            
-            # If standard embedding score is too low but it's an exact heading match, 
-            # a multiplier won't save it (e.g., 0.05 * 2.5 = 0.125). 
-            # We add the heading boost directly.
-            final_score = (original_score * multiplier) + heading_boost
+            multiplier = weight * layer_boost * constitutional_boost * raptor_boost * heading_boost
+            final_score = original_score * multiplier
 
             # --- Build a NEW result instead of mutating the original ---
             new_meta = dict(meta)
@@ -326,7 +325,7 @@ class GravityReranker:
         from content similarity.
         """
         if not query or not content:
-            return 0.0
+            return 1.0
 
         query_lower = query.lower()
 
@@ -337,19 +336,19 @@ class GravityReranker:
                 target_anchors.extend(anchors)
 
         if not target_anchors:
-            return 0.0
+            return 1.0
 
         # Check if the chunk's SECTION_PATH or body matches any target anchor
         # Extract SECTION_PATH from the content
         section_match = re.search(r"SECTION_PATH:\s*(.+?)(?:\n|$)", content)
-        section_path = section_match.group(1).strip().lower() if section_match else ""
+        section_path = section_match.group(1).strip() if section_match else ""
 
         for anchor in target_anchors:
             if anchor in section_path:
-                return 1.5  # Strong absolute boost for section match (bypasses low embedding sim)
+                return 5.0  # Strong boost for section match (structural intent)
             # Also check if the anchor text appears in the first 200 chars of body
             body_start = content[:400].lower()
             if anchor.lower() in body_start:
-                return 0.8  # Moderate absolute boost for body match
+                return 3.0  # Moderate boost for body match
 
-        return 0.0
+        return 1.0

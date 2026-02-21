@@ -1,16 +1,11 @@
 import asyncio
 from app.ai.rerankers.gravity_reranker import GravityReranker
-from app.infrastructure.supabase.client import get_supabase_client
 
-async def main():
-    client = get_supabase_client()
-    res = client.table("content_chunks").select("content").eq("id", "a067b196-666f-4845-8b61-b737b439ed5a").execute()
-    content = res.data[0]["content"] if res.data else None
-    print(f"Content: {content[:200] if content else 'None'}")
-    
-    reranker = GravityReranker()
-    score = reranker._heading_boost("que dice la introduccion del documento?", content or "")
-    print(f"Heading boost: {score}")
+reranker = GravityReranker()
+content = "SECTION_PATH: 0 Introducción > 0.1 Generalidades\n\nEste es el contenido."
+score = reranker._heading_boost("que dice la introduccion del documento?", content)
+print(f"Test 1 score: {score}")
 
-if __name__ == "__main__":
-    asyncio.run(main())
+content2 = "SECTION_PATH: 0 Int > 0.1 Gen\n\nEste es el contenido."
+score2 = reranker._heading_boost("que dice la introduccion del documento?", content2)
+print(f"Test 2 score: {score2}")
