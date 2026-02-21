@@ -4,7 +4,7 @@ from app.infrastructure.supabase.client import get_async_supabase_client
 import structlog
 
 from app.infrastructure.observability.context_vars import get_tenant_id
-from app.domain.retrieval_config import retrieval_settings
+from app.domain.retrieval.retrieval_config import retrieval_settings
 
 logger = structlog.get_logger(__name__)
 

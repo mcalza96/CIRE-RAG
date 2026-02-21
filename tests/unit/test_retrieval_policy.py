@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.domain.retrieval_policy import (
+from app.domain.retrieval.retrieval_policy import (
     apply_search_hints,
     filter_rows_by_min_score,
     reduce_structural_noise_rows,

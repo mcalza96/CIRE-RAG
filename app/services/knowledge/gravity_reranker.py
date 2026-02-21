@@ -2,7 +2,7 @@ from typing import List, Dict, Optional, Any
 
 import structlog
 from app.infrastructure.settings import settings
-from app.domain.knowledge_schemas import (
+from app.domain.schemas.knowledge_schemas import (
     RAGSearchResult,
     RetrievalIntent,
     AgentRole,

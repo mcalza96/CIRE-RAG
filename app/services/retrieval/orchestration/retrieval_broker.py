@@ -11,7 +11,7 @@ from app.services.knowledge.jina_reranker import JinaReranker
 from app.services.ingestion.metadata_enricher import enrich_metadata
 from app.infrastructure.observability.forensic import ForensicRecorder
 from app.infrastructure.observability.scope_metrics import scope_metrics_store
-from app.domain.knowledge_schemas import RAGSearchResult, RetrievalIntent, AgentRole, TaskType
+from app.domain.schemas.knowledge_schemas import RAGSearchResult, RetrievalIntent, AgentRole, TaskType
 from app.domain.interfaces.reranking_provider import IAuthorityReranker, ISemanticReranker
 from app.domain.interfaces.retrieval_interface import IRetrievalRepository
 from app.services.knowledge.retrieval_strategies import (
@@ -19,7 +19,7 @@ from app.services.knowledge.retrieval_strategies import (
     IterativeRetrievalStrategy,
 )
 from app.services.retrieval.atomic_engine import AtomicRetrievalEngine
-from app.domain.scope_utils import (
+from app.domain.retrieval.scope_utils import (
     apply_scope_penalty,
     clause_near_standard,
     count_scope_penalized,

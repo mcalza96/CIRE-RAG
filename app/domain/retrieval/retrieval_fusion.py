@@ -2,8 +2,8 @@ import math
 import re
 from typing import Any
 from app.api.v1.schemas.retrieval_advanced import RetrievalItem
-from app.domain.scope_utils import extract_clause_refs, normalize_scope_name, extract_row_scope
-from app.domain.retrieval_policy import filter_rows_by_min_score, reduce_structural_noise_rows
+from app.domain.retrieval.scope_utils import extract_clause_refs, normalize_scope_name, extract_row_scope
+from app.domain.retrieval.retrieval_policy import filter_rows_by_min_score, reduce_structural_noise_rows
 
 def _safe_float(value: Any, *, default: float = 0.0) -> float:
     try:

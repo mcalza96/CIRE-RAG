@@ -3,7 +3,7 @@ import copy
 from datetime import datetime, timezone
 from typing import Any, List, Dict, Optional, Tuple
 
-from app.domain.scope_utils import (
+from app.domain.retrieval.scope_utils import (
     clause_near_standard,
     extract_clause_refs,
     extract_requested_standards,

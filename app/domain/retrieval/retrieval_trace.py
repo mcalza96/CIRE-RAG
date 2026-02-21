@@ -7,12 +7,12 @@ from app.api.v1.schemas.retrieval_advanced import (
     ComprehensiveTrace,
     RetrievalItem,
 )
-from app.domain.scope_utils import (
+from app.domain.retrieval.scope_utils import (
     extract_requested_standards, 
     normalize_scope_name, 
     extract_clause_refs
 )
-from app.domain.retrieval_fusion import missing_scopes, missing_clause_refs
+from app.domain.retrieval.retrieval_fusion import missing_scopes, missing_clause_refs
 
 def build_comprehensive_trace(
     *,

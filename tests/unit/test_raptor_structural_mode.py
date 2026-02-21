@@ -5,7 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.infrastructure.settings import settings
-from app.domain.raptor_schemas import BaseChunk
+from app.domain.schemas.raptor_schemas import BaseChunk
 from app.services.knowledge.raptor_processor import RaptorProcessor
 
 

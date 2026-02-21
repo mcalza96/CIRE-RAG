@@ -5,12 +5,12 @@ from uuid import uuid4
 import structlog
 from app.api.v1.errors import ApiError
 from app.api.middleware.security import SecurityViolationError
-from app.domain.retrieval_config import retrieval_settings
+from app.domain.retrieval.retrieval_config import retrieval_settings
 from app.infrastructure.settings import settings
 from app.infrastructure.observability.scope_metrics import scope_metrics_store
 from app.infrastructure.observability.timing import elapsed_ms, perf_now
 from app.services.retrieval.routing.router import RetrievalRouter
-from app.domain.knowledge_schemas import RetrievalIntent, AgentRole, TaskType
+from app.domain.schemas.knowledge_schemas import RetrievalIntent, AgentRole, TaskType
 from app.domain.schemas.retrieval_payloads import GroundedContext
 
 from app.domain.interfaces.scope_resolver_policy import IScopeResolverPolicy

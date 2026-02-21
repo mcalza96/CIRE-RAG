@@ -12,7 +12,7 @@ from app.ai.llm import get_llm
 from app.infrastructure.settings import settings
 from app.infrastructure.observability.scope_metrics import scope_metrics_store
 from app.domain.schemas.query_plan import PlannedSubQuery, QueryPlan
-from app.domain.knowledge_schemas import (
+from app.domain.schemas.knowledge_schemas import (
     AgentRole,
     RAGSearchResult,
     RetrievalIntent,

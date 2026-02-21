@@ -2,7 +2,7 @@ import logging
 from uuid import UUID, NAMESPACE_URL, uuid5
 
 from app.domain.repositories.raptor_repository import IRaptorRepository
-from app.domain.raptor_schemas import SummaryNode
+from app.domain.schemas.raptor_schemas import SummaryNode
 
 logger = logging.getLogger(__name__)
 

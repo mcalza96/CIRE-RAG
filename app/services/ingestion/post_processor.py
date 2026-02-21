@@ -293,7 +293,7 @@ class PostIngestionPipelineService:
             doc_id, "Iniciando procesamiento RAPTOR...", tenant_id=tenant_id
         )
         try:
-            from app.domain.raptor_schemas import BaseChunk
+            from app.domain.schemas.raptor_schemas import BaseChunk
 
             base_chunks = []
             for chunk in result.chunks:

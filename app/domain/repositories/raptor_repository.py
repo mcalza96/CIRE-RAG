@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from app.domain.raptor_schemas import SummaryNode
+from app.domain.schemas.raptor_schemas import SummaryNode
 
 
 class IRaptorRepository(ABC):

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from uuid import uuid4
 
-from app.domain.raptor_schemas import SummaryNode
+from app.domain.schemas.raptor_schemas import SummaryNode
 from app.infrastructure.supabase.repositories.supabase_raptor_repository import SupabaseRaptorRepository
 
 

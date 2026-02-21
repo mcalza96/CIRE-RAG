@@ -13,7 +13,7 @@ import asyncio
 from typing import Any, List, Optional, Dict
 from uuid import UUID, uuid4
 
-from app.domain.raptor_schemas import BaseChunk, SummaryNode, RaptorTreeResult
+from app.domain.schemas.raptor_schemas import BaseChunk, SummaryNode, RaptorTreeResult
 from app.domain.repositories.raptor_repository import IRaptorRepository
 from app.services.knowledge.clustering_service import GMMClusteringService
 from app.services.knowledge.summarization_service import SummarizationAgent

@@ -3,7 +3,7 @@ import re
 from typing import List, Tuple
 
 from app.ai.llm import get_llm
-from app.domain.prompt_registry import PromptRegistry
+from app.domain.prompts.prompt_registry import PromptRegistry
 
 logger = logging.getLogger(__name__)
 

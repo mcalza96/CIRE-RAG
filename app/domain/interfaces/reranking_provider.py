@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from app.domain.knowledge_schemas import RAGSearchResult, RetrievalIntent
+from app.domain.schemas.knowledge_schemas import RAGSearchResult, RetrievalIntent
 
 
 class IAuthorityReranker(Protocol):

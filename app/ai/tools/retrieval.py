@@ -11,7 +11,7 @@ import dspy
 
 from app.services.retrieval.orchestration.retrieval_broker import RetrievalBroker
 from app.domain.interfaces.retrieval_interface import IRetrievalRepository
-from app.domain.retrieval_config import retrieval_settings
+from app.domain.retrieval.retrieval_config import retrieval_settings
 
 class TenantContextMissingError(ValueError):
     """Raised when institutional retrieval is attempted without a tenant_id."""

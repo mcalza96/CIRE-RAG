@@ -35,7 +35,7 @@ def get_contract_manager(container=Depends(get_container)) -> ContractManager:
 )
 async def validate_scope(
     request: ValidateScopeRequest,
-    service: ContractManager = Depends(get_retrieval_contract_service),
+    service: ContractManager = Depends(get_contract_manager),
 ) -> ValidateScopeResponse:
     tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")
     normalized_request = request.model_copy(update={"tenant_id": tenant_id})
@@ -62,7 +62,7 @@ async def validate_scope(
 )
 async def retrieval_comprehensive(
     request: ComprehensiveRetrievalRequest,
-    service: ContractManager = Depends(get_retrieval_contract_service),
+    service: ContractManager = Depends(get_contract_manager),
 ) -> ComprehensiveRetrievalResponse:
     tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")
     normalized_request = request.model_copy(update={"tenant_id": tenant_id})
@@ -91,7 +91,7 @@ async def retrieval_comprehensive(
 )
 async def retrieval_explain(
     request: ExplainRetrievalRequest,
-    service: ContractManager = Depends(get_retrieval_contract_service),
+    service: ContractManager = Depends(get_contract_manager),
 ) -> ExplainRetrievalResponse:
     tenant_id = enforce_tenant_match(request.tenant_id, "body.tenant_id")
     normalized_request = request.model_copy(update={"tenant_id": tenant_id})
