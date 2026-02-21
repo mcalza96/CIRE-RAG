@@ -16,8 +16,8 @@ from typing import Any
 
 import structlog
 
-from app.ai.interfaces import BaseVLM, ModelAdapterError
-from app.ai.schemas import VerificationResult, VisualParseResult
+from app.ai.contracts import BaseVLM, ModelAdapterError
+from app.ai.contracts import VerificationResult, VisualParseResult
 
 logger = structlog.get_logger(__name__)
 

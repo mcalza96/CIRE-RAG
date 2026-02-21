@@ -14,7 +14,7 @@ from app.services.ingestion.state.state_manager import IngestionStateManager
 from app.infrastructure.caching.image_hasher import ImageHasher
 from app.ai.config import get_model_settings
 from app.infrastructure.settings import settings
-from app.ai.schemas import VisualParseResult
+from app.ai.contracts import VisualParseResult
 from app.infrastructure.supabase.client import get_async_supabase_client
 from app.services.ingestion.integrator import VisualGraphIntegrator
 from app.services.ingestion.visual_parser import VisualDocumentParser

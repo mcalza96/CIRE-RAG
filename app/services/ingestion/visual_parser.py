@@ -11,8 +11,8 @@ from pydantic import ValidationError
 
 from app.api.middleware.caching import cached_extraction
 from app.ai.factory import create_ingest_fallback_model, create_ingest_model
-from app.ai.interfaces import BaseVLM, ModelAdapterError
-from app.ai.schemas import VerificationResult, VisualParseResult
+from app.ai.contracts import BaseVLM, ModelAdapterError
+from app.ai.contracts import VerificationResult, VisualParseResult
 from app.infrastructure.settings import settings
 from app.services.ingestion.prompts import (
     FORENSIC_VISUAL_SYSTEM_PROMPT,

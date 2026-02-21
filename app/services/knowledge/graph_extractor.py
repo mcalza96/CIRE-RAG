@@ -12,7 +12,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 
 from app.infrastructure.settings import settings
-from app.ai.structured_generation import StrictEngine, get_strict_engine
+from app.ai.generation import StrictEngine, get_strict_engine
 from app.infrastructure.observability.ingestion_logging import compact_error
 
 try:

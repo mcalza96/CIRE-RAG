@@ -1,16 +1,25 @@
 """
-Centralized AI model configurations for the RAG ingestion service.
-Follows the CIRE-RAG rule of centralized model registry.
+Centralized AI contracts, interfaces, and schemas for the CIRE-RAG system.
+Consolidates interfaces.py, models.py, and schemas.py.
 """
 
+from __future__ import annotations
+from abc import ABC, abstractmethod
+from typing import Any, Dict, List, Optional
+from pydantic import BaseModel, ConfigDict, Field
 from app.infrastructure.settings import settings
 
 
+# =============================================================================
+# MODEL CONFIGURATION (Registry)
+# =============================================================================
+
 class AIModelConfig:
+    """Centralized model registry for the environment."""
     # Gemini Configuration
     GEMINI_API_KEY = settings.GEMINI_API_KEY
     GEMINI_MODEL_NAME = "gemini-2.5-flash-lite"
-    GEMINI_FLASH = "gemini-2.5-flash-lite"  # Alias for fast nodes
+    GEMINI_FLASH = "gemini-2.5-flash-lite"
 
     # Groq Configuration
     GROQ_API_KEY = settings.GROQ_API_KEY
@@ -52,17 +61,8 @@ class AIModelConfig:
     DEFAULT_TEMPERATURE_SUMMARIZATION = 0.3
     DEFAULT_TEMPERATURE_GENERATION = 0.2
 
-    _LIGHTWEIGHT_CAPABILITIES = {
-        "CHAT",
-        "ORCHESTRATION",
-        "SUMMARIZATION",
-    }
-
-    _HEAVY_CAPABILITIES = {
-        "DESIGN",
-        "FORENSIC",
-        "GENERATION",
-    }
+    _LIGHTWEIGHT_CAPABILITIES = {"CHAT", "ORCHESTRATION", "SUMMARIZATION"}
+    _HEAVY_CAPABILITIES = {"DESIGN", "FORENSIC", "GENERATION"}
 
     _GROQ_MODEL_BY_CAPABILITY = {
         "CHAT": GROQ_MODEL_CHAT,
@@ -86,3 +86,44 @@ class AIModelConfig:
     def is_lightweight_capability(cls, capability: str) -> bool:
         normalized = (capability or "CHAT").strip().upper()
         return normalized in cls._LIGHTWEIGHT_CAPABILITIES
+
+
+# =============================================================================
+# INTERFACES
+# =============================================================================
+
+class BaseVLM(ABC):
+    """Contract that every VLM adapter must implement."""
+
+    @abstractmethod
+    def generate_structured_output(
+        self,
+        image_content: bytes | str,
+        prompt: str,
+        schema: type[BaseModel] | dict[str, Any],
+        mime_type: str = "image/png",
+    ) -> BaseModel | dict[str, Any]:
+        """Generate normalized structured data from an image + prompt."""
+
+
+class ModelAdapterError(RuntimeError):
+    """Base exception for adapter failures."""
+
+
+# =============================================================================
+# SCHEMAS
+# =============================================================================
+
+class VisualParseResult(BaseModel):
+    """Deterministic structured output for visual document parsing."""
+    model_config = ConfigDict(extra="forbid")
+    dense_summary: str = Field(..., description="Resumen denso y rico en keywords.")
+    markdown_content: str = Field(..., description="Representacion Markdown fidedigna.")
+    visual_metadata: dict[str, Any] = Field(..., description="Metadatos extraidos.")
+
+
+class VerificationResult(BaseModel):
+    """Binary auditor output for HEART cross-validation."""
+    model_config = ConfigDict(extra="forbid")
+    is_valid: bool = Field(..., description="True if valid.")
+    discrepancies: list[str] = Field(default_factory=list, description="List of detected discrepancies.")

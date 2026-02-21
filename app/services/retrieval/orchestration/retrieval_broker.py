@@ -4,7 +4,7 @@ import math
 from typing import List, Dict, Any, Optional
 from app.infrastructure.settings import settings
 from app.domain.schemas.query_plan import PlannedSubQuery, QueryPlan
-from app.ai.embeddings.embedding_service import JinaEmbeddingService
+from app.ai.embeddings import JinaEmbeddingService
 from app.services.knowledge.cohere_reranker import CohereReranker
 from app.services.knowledge.gravity_reranker import GravityReranker
 from app.services.knowledge.jina_reranker import JinaReranker

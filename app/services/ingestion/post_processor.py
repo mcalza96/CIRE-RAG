@@ -10,7 +10,7 @@ import structlog
 from app.services.ingestion.state.state_manager import IngestionStateManager
 from app.infrastructure.settings import settings
 from app.domain.repositories.content_repository import IContentRepository
-from app.ai.llm import get_llm
+from app.ai.generation import get_llm
 from app.infrastructure.supabase.client import get_async_supabase_client
 from app.infrastructure.supabase.repositories.supabase_graph_repository import SupabaseGraphRepository
 from app.infrastructure.supabase.repositories.supabase_raptor_repository import SupabaseRaptorRepository

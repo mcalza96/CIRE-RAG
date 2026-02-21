@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 
-from app.ai.embeddings.embedding_service import JinaEmbeddingService
+from app.ai.embeddings import JinaEmbeddingService
 from app.services.knowledge.graph_extractor import ChunkGraphExtraction
 
 logger = logging.getLogger(__name__)

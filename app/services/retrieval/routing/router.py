@@ -8,7 +8,7 @@ from uuid import UUID
 import structlog
 from langchain_core.language_models.chat_models import BaseChatModel
 
-from app.ai.llm import get_llm
+from app.ai.generation import get_llm
 from app.infrastructure.settings import settings
 from app.infrastructure.observability.scope_metrics import scope_metrics_store
 from app.domain.schemas.query_plan import PlannedSubQuery, QueryPlan
@@ -19,7 +19,7 @@ from app.domain.schemas.knowledge_schemas import (
     TaskType,
 )
 from app.infrastructure.supabase.client import get_async_supabase_client
-from app.ai.embeddings.embedding_service import JinaEmbeddingService
+from app.ai.embeddings import JinaEmbeddingService
 from app.services.knowledge.graph_retrieval_strategies import LocalGraphSearch, GlobalGraphSearch
 from app.services.knowledge.gravity_reranker import GravityReranker
 

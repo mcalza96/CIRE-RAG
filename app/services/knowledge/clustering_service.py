@@ -5,9 +5,9 @@ from uuid import UUID
 from sklearn.mixture import GaussianMixture
 import asyncio
 import networkx as nx
-from app.ai.llm import get_llm
+from app.ai.generation import get_llm
 from app.infrastructure.supabase.client import get_async_supabase_client
-from app.ai.embeddings.embedding_service import JinaEmbeddingService
+from app.ai.embeddings import JinaEmbeddingService
 from app.domain.schemas.raptor_schemas import ClusterResult, ClusterAssignment
 
 logger = logging.getLogger(__name__)

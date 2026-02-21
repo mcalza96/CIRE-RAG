@@ -5,7 +5,7 @@ from typing import Any
 import aiohttp
 import structlog
 
-from app.ai.models import AIModelConfig
+from app.ai.contracts import AIModelConfig
 from app.infrastructure.settings import settings
 
 logger = structlog.get_logger(__name__)

@@ -8,9 +8,9 @@ from app.services.ingestion.chunking.splitter_strategies import (
 from app.services.ingestion.pdf_parser import PdfParserService
 from app.services.ingestion.structure_mapper import StructureMapper
 from app.domain.schemas.ingestion_schemas import IngestionMetadata
-from app.ai.models import AIModelConfig
+from app.ai.contracts import AIModelConfig
 from app.services.ingestion.metadata_enricher import enrich_metadata
-from app.ai.embeddings.embedding_service import JinaEmbeddingService
+from app.ai.embeddings import JinaEmbeddingService
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 import re

@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 
-from app.ai.models import AIModelConfig
+from app.ai.contracts import AIModelConfig
 from app.domain.schemas.ingestion_schemas import IngestionMetadata
 from app.domain.models.ingestion_source import IngestionSource
 from app.domain.types.ingestion_status import IngestionStatus
@@ -14,7 +14,7 @@ from app.services.ingestion.pdf_parser import PdfParserService
 from app.services.ingestion.toc_discovery import TocDiscoveryService
 from app.services.ingestion.chunking_service import ChunkingService
 from app.services.ingestion.router import DocumentStructureRouter, IngestionTask, ProcessingStrategy
-from app.ai.embeddings.embedding_service import JinaEmbeddingService
+from app.ai.embeddings import JinaEmbeddingService
 from app.infrastructure.settings import settings
 
 logger = structlog.get_logger(__name__)

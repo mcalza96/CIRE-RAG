@@ -10,7 +10,7 @@ from app.services.ingestion.pdf_parser import PdfParserService
 from app.services.ingestion.router import DocumentStructureRouter
 from app.services.ingestion.structure_analyzer import PdfStructureAnalyzer
 from app.services.ingestion.toc_discovery import TocDiscoveryService
-from app.ai.embeddings.embedding_service import JinaEmbeddingService
+from app.ai.embeddings import JinaEmbeddingService
 from app.services.knowledge.gravity_reranker import GravityReranker
 from app.services.knowledge.jina_reranker import JinaReranker
 from app.services.retrieval.atomic_engine import AtomicRetrievalEngine

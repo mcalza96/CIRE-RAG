@@ -2,7 +2,7 @@ import logging
 import re
 from typing import List, Tuple
 
-from app.ai.llm import get_llm
+from app.ai.generation import get_llm
 from app.domain.prompts.prompt_registry import PromptRegistry
 
 logger = logging.getLogger(__name__)
