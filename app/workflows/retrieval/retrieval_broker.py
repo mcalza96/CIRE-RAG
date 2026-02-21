@@ -105,11 +105,15 @@ class RetrievalBroker:
             if meta_raw is None or not isinstance(meta_raw, dict):
                 row["metadata"] = metadata
             
-            # Ownership
-            row.setdefault("institution_id", tenant_id)
-            row.setdefault("tenant_id", tenant_id)
-            metadata.setdefault("institution_id", tenant_id)
-            metadata.setdefault("tenant_id", tenant_id)
+            # Ownership — override falsy values (e.g. "" or None)
+            if not row.get("institution_id"):
+                row["institution_id"] = tenant_id
+            if not row.get("tenant_id"):
+                row["tenant_id"] = tenant_id
+            if not metadata.get("institution_id"):
+                metadata["institution_id"] = tenant_id
+            if not metadata.get("tenant_id"):
+                metadata["tenant_id"] = tenant_id
             
             # Diagnostics
             if source_layer:
@@ -532,8 +536,18 @@ class RetrievalBroker:
             src_orig = raw_by_id.get(str(rc.id), {})
             # Keep all original database fields intact
             p = dict(src_orig)
-            # Update with Gravity's new metrics
-            p["metadata"] = rc.metadata if rc.metadata else p.get("metadata", {})
+            orig_meta = p.get("metadata", {}) if isinstance(p.get("metadata"), dict) else {}
+            # Merge metadata: keep all original database fields and update with Gravity metrics
+            merged_meta = dict(orig_meta)
+            if rc.metadata:
+                merged_meta.update(rc.metadata)
+            p["metadata"] = merged_meta
+            
+            # Ensure top-level ownership fields are set
+            for own_key in ("tenant_id", "institution_id"):
+                val = merged_meta.get(own_key) or p.get(own_key)
+                if val:
+                    p[own_key] = val
             p["similarity"] = rc.similarity
             p["score"] = rc.score
             p["score_space"] = "gravity"

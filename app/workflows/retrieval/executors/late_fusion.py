@@ -75,6 +75,10 @@ class LateFusionExecutor:
                 item.metadata["fusion_source"] = "chunks"
             return res.items, res.trace.model_dump() if res.trace else {}
         except Exception as e:
+            # Never silently swallow security violations — they must propagate
+            from app.api.middleware.security import SecurityViolationError
+            if isinstance(e, SecurityViolationError):
+                raise
             trace_warnings.append(f"chunks_pipeline_failed:{str(e)[:160]}")
             return [], {}
 

@@ -250,8 +250,8 @@ class ContractManager:
 
         rows = response.get("items", []) if isinstance(response, dict) else response
         trace_payload = response.get("trace", {}) if isinstance(response, dict) else {}
+        LeakCanary.verify_isolation(request.tenant_id, rows)
         items = to_retrieval_items(rows)
-        LeakCanary.verify_isolation(request.tenant_id, [extract_row(i) for i in items])
         warnings_raw = trace_payload.get("warnings") if isinstance(trace_payload, dict) else None
         warning_codes_raw = (
             trace_payload.get("warning_codes") if isinstance(trace_payload, dict) else None

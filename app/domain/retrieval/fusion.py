@@ -113,8 +113,13 @@ def to_retrieval_items(rows: list[dict[str, Any]]) -> list[RetrievalItem]:
         metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
         
         # Preserve specific trace fields in metadata if they exist
-        for key in ("source_layer", "source_type", "similarity", "jina_relevance_score", "scope_penalized"):
-            if key in row:
+        for key in (
+            "source_layer", "source_type", "similarity",
+            "jina_relevance_score", "scope_penalized",
+            # Ownership fields — ensure they survive the row→RetrievalItem transform
+            "tenant_id", "institution_id", "id",
+        ):
+            if key in row and (row[key] or key not in metadata):
                 metadata[key] = row[key]
 
         items.append(

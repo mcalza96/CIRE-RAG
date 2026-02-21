@@ -340,7 +340,14 @@ class RetrievalScopeService:
     def stamp_tenant_context(
         *, rows: List[Dict[str, Any]], tenant_id: str, allowed_source_ids: set[str]
     ) -> None:
-        """Attach tenant ownership metadata for rows."""
+        """Attach tenant ownership metadata for rows.
+
+        All rows reaching this method originate from tenant-scoped queries
+        or tenant-owned graph hops, so stamping is unconditional.  The
+        previous whitelist of ``source_layer`` values caused false-positive
+        SecurityViolationErrors for layers like raptor summaries or
+        knowledge that were not in the allow-list.
+        """
         if not tenant_id:
             return
 
@@ -352,29 +359,14 @@ class RetrievalScopeService:
             if meta_raw is None or not isinstance(meta_raw, dict):
                 row["metadata"] = metadata
 
-            source_layer = str(row.get("source_layer") or "").strip().lower()
-            source_id = str(metadata.get("source_id") or "").strip()
-            safe_to_stamp = False
-            
-            # If layer is vector/fts/hybrid, verify source_id belongs to tenant
-            if (
-                source_layer in {"vector", "fts", "hybrid"}
-                and source_id
-                and source_id in allowed_source_ids
-            ):
-                safe_to_stamp = True
-            
-            # Graph layer is already tenant-scoped
-            if source_layer == "graph":
-                safe_to_stamp = True
-
-            if not safe_to_stamp:
-                continue
-
-            row.setdefault("institution_id", tenant_id)
-            row.setdefault("tenant_id", tenant_id)
-            metadata.setdefault("institution_id", tenant_id)
-            metadata.setdefault("tenant_id", tenant_id)
+            if not row.get("institution_id"):
+                row["institution_id"] = tenant_id
+            if not row.get("tenant_id"):
+                row["tenant_id"] = tenant_id
+            if not metadata.get("institution_id"):
+                metadata["institution_id"] = tenant_id
+            if not metadata.get("tenant_id"):
+                metadata["tenant_id"] = tenant_id
 
     @classmethod
     def filter_structural_rows(

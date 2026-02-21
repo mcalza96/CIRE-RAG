@@ -63,15 +63,11 @@ Recomendacion de costo cloud:
 - Worker: `worker_cloud_image`
 - Variables: `JINA_MODE=CLOUD`, `JINA_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
 
-## Documentacion central
+## Documentación central
 
-- Hub general: `docs/README.md`
-- Arquitectura del engine: `docs/rag-engine/architecture.md`
-- Endpoints y flujo operativo: `docs/rag-engine/README.md`
-- Configuracion: `docs/rag-engine/configuration.md`
-- Runbooks: `docs/rag-engine/runbooks/common-incidents.md`
-- SDK base TypeScript: `sdk/ts/README.md`
-- SDK base Python: `sdk/python/README.md`
+- **[E2E Flow & Security](docs/e2e.md)**: Guía sobre aislamiento de datos, LeakCanary y flujo de retrieval.
+- **[Documentation Hub](docs/README.md)**: Punto de entrada para guías de desarrollo e infraestructura.
+- **SDKs**: Referencias para [TypeScript](sdk/ts/README.md) y [Python](sdk/python/README.md).
 
 ## API v1 (contrato recomendado)
 

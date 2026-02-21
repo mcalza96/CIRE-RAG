@@ -1,49 +1,28 @@
-# Documentation
+# Documentation Hub
 
-This is the canonical documentation entrypoint for CIRE-RAG.
-Use this file as single source of truth for navigation.
+Bienvenido a la documentación técnica de **CIRE-RAG**. Este directorio contiene guías sobre el funcionamiento interno y la operación del sistema.
 
-## Start Here
+## Guías Disponibles
 
-- New contributor onboarding: `getting-started.md`
-- Local development and quality gates: `developer-guide.md`
-- System architecture and ADRs: `architecture.md`
-- Operations, incidents, and deployment context: `operations.md`
+- **[E2E Flow & Security](e2e.md)**: 
+  - Explicación del sistema de búsqueda híbrido.
+  - Detalles sobre el middleware de seguridad (LeakCanary).
+  - Diagramas de secuencia de retrieval.
 
-## Audience-Based Navigation
+## Configuración y Entorno
 
-- Maintainers: architecture, ADRs, and runbooks first.
-- Contributors: setup, coding workflow, and test policy.
-- Integrators: API overview in `rag-engine/README.md` and service docs.
+El sistema se configura principalmente mediante variables de entorno en el archivo `.env.local` (basado en `.env.example`).
 
-## Source-of-Truth Policy
+### Variables Críticas
+- `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`: Conexión con la base de datos y persistencia.
+- `RAG_SERVICE_SECRET`: Clave para autenticación S2S (Service-to-Service).
+- `JINA_API_KEY`: Necesaria cuando `JINA_MODE=CLOUD` para embeddings y rerank.
 
-- Top-level docs (`docs/*`) define navigation and project-wide standards.
-- Service-specific deep dives live in `docs/rag-engine/*`.
-- Root `README.md` stays concise and links here.
-- Every feature PR should update docs when behavior changes.
+## Desarrollo Local
 
-## Source of Truth by Topic
+Para ejecutar pruebas y validar cambios:
+1. Asegurarse de tener los contenedores de Supabase activos.
+2. Ejecutar `pytest tests/integration/test_rag_e2e_security.py` para validar la integridad del flujo de seguridad.
 
-- Onboarding and local setup: `getting-started.md`
-- Runtime architecture and flow semantics: `rag-engine/architecture.md`
-- Sequence/operational diagrams: `rag-engine/flows-and-diagrams.md`
-- Incident response: `rag-engine/runbooks/common-incidents.md`
-- Config and env vars: `rag-engine/configuration.md`
-
-## Documentation Inventory
-
-- Project overview: `../README.md`
-- Contribution guide: `../CONTRIBUTING.md`
-- Service README: `rag-engine/README.md`
-- Service architecture deep dive: `rag-engine/architecture.md`
-- Flow diagrams: `rag-engine/flows-and-diagrams.md`
-- ADR index: `rag-engine/adr/README.md`
-- Configuration reference: `rag-engine/configuration.md`
-- Testing guide: `rag-engine/testing.md`
-- Runbooks: `rag-engine/runbooks/common-incidents.md`
-- Cost optimization runbook: `rag-engine/runbooks/cloud-cost-on-off.md`
-
-## Historical and Planning Notes
-
-No active historical/planning files are currently tracked.
+---
+*Nota: Si necesitas documentación de un módulo específico que no aparece aquí, consulta el README en la raíz de `app/`.*
