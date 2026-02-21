@@ -56,21 +56,16 @@ class RecursiveTextSplitter:
 
 
 class SemanticHeadingSplitter:
-    # Regex ultra-estrictos para ISO que bloquean el Índice (ToC)
-    # Bloqueamos líneas que terminan en número (típico de Index: "4.1 Contexto ... 5")
+    # Matches:
+    #   - Markdown headings: ## Foo, ### Bar
+    #   - Numbered clauses: 4.1 Context, 10.2 Nonconformity, 0 Introducción
+    #   - Bold numbered clauses: **4.1 Context**
+    # NOTE: ToC block is stripped BEFORE this regex runs (see facade._strip_toc_block)
     _heading_pattern = re.compile(
         r"^(?:"
         r"#{1,4}\s+(.+)"           # markdown headings
         r"|"
-        # Explicación:
-        # ^\*{0,2} -> inicio de línea
-        # (\d+(?:\.\d+)*\.?) -> Cláusula (incluye 0, 1, 4.1, etc)
-        # \s+ -> espacio
-        # ([A-ZÁÉÍÓÚÑÜ][^\n]{2,100}?) -> Título corto
-        # (?!\s*(?:\.{2,}|\s{2,})\d+\s*$) -> NO seguido de puntos/espacios y un número al final de línea (INDEX CHECK)
-        # \*{0,2} -> opcional negrita
-        # \s*$ -> fin de línea limpio (SIN NÚMERO DE PÁGINA)
-        r"\*{0,2}(\d+(?:\.\d+)*\.?)\s+([A-ZÁÉÍÓÚÑÜ][^\n]{2,100}?)\*{0,2}\s*(?<!\s\d)$"
+        r"\*{0,2}(\d+(?:\.\d+)*\.?)\s+([A-ZÁÉÍÓÚÑÜ][^\n]{2,120}?)\*{0,2}"  # numbered clauses
         r")",
         re.MULTILINE,
     )

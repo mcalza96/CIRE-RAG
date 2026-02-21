@@ -1,4 +1,5 @@
 from typing import List, Dict, Optional, Any
+import re
 
 import structlog
 from app.infrastructure.settings import settings
@@ -11,6 +12,41 @@ from app.domain.schemas.knowledge_schemas import (
 )
 
 logger = structlog.get_logger(__name__)
+
+# ============================================================================
+# SECTION HEADING KEYWORDS → SECTION_PATH ANCHORS
+# Maps query keywords to SECTION_PATH prefixes they should boost.
+# ============================================================================
+_HEADING_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "introducción": ("0 Int",),
+    "introduccion": ("0 Int",),
+    "introduction": ("0 Int",),
+    "generalidades": ("0.1 Gen", "0 Int"),
+    "preámbulo": ("Preámbulo", "Preambulo"),
+    "preambulo": ("Preámbulo", "Preambulo"),
+    "preamble": ("Preámbulo", "Preambulo"),
+    "contexto": ("4 Con",),
+    "context": ("4 Con",),
+    "liderazgo": ("5 Lid",),
+    "leadership": ("5 Lid",),
+    "planificación": ("6 Pla",),
+    "planificacion": ("6 Pla",),
+    "planning": ("6 Pla",),
+    "apoyo": ("7 Apo",),
+    "support": ("7 Apo",),
+    "operación": ("8 Ope",),
+    "operacion": ("8 Ope",),
+    "operation": ("8 Ope",),
+    "evaluación": ("9 Eva",),
+    "evaluacion": ("9 Eva",),
+    "evaluation": ("9 Eva",),
+    "mejora": ("10 Mej",),
+    "improvement": ("10 Mej",),
+    "bibliografía": ("Bibliografía", "Bibliografia"),
+    "bibliografia": ("Bibliografía", "Bibliografia"),
+    "anexo": ("Anexo",),
+    "annex": ("Anexo",),
+}
 
 # ============================================================================
 # WEIGHT PRESETS
@@ -197,11 +233,14 @@ class GravityReranker:
             elif source_layer == "tenant":
                 layer_boost = 1.08
 
-            constitutional_boost = 3.0 if is_constitutional else 1.0
-            raptor_boost = 1.4 if is_summary else 1.0
+            heading_boost = self._heading_boost(intent.query, result.content)
 
             multiplier = weight * layer_boost * constitutional_boost * raptor_boost
-            final_score = original_score * multiplier
+            
+            # If standard embedding score is too low but it's an exact heading match, 
+            # a multiplier won't save it (e.g., 0.05 * 2.5 = 0.125). 
+            # We add the heading boost directly.
+            final_score = (original_score * multiplier) + heading_boost
 
             # --- Build a NEW result instead of mutating the original ---
             new_meta = dict(meta)
@@ -211,6 +250,7 @@ class GravityReranker:
                 "layer_boost": layer_boost,
                 "constitutional_boost": constitutional_boost,
                 "raptor_boost": raptor_boost,
+                "heading_boost": heading_boost,
                 "authority_level": auth_level,
                 "final_multiplier": multiplier,
             })
@@ -274,3 +314,42 @@ class GravityReranker:
         except ValueError:
             logger.warning("unknown_authority_level", value=value, fallback=AuthorityLevel.SUPPLEMENTARY)
             return AuthorityLevel.SUPPLEMENTARY
+
+    @staticmethod
+    def _heading_boost(query: str, content: str) -> float:
+        """
+        Boost chunks whose SECTION_PATH matches section keywords in the query.
+
+        When a user asks "que dice la introducción", the chunk with
+        SECTION_PATH "0 Int > 0.1 Gen" should be boosted because the
+        embedding alone can't distinguish section-referencing intent
+        from content similarity.
+        """
+        if not query or not content:
+            return 0.0
+
+        query_lower = query.lower()
+
+        # Find which section anchors the query is asking about
+        target_anchors: list[str] = []
+        for keyword, anchors in _HEADING_KEYWORDS.items():
+            if keyword in query_lower:
+                target_anchors.extend(anchors)
+
+        if not target_anchors:
+            return 0.0
+
+        # Check if the chunk's SECTION_PATH or body matches any target anchor
+        # Extract SECTION_PATH from the content
+        section_match = re.search(r"SECTION_PATH:\s*(.+?)(?:\n|$)", content)
+        section_path = section_match.group(1).strip().lower() if section_match else ""
+
+        for anchor in target_anchors:
+            if anchor in section_path:
+                return 1.5  # Strong absolute boost for section match (bypasses low embedding sim)
+            # Also check if the anchor text appears in the first 200 chars of body
+            body_start = content[:400].lower()
+            if anchor.lower() in body_start:
+                return 0.8  # Moderate absolute boost for body match
+
+        return 0.0

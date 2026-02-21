@@ -464,19 +464,34 @@ class RetrievalBroker:
         
         max_c = max(1, int(settings.RERANK_MAX_CANDIDATES or 40))
         candidates = results[:max_c]
-        rows = await active.rerank_documents(query=query, documents=[str(i.get("content") or "") for i in candidates], top_n=min(k, len(candidates)))
+        
+        # Request all candidates from external layer. Truncation should only happen after GravityReranker.
+        rows = await active.rerank_documents(query=query, documents=[str(i.get("content") or "") for i in candidates], top_n=len(candidates))
         
         if not rows: return results
         
         reordered = []
+        returned_indices = set()
+        
         for r in rows:
             idx = r.get("index")
             if 0 <= idx < len(candidates):
+                returned_indices.add(idx)
                 source = dict(candidates[idx])
                 source["semantic_relevance_score"] = _safe_float(r.get("relevance_score"), default=0.0)
                 if "jina" in active.__class__.__name__.lower():
                     source["jina_relevance_score"] = source["semantic_relevance_score"]
                 reordered.append(source)
+                
+        # Append any items that were sent to the external reranker but got dropped by its internal Top N logic
+        for idx in range(len(candidates)):
+            if idx not in returned_indices:
+                source = dict(candidates[idx])
+                source["semantic_relevance_score"] = 0.0 # dropped items get zero semantic score
+                if "jina" in active.__class__.__name__.lower():
+                    source["jina_relevance_score"] = 0.0
+                reordered.append(source)
+                
         return reordered + results[len(candidates):]
 
     async def _execute_gravity_rerank(self, query, original_results, current_results, scope_context, k, trace):

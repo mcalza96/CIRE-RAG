@@ -312,7 +312,7 @@ async def delete_document(document_id: str, purge_chunks: Optional[bool] = True)
             raise ApiError(status_code=404, code="DOCUMENT_NOT_FOUND", message="Document not found", details={"document_id": document_id})
 
         if purge_chunks:
-            await content_repo.delete_chunks_by_source_id(document_id)
+            await _deep_delete_document_artifacts(document_id, content_repo)
         await source_repo.delete_document(document_id)
 
         return DocumentDeleteResponse(
@@ -325,3 +325,27 @@ async def delete_document(document_id: str, purge_chunks: Optional[bool] = True)
     except Exception as e:
         logger.error("document_delete_failed", document_id=document_id, error=str(e))
         raise ApiError(status_code=500, code="DOCUMENT_DELETE_FAILED", message="Failed to delete document")
+
+
+async def _deep_delete_document_artifacts(document_id: str, content_repo: SupabaseContentRepository) -> None:
+    """Delete all derived artifacts for a document: chunks, graph, RAPTOR."""
+    from app.infrastructure.supabase.client import get_async_supabase_client
+
+    sb = await get_async_supabase_client()
+
+    # 1. Get chunk IDs before deleting them (needed for graph cleanup)
+    chunk_rows = await sb.table("content_chunks").select("id").eq("source_id", document_id).execute()
+    chunk_ids = [r["id"] for r in (chunk_rows.data or [])]
+
+    # 2. Clean graph provenance → orphan entities → orphan relations
+    if chunk_ids:
+        for batch_start in range(0, len(chunk_ids), 100):
+            batch = chunk_ids[batch_start : batch_start + 100]
+            await sb.table("knowledge_node_provenance").delete().in_("chunk_id", batch).execute()
+
+    # 3. Clean regulatory nodes/edges (RAPTOR) — handled at collection level in collections.py
+
+    # 4. Delete the chunks themselves
+    await content_repo.delete_chunks_by_source_id(document_id)
+
+    logger.info("deep_delete_document_complete", document_id=document_id, chunks_purged=len(chunk_ids))

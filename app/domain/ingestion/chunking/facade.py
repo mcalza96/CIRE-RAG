@@ -20,6 +20,7 @@ logger = structlog.get_logger(__name__)
 
 _TOC_DOT_LEADER_LINE = re.compile(r"^\s*.+\.{3,}\s*\d+\s*$", re.MULTILINE)
 _TOC_CLAUSE_REF = re.compile(r"\b\d+(?:\.\d+){1,4}\b")
+_TOC_CLAUSE_LINE = re.compile(r"^\s*\d+(?:\.\d+)*\.?\s+[A-ZÁÉÍÓÚÑÜ]")
 _ISO_FOOTER_RE = re.compile(
     r"(?is)ISO\s*\d{4,5}:\d{4}\s*\(traducci[oó]n\s+oficial\)[\s\S]{0,120}?©\s*ISO\s*\d{4}\s*[−-]\s*Todos\s+los\s+derechos\s+reservados"
 )
@@ -88,7 +89,88 @@ class ChunkingService:
         return self._classify_chunk_role(content)
 
     def clean_text_for_chunking(self, text: str) -> str:
-        return self._strip_iso_boilerplate(text)
+        cleaned = self._strip_iso_boilerplate(text)
+        cleaned = self._strip_toc_block(cleaned)
+        return cleaned
+
+    @staticmethod
+    def _strip_toc_block(text: str) -> str:
+        """
+        Detect and remove the Table of Contents (ToC/Índice) block.
+
+        The ToC lines look IDENTICAL to real headings after boilerplate
+        cleaning (e.g. "10.3 Mejora continua"), so the heading regex
+        cannot distinguish them.  We identify the ToC by its unique
+        structural signature: a *dense cluster* of short clause-like
+        lines with no body text in between, located in the first quarter
+        of the document.
+        """
+        lines = text.split("\n")
+        total = len(lines)
+        if total < 30:
+            return text  # Document too short to have a meaningful ToC
+
+        # Only scan the first 25% of the document for ToC blocks
+        scan_limit = max(60, total // 4)
+
+        # ── Pass 1: find a dense cluster of short clause-like lines ──
+        toc_start: int | None = None
+        toc_end: int | None = None
+        run_start: int | None = None
+        clause_count = 0
+
+        for i in range(min(scan_limit, total)):
+            stripped = lines[i].strip()
+            if not stripped:
+                continue  # skip blanks; don't break the run
+
+            is_clause_like = bool(_TOC_CLAUSE_LINE.match(stripped)) and len(stripped) < 90
+            # Also catch non-clause ToC lines like "Prólogo", "Bibliografía", "Anexo"
+            is_toc_keyword = stripped.lower() in (
+                "contenido", "índice", "indice", "contents",
+                "table of contents", "prólogo", "prologo",
+                "bibliografía", "bibliografia",
+            ) or stripped.lower().startswith("anexo ")
+
+            if is_clause_like or is_toc_keyword:
+                if run_start is None:
+                    run_start = i
+                clause_count += 1
+            else:
+                # A line of real body text breaks the run
+                if len(stripped) > 90:
+                    if clause_count >= 8:
+                        toc_start = run_start
+                        toc_end = i
+                        break
+                    run_start = None
+                    clause_count = 0
+                # Short non-clause lines (e.g. blank-ish noise) don't break
+
+        # End of scan: the cluster might extend to scan_limit
+        if toc_start is None and clause_count >= 8 and run_start is not None:
+            toc_start = run_start
+            toc_end = min(scan_limit, total)
+
+        if toc_start is None or toc_end is None:
+            return text
+
+        # ── Pass 2: expand backwards to catch a "Contenido" header ──
+        for j in range(max(0, toc_start - 5), toc_start):
+            low = lines[j].strip().lower()
+            if low in ("contenido", "índice", "indice", "contents", "table of contents"):
+                toc_start = j
+                break
+
+        logger.info(
+            "toc_block_stripped",
+            toc_start_line=toc_start,
+            toc_end_line=toc_end,
+            lines_removed=toc_end - toc_start,
+        )
+
+        result = lines[:toc_start] + lines[toc_end:]
+        return "\n".join(result)
 
     @staticmethod
     def _strip_iso_boilerplate(text: str) -> str:
@@ -280,14 +362,28 @@ class ChunkingService:
 
     def _build_global_context(self, sections: List[Dict[str, Any]]) -> str:
         """
-        Lightweight global context for contextual retrieval fallback.
+        Lightweight *document-level* context prepended to every chunk.
+
+        IMPORTANT: This must NOT include section-specific headings because
+        it is shared across ALL chunks.  Including headings like
+        "0 Introducción" here caused every chunk's embedding to match
+        queries about "introduction", drowning out the actual intro chunk.
+
+        Instead we provide document-identifying info (title/standard)
+        plus a structural overview (total sections count).
         """
-        headings = [s.get("heading_path", "") for s in sections if s.get("heading_path")]
-        first_headings = " | ".join(headings[:3])
-        first_section_excerpt = (
-            (sections[0].get("content", "")[:240] if sections else "").replace("\n", " ").strip()
-        )
-        return f"HEADINGS: {first_headings}\nEXCERPT: {first_section_excerpt}".strip()
+        # Extract the document title from the first section's content
+        first_content = (sections[0].get("content", "") if sections else "")
+        # Grab only the first meaningful non-empty line as title hint
+        title_line = ""
+        for line in first_content.split("\n"):
+            stripped = line.strip()
+            if stripped and len(stripped) > 10:
+                title_line = stripped[:200]
+                break
+
+        total_sections = len(sections)
+        return f"DOC_TITLE: {title_line}\nTOTAL_SECTIONS: {total_sections}".strip()
 
     def _inject_parent_context(self, content: str, heading_path: str, global_context: str) -> str:
         if not heading_path and not global_context:
