@@ -436,7 +436,7 @@ class RetrievalBroker:
 
             # 3. Stratified Semantic External Reranking (Jina/Cohere)
             if requested_scopes and len(requested_scopes) > 1:
-                config_max = int(getattr(settings, "RERANK_MAX_CANDIDATES", 150) or 150)
+                config_max = int(getattr(settings, "RERANK_MAX_CANDIDATES", 50) or 50)
                 # Ensure we evaluate a wide pool to rescue hidden scopes during stratification
                 max_c = max(1, min(config_max, len(working_results)))
                 working_results = stratify_results(working_results, requested_scopes, max_c)
@@ -466,7 +466,7 @@ class RetrievalBroker:
         
         # Estrategia 3: Enviamos un espectro amplio a Jina/Cohere (pre-filtrado por Gravity)
         # para prevenir inanición semántica y recuperar información oculta.
-        config_max = int(getattr(settings, "RERANK_MAX_CANDIDATES", 150) or 150)
+        config_max = int(getattr(settings, "RERANK_MAX_CANDIDATES", 50) or 50)
         max_c = max(1, min(config_max, len(results)))
         candidates = results[:max_c]
         
