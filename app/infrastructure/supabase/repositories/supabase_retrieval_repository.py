@@ -104,10 +104,9 @@ class SupabaseRetrievalRepository(IRetrievalRepository):
             "query_embedding": vector,
             "match_threshold": 0.4,
             "match_count": limit,
-            "p_tenant_id": tenant_req
+            "p_tenant_id": tenant_req,
+            "p_collection_id": collection_id
         }
-        if collection_id:
-            rpc_params["p_collection_id"] = collection_id
         
         try:
             res = await client.rpc("match_summaries", rpc_params).execute()
