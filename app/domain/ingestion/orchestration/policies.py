@@ -1,6 +1,6 @@
 from enum import Enum
 from typing import Optional, Dict, Any
-from .types import IngestionStatus
+from ..types import IngestionStatus
 
 class RetryAction(Enum):
     RETRY = "RETRY"

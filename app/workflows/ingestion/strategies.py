@@ -7,13 +7,13 @@ from app.ai.contracts import AIModelConfig
 from app.domain.schemas.ingestion_schemas import IngestionMetadata
 from app.domain.ingestion.entities import IngestionSource
 from app.domain.ingestion.types import IngestionStatus
-from app.domain.ingestion.strategy_registry import register_strategy
-from app.domain.ingestion.structure_mapper import StructureMapper
+from app.domain.ingestion.orchestration.strategy_registry import register_strategy
+from app.domain.ingestion.structure.structure_mapper import StructureMapper
 from app.infrastructure.container import CognitiveContainer
 from app.infrastructure.document_parsers.pdf_parser import PdfParserService
-from app.domain.ingestion.toc_discovery import TocDiscoveryService
+from app.domain.ingestion.structure.toc_discovery import TocDiscoveryService
 from app.domain.ingestion.chunking import ChunkingService
-from app.domain.ingestion.router import DocumentStructureRouter, IngestionTask, ProcessingStrategy
+from app.domain.ingestion.orchestration.router import DocumentStructureRouter, IngestionTask, ProcessingStrategy
 from app.ai.embeddings import JinaEmbeddingService
 from app.infrastructure.settings import settings
 

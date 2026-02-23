@@ -13,7 +13,7 @@ import fitz
 import structlog
 
 from app.infrastructure.settings import settings
-from app.domain.ingestion.structure_analyzer import PdfStructureAnalyzer
+from app.domain.ingestion.structure.structure_analyzer import PdfStructureAnalyzer
 
 logger = structlog.get_logger(__name__)
 

@@ -7,9 +7,9 @@ Prevents static singletons in Domain nodes.
 
 from app.workflows.retrieval.grounded_retrieval import GroundedRetrievalWorkflow
 from app.infrastructure.document_parsers.pdf_parser import PdfParserService
-from app.domain.ingestion.router import DocumentStructureRouter
-from app.domain.ingestion.structure_analyzer import PdfStructureAnalyzer
-from app.domain.ingestion.toc_discovery import TocDiscoveryService
+from app.domain.ingestion.orchestration.router import DocumentStructureRouter
+from app.domain.ingestion.structure.structure_analyzer import PdfStructureAnalyzer
+from app.domain.ingestion.structure.toc_discovery import TocDiscoveryService
 from app.ai.embeddings import JinaEmbeddingService
 from app.ai.rerankers.gravity_reranker import GravityReranker
 from app.ai.rerankers.jina_reranker import JinaReranker

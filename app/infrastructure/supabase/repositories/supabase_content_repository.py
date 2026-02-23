@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import structlog
 from app.domain.ingestion.ports import IContentRepository
 from app.infrastructure.observability.context_vars import get_tenant_id
@@ -214,3 +214,45 @@ class SupabaseContentRepository(IContentRepository):
 
         emit_event(logger, "chunk_persistence_completed", persisted_chunks=total_chunks)
         return total_chunks
+
+    async def get_chunk_by_id(self, chunk_id: str) -> Optional[Dict[str, Any]]:
+        client = await self.get_client()
+        res = await client.table("content_chunks").select("*").eq("id", chunk_id).limit(1).execute()
+        return res.data[0] if res.data else None
+
+    async def get_first_chunk_by_page(self, source_id: str, page: int) -> Optional[Dict[str, Any]]:
+        client = await self.get_client()
+        res = (
+            await client.table("content_chunks")
+            .select("id,content,file_page_number")
+            .eq("source_id", source_id)
+            .eq("file_page_number", page)
+            .limit(1)
+            .execute()
+        )
+        return res.data[0] if res.data else None
+
+    async def get_first_chunk(self, source_id: str) -> Optional[Dict[str, Any]]:
+        client = await self.get_client()
+        res = (
+            await client.table("content_chunks")
+            .select("id,content,file_page_number")
+            .eq("source_id", source_id)
+            .limit(1)
+            .execute()
+        )
+        return res.data[0] if res.data else None
+
+    async def update_chunk_content(self, chunk_id: str, content: str) -> None:
+        client = await self.get_client()
+        await client.table("content_chunks").update({"content": content}).eq("id", chunk_id).execute()
+
+    async def get_chunks_by_source_id(self, source_id: str) -> List[Dict[str, Any]]:
+        client = await self.get_client()
+        response = await (
+            client.table("content_chunks")
+            .select("id,content,embedding,metadata,file_page_number")
+            .eq("source_id", str(source_id))
+            .execute()
+        )
+        return response.data or []

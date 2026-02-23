@@ -2,12 +2,12 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 import structlog
 
-from app.domain.ingestion.builders.graph_extractor import GraphExtractor
+from .graph_extractor import GraphExtractor
 from app.infrastructure.supabase.repositories.supabase_graph_repository import SupabaseGraphRepository
 from app.ai.generation import get_llm
 from app.infrastructure.settings import settings
 from app.infrastructure.observability.ingestion_logging import emit_event
-from app.domain.ingestion.metadata_enricher import MetadataEnricher
+from app.domain.ingestion.metadata.metadata_enricher import MetadataEnricher
 
 logger = structlog.get_logger(__name__)
 

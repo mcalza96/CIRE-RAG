@@ -5,7 +5,7 @@ from app.domain.ingestion.ports import IContentRepository
 from app.workflows.ingestion.post_processor import PostIngestionPipelineService
 from app.workflows.ingestion.dispatcher import IngestionDispatcher
 from app.domain.ingestion.types import IngestionStatus
-from app.domain.ingestion.policies import IngestionPolicy
+from app.domain.ingestion.orchestration.policies import IngestionPolicy
 from app.infrastructure.supabase.repositories.taxonomy_repository import TaxonomyRepository
 from app.infrastructure.supabase.adapters.metadata_adapter import SupabaseMetadataAdapter
 from app.infrastructure.filesystem.storage import StorageService
@@ -15,9 +15,10 @@ from app.infrastructure.observability.logger_config import bind_context
 from app.infrastructure.supabase.repositories.supabase_raptor_repository import SupabaseRaptorRepository
 from app.infrastructure.network.downloader import DocumentDownloadService
 from app.infrastructure.state_management.state_manager import IngestionStateManager
-from app.domain.ingestion.anchors.anchor_service import VisualAnchorService
+from app.domain.ingestion.visual.context_service import VisualContextService
 from app.infrastructure.document_parsers.visual_parser import VisualDocumentParser
 from app.workflows.ingestion.integrator import VisualGraphIntegrator
+from app.infrastructure.supabase.repositories.supabase_visual_cache_repository import SupabaseVisualCacheRepository
 from app.infrastructure.settings import settings
 
 logger = structlog.get_logger(__name__)
@@ -62,7 +63,7 @@ class DocumentProcessor:
         self.state_manager = state_manager or IngestionStateManager(repository)
 
         resolved_raptor_repo = raptor_repo or SupabaseRaptorRepository()
-        self.visual_anchor_service = self._build_visual_anchor_service()
+        self.visual_context_service = self._build_visual_context_service()
         self.post_ingestion_service = self._build_post_ingestion_service(resolved_raptor_repo)
 
     async def process(self, record: Dict[str, Any]):
@@ -185,7 +186,7 @@ class DocumentProcessor:
                         getattr(settings, "INGESTION_VISUAL_ASYNC_ENABLED", True)
                     )
                     if not visual_async_enabled:
-                        visual_stats = await self._run_visual_anchor_if_needed(
+                        visual_stats = await self._run_visual_context_if_needed(
                             doc_id=doc_id,
                             tenant_id=tenant_id,
                             result=result,
@@ -305,9 +306,11 @@ class DocumentProcessor:
 
         return None
 
-    def _build_visual_anchor_service(self) -> VisualAnchorService:
-        return VisualAnchorService(
-            state_manager=self.state_manager,
+    def _build_visual_context_service(self) -> VisualContextService:
+        return VisualContextService(
+            source_repository=self.repo,
+            content_repository=self.content_repo,
+            visual_cache_repository=SupabaseVisualCacheRepository(),
             visual_parser=self.visual_parser,
             visual_integrator=self.visual_integrator,
         )
@@ -318,16 +321,17 @@ class DocumentProcessor:
         return PostIngestionPipelineService(
             content_repo=self.content_repo,
             state_manager=self.state_manager,
+            source_repo=self.repo,
             raptor_processor=self.raptor_processor,
             raptor_repo=raptor_repo,
-            visual_anchor_service=self.visual_anchor_service,
+            visual_context_service=self.visual_context_service,
         )
 
-    async def _run_visual_anchor_if_needed(
+    async def _run_visual_context_if_needed(
         self, doc_id: str, tenant_id: Optional[str], result: Any
     ) -> Dict[str, Any]:
-        self.visual_anchor_service.visual_parser = self.visual_parser
-        self.visual_anchor_service.visual_integrator = self.visual_integrator
-        return await self.visual_anchor_service.run_if_needed(
+        self.visual_context_service.visual_parser = self.visual_parser
+        self.visual_context_service.visual_integrator = self.visual_integrator
+        return await self.visual_context_service.process_visual_tasks(
             doc_id=doc_id, tenant_id=tenant_id, result=result
         )

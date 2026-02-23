@@ -4,7 +4,7 @@ from typing import Any, Callable, Coroutine, Dict, Optional
 
 from app.workflows.ingestion.processor import DocumentProcessor
 from app.infrastructure.settings import settings
-from app.domain.ingestion.policies import IngestionPolicy
+from app.domain.ingestion.orchestration.policies import IngestionPolicy
 from app.infrastructure.supabase.adapters.metadata_adapter import SupabaseMetadataAdapter
 from app.infrastructure.container import CognitiveContainer
 from app.infrastructure.background_jobs.job_store import SupabaseJobStore
@@ -78,7 +78,7 @@ class IngestionWorker:
             from app.infrastructure.supabase.repositories.supabase_raptor_repository import (
                 SupabaseRaptorRepository,
             )
-            from app.domain.ingestion.builders.raptor_processor import RaptorProcessor
+            from app.domain.ingestion.knowledge.raptor_processor import RaptorProcessor
 
             if resolved_container is None:
                 resolved_container = CognitiveContainer()

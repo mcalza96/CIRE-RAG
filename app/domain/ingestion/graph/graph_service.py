@@ -4,7 +4,8 @@ from typing import Optional, List, Dict, Any
 from uuid import UUID
 
 from app.ai.embeddings import JinaEmbeddingService
-from app.domain.ingestion.builders.graph_extractor import ChunkGraphExtraction
+from app.domain.ingestion.ports import IGraphRepository
+from .graph_extractor import ChunkGraphExtraction
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ class GraphGroundedRetrievalWorkflow:
 
     def __init__(
         self,
-        repository: Any,
+        repository: IGraphRepository,
         embedding_service: Optional[JinaEmbeddingService] = None,
         generate_embeddings: bool = True,
     ):

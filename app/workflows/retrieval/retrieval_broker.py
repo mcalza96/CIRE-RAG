@@ -8,7 +8,7 @@ from app.ai.embeddings import JinaEmbeddingService
 from app.ai.rerankers.cohere_reranker import CohereReranker
 from app.ai.rerankers.gravity_reranker import GravityReranker
 from app.ai.rerankers.jina_reranker import JinaReranker
-from app.domain.ingestion.metadata_enricher import enrich_metadata
+from app.domain.ingestion.metadata.metadata_enricher import enrich_metadata
 from app.infrastructure.observability.forensic import ForensicRecorder
 from app.infrastructure.observability.scope_metrics import scope_metrics_store
 from app.domain.schemas.knowledge_schemas import RAGSearchResult, RetrievalIntent, AgentRole, TaskType
@@ -18,26 +18,18 @@ from app.domain.retrieval.strategies.retrieval_strategies import (
     DirectRetrievalStrategy,
     IterativeRetrievalStrategy,
 )
+from app.domain.retrieval.fusion import stratify_results, _safe_float
 from app.infrastructure.supabase.repositories.atomic_engine import AtomicRetrievalEngine
 from app.domain.retrieval.scoping import (
     apply_scope_penalty,
-    clause_near_standard,
     count_scope_penalized,
-    extract_requested_standards,
-    extract_row_scope,
     requested_scopes_from_context,
-    scope_key,
-    normalize_standard_filters,
+    RetrievalScopeService,
 )
 from app.domain.retrieval.context_resolution import resolve_retrieval_filters
 from app.domain.retrieval.planning import coerce_query_plan
 
 logger = structlog.get_logger(__name__)
-
-
-from app.domain.retrieval.fusion import (
-    _safe_float,
-)
 
 
 class RetrievalBroker:
@@ -52,15 +44,17 @@ class RetrievalBroker:
         *,
         authority_reranker: IAuthorityReranker | None = None,
         semantic_reranker: ISemanticReranker | None = None,
+        cohere_reranker: ISemanticReranker | None = None,
         atomic_engine: AtomicRetrievalEngine | None = None,
     ):
         self.repository = repository
         self.reranker = authority_reranker or GravityReranker()
         self.jina_reranker = semantic_reranker or JinaReranker()
-        self.cohere_reranker = CohereReranker()
+        self.cohere_reranker = cohere_reranker or CohereReranker()
         self.direct_strategy = DirectRetrievalStrategy(repository)
         self.iterative_strategy = IterativeRetrievalStrategy(repository)
         self.atomic_engine = atomic_engine or AtomicRetrievalEngine()
+        self.scope_service = RetrievalScopeService()
 
     async def close(self) -> None:
         try:
@@ -97,25 +91,12 @@ class RetrievalBroker:
         if not rows or not tenant_id:
             return rows or []
             
+        self.scope_service.stamp_tenant_context(rows=rows, tenant_id=tenant_id, allowed_source_ids=set())
+        
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            meta_raw = row.get("metadata")
-            metadata = meta_raw if isinstance(meta_raw, dict) else {}
-            if meta_raw is None or not isinstance(meta_raw, dict):
-                row["metadata"] = metadata
-            
-            # Ownership — override falsy values (e.g. "" or None)
-            if not row.get("institution_id"):
-                row["institution_id"] = tenant_id
-            if not row.get("tenant_id"):
-                row["tenant_id"] = tenant_id
-            if not metadata.get("institution_id"):
-                metadata["institution_id"] = tenant_id
-            if not metadata.get("tenant_id"):
-                metadata["tenant_id"] = tenant_id
-            
-            # Diagnostics
+            metadata = row.get("metadata", {})
             if source_layer:
                 metadata.setdefault("source_layer", source_layer)
             if is_raptor:
@@ -453,18 +434,26 @@ class RetrievalBroker:
             if requested_scopes and settings.SCOPE_STRICT_FILTERING:
                 working_results = [i for i in working_results if not bool(i.get("scope_penalized"))] or working_results
 
-            # 3. Semantic External Reranking (Jina/Cohere)
-            # Solo enviamos el top 20 del resultado pre-filtrado para evaluar finamente.
+            # 3. Stratified Semantic External Reranking (Jina/Cohere)
+            if requested_scopes and len(requested_scopes) > 1:
+                config_max = int(getattr(settings, "RERANK_MAX_CANDIDATES", 20) or 20)
+                max_c = max(1, min(config_max, max(20, k * 3)))
+                working_results = stratify_results(working_results, requested_scopes, max_c)
+
             if not skip_external_rerank and working_results:
                 working_results = await self._execute_external_rerank(query, working_results, rerank_mode, k)
 
             if isinstance(trace_payload, dict):
                 trace_payload["score_space"] = "semantic_relevance" if not skip_external_rerank else "gravity"
 
+            if requested_scopes and len(requested_scopes) > 1:
+                return stratify_results(working_results, requested_scopes, k)
             return working_results[:k]
 
         except Exception as e:
             logger.warning("reranking_fallback", error=str(e))
+            if requested_scopes and len(requested_scopes) > 1:
+                return stratify_results(results, requested_scopes, k)
             return results[:k]
 
     async def _execute_external_rerank(self, query, results, mode, k):

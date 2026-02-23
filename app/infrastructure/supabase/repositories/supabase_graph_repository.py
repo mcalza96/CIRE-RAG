@@ -1,23 +1,20 @@
 import logging
 import math
-from typing import Any, Optional
+from typing import Any, Optional, Dict, List
 from uuid import UUID, NAMESPACE_URL, uuid5
 
 from app.infrastructure.supabase.client import get_async_supabase_client
-from app.ai.embeddings import JinaEmbeddingService
-from app.domain.ingestion.builders.graph_extractor import ChunkGraphExtraction, Entity, Relation
+from app.domain.ingestion.ports import IGraphRepository
+from app.domain.ingestion.graph.graph_extractor import ChunkGraphExtraction, Entity, Relation
 
 logger = logging.getLogger(__name__)
 
 
-class SupabaseGraphRepository:
+class SupabaseGraphRepository(IGraphRepository):
     """Persistencia del subgrafo semantico en tablas knowledge_* de Supabase."""
 
-    def __init__(
-        self, supabase_client=None, embedding_service: Optional[JinaEmbeddingService] = None
-    ):
+    def __init__(self, supabase_client=None):
         self._client = supabase_client
-        self._embedding_service = embedding_service or JinaEmbeddingService.get_instance()
 
     async def _get_client(self):
         if self._client is None:
@@ -201,40 +198,10 @@ class SupabaseGraphRepository:
                     logger.error("Fallo upsert fila en %s: %s | row=%s", table, row_error, row)
             return upserted
 
-    async def _ensure_entity_embeddings(
-        self,
-        extraction: ChunkGraphExtraction,
-        entity_embeddings: Optional[dict[str, list[float]]],
-        embedding_mode: Optional[str] = None,
-        embedding_provider: Optional[str] = None,
-    ) -> dict[str, list[float]]:
-        by_name = entity_embeddings or {}
-
-        missing_entities: list[Entity] = []
-        missing_texts: list[str] = []
-        for entity in extraction.entities:
-            norm_name = self._norm(entity.name)
-            if norm_name in by_name:
-                continue
-            missing_entities.append(entity)
-            missing_texts.append(f"{entity.name}. {entity.description}")
-
-        if not missing_texts:
-            return by_name
-
-        try:
-            vectors = await self._embedding_service.embed_texts(
-                missing_texts,
-                mode=embedding_mode,
-                provider=embedding_provider,
-            )
-            for entity, vector in zip(missing_entities, vectors):
-                if vector:
-                    by_name[self._norm(entity.name)] = vector
-        except Exception as exc:
-            logger.warning("No se pudieron generar embeddings para entidades faltantes: %s", exc)
-
-        return by_name
+    async def _get_client(self):
+        if self._client is None:
+            self._client = await get_async_supabase_client()
+        return self._client
 
     @staticmethod
     def _dedupe_entities(entities: list[Entity]) -> list[Entity]:
@@ -362,12 +329,10 @@ class SupabaseGraphRepository:
     async def upsert_knowledge_subgraph(
         self,
         extraction: ChunkGraphExtraction,
-        chunk_id: Optional[UUID],
         tenant_id: UUID,
-        entity_embeddings: Optional[dict[str, list[float]]] = None,
-        embedding_mode: Optional[str] = None,
-        embedding_provider: Optional[str] = None,
-    ) -> dict[str, Any]:
+        chunk_id: Optional[UUID] = None,
+        entity_embeddings: Optional[Dict[str, List[float]]] = None,
+    ) -> Dict[str, Any]:
         stats = {
             "nodes_upserted": 0,
             "edges_upserted": 0,
@@ -390,13 +355,9 @@ class SupabaseGraphRepository:
             entities=entities, relations=normalized_relations
         )
 
-        entity_embeddings = await self._ensure_entity_embeddings(
-            normalized_extraction,
-            entity_embeddings,
-            embedding_mode=embedding_mode,
-            embedding_provider=embedding_provider,
-        )
+        entity_embeddings = entity_embeddings or {}
 
+        # 1. Try Atomic RPC first
         rpc_stats = await self._upsert_subgraph_atomic_rpc(
             extraction=normalized_extraction,
             tenant_id=tenant_id,
@@ -406,17 +367,10 @@ class SupabaseGraphRepository:
         if rpc_stats is not None:
             return rpc_stats
 
+        # 2. Fallback to client-side logic
         client = await self._get_client()
         tenant_str = str(tenant_id)
         chunk_str = str(chunk_id) if chunk_id else None
-
-        entities = normalized_extraction.entities
-        entity_embeddings = await self._ensure_entity_embeddings(
-            ChunkGraphExtraction(entities=entities, relations=normalized_extraction.relations),
-            entity_embeddings,
-            embedding_mode=embedding_mode,
-            embedding_provider=embedding_provider,
-        )
 
         existing_response = (
             await client.table("knowledge_entities")
@@ -914,39 +868,16 @@ class SupabaseGraphRepository:
         extraction: Any,
         tenant_id: UUID,
         chunk_id: UUID,
-        generate_embeddings: bool = True,
-        embedding_mode: Optional[str] = None,
-        embedding_provider: Optional[str] = None,
-    ) -> dict[str, Any]:
+        entity_embeddings: Optional[Dict[str, List[float]]] = None,
+    ) -> Dict[str, Any]:
         if isinstance(extraction, ChunkGraphExtraction):
             graph_extraction = extraction
         else:
             graph_extraction = self._legacy_to_chunk_extraction(extraction)
 
-        entity_embeddings = None
-        if generate_embeddings and graph_extraction.entities:
-            try:
-                texts = [
-                    f"{entity.name}. {entity.description}" for entity in graph_extraction.entities
-                ]
-                vectors = await self._embedding_service.embed_texts(
-                    texts,
-                    mode=embedding_mode,
-                    provider=embedding_provider,
-                )
-                entity_embeddings = {
-                    self._norm(entity.name): vector
-                    for entity, vector in zip(graph_extraction.entities, vectors)
-                    if vector
-                }
-            except Exception as exc:
-                logger.warning("Fallo generando embeddings en persist_chunk_extraction: %s", exc)
-
         return await self.upsert_knowledge_subgraph(
             extraction=graph_extraction,
-            chunk_id=chunk_id,
             tenant_id=tenant_id,
+            chunk_id=chunk_id,
             entity_embeddings=entity_embeddings,
-            embedding_mode=embedding_mode,
-            embedding_provider=embedding_provider,
         )

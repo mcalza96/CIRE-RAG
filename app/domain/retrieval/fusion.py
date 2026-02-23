@@ -227,6 +227,52 @@ def missing_clause_refs(
          return missing
     return []
 
+def stratify_results(
+    results: list[dict], 
+    requested_scopes: list[str] | tuple[str, ...], 
+    max_count: int
+) -> list[dict]:
+    """Balance results across multiple requested standards (round-robin).
+    
+    Prevents a single standard from dominating the results (Annex SL Curse).
+    """
+    if not requested_scopes or not results:
+        return results[:max_count]
+    
+    # Normalize requested scopes to ensure matching
+    scope_targets = [normalize_scope_name(s) for s in requested_scopes if s]
+    buckets = {s: [] for s in scope_targets}
+    others = []
+    
+    for r in results:
+        std = normalize_scope_name(extract_row_scope(r))
+        matched = False
+        for s in scope_targets:
+            if std == s or s in std or std in s:
+                buckets[s].append(r)
+                matched = True
+                break
+        if not matched:
+            others.append(r)
+    
+    stratified = []
+    # Round-robin across buckets
+    max_len = max([len(b) for b in buckets.values()] + [0])
+    for i in range(max_len):
+        for s in scope_targets:
+            if i < len(buckets[s]):
+                stratified.append(buckets[s][i])
+            if len(stratified) >= max_count:
+                break
+        if len(stratified) >= max_count:
+            break
+                
+    if len(stratified) < max_count:
+        # Fill remaining with others
+        stratified.extend(others[:max_count - len(stratified)])
+            
+    return stratified[:max_count]
+
 def rrf_merge(
     grouped_items: list[tuple[str, list[RetrievalItem]]],
     *,

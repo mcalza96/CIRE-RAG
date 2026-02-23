@@ -34,6 +34,7 @@ class LateFusionExecutor:
             fetch_k=request.fetch_k,
             filters=request.filters,
             rerank=request.rerank,
+            retrieval_plan=request.retrieval_plan,
         )
         
         graph_payload = request.graph.model_dump() if request.graph else {}

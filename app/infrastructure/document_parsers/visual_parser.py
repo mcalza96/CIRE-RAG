@@ -23,11 +23,13 @@ from app.domain.ingestion.verification import ExtractionVerifier
 logger = structlog.get_logger(__name__)
 
 
+from app.domain.ingestion.visual.ports import IVisualParser
+
 class VisualParsingError(RuntimeError):
     """Raised when a visual parse request cannot be completed deterministically."""
 
 
-class VisualDocumentParser:
+class VisualDocumentParser(IVisualParser):
     """Provider-agnostic orchestrator for visual document parsing."""
 
     def __init__(

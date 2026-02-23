@@ -219,7 +219,26 @@ class AtomicRetrievalEngine:
             "source_standards": source_standards or None,
             "hnsw_ef_search": max(10, int(settings.ATOMIC_HNSW_EF_SEARCH or 80)),
         }
-        rows = await self._retrieval_repository.retrieve_hybrid_optimized(rpc_payload)
+        if source_standards and len(source_standards) > 1:
+            import asyncio
+            quota = max(10, fetch_k // len(source_standards))
+            coros = []
+            for std_name in source_standards:
+                std_payload = dict(rpc_payload)
+                std_payload["source_standard"] = std_name
+                std_payload["source_standards"] = None
+                std_payload["match_count"] = quota
+                coros.append(self._retrieval_repository.retrieve_hybrid_optimized(std_payload))
+            batch_results = await asyncio.gather(*coros, return_exceptions=True)
+            rows = []
+            for batch in batch_results:
+                if isinstance(batch, list):
+                    rows.extend(batch)
+                else:
+                    logger.warning("stratified_rpc_error", error=str(batch))
+        else:
+            rows = await self._retrieval_repository.retrieve_hybrid_optimized(rpc_payload)
+            
         normalized: list[dict[str, Any]] = []
         for row in rows:
             if not isinstance(row, dict):

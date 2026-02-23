@@ -6,10 +6,10 @@ from app.domain.ingestion.chunking.splitter_strategies import (
     SemanticHeadingSplitter,
 )
 from app.infrastructure.document_parsers.pdf_parser import PdfParserService
-from app.domain.ingestion.structure_mapper import StructureMapper
+from app.domain.ingestion.structure.structure_mapper import StructureMapper
 from app.domain.schemas.ingestion_schemas import IngestionMetadata
 from app.ai.contracts import AIModelConfig
-from app.domain.ingestion.metadata_enricher import enrich_metadata
+from app.domain.ingestion.metadata.metadata_enricher import enrich_metadata
 from app.ai.embeddings import JinaEmbeddingService
 from pydantic import BaseModel, Field, field_validator, model_validator
 

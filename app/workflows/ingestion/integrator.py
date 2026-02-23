@@ -25,6 +25,8 @@ class VisualIntegrationError(RuntimeError):
     """Raised when visual-node stitching cannot be completed atomically."""
 
 
+from app.domain.ingestion.visual.ports import IVisualIntegrator
+
 @dataclass(frozen=True)
 class VisualIntegrationResult:
     """Result object returned after successful visual-node integration."""
@@ -37,7 +39,7 @@ class VisualIntegrationResult:
     anchor_token: str
 
 
-class VisualGraphIntegrator:
+class VisualGraphIntegrator(IVisualIntegrator):
     """Orchestrates upload, token injection and transactional DB stitching."""
 
     def __init__(

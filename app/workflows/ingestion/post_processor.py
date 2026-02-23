@@ -7,15 +7,14 @@ from uuid import UUID, uuid4
 import structlog
 
 from app.infrastructure.state_management.state_manager import IngestionStateManager
-from app.domain.ingestion.ports import IContentRepository
+from app.domain.ingestion.ports import IContentRepository, ISourceRepository
 from app.infrastructure.supabase.repositories.supabase_raptor_repository import SupabaseRaptorRepository
 from app.infrastructure.supabase.repositories.job_repository import JobRepository
-from app.domain.ingestion.builders.graph_enricher import GraphEnrichmentService
-from app.domain.ingestion.anchors.anchor_service import VisualAnchorService
-from app.domain.ingestion.metadata_enricher import MetadataEnricher
+from app.domain.ingestion.graph.graph_enricher import GraphEnrichmentService
+from app.domain.ingestion.visual.context_service import VisualContextService
+from app.domain.ingestion.metadata.metadata_enricher import MetadataEnricher
 from app.domain.ingestion.chunking.text_normalization import normalize_embedding, ensure_chunk_ids
 from app.infrastructure.observability.ingestion_logging import compact_error, emit_event
-from app.infrastructure.supabase.client import get_async_supabase_client
 
 logger = structlog.get_logger(__name__)
 
@@ -29,17 +28,19 @@ class PostIngestionPipelineService:
         self,
         content_repo: IContentRepository,
         state_manager: IngestionStateManager,
+        source_repo: Optional[ISourceRepository] = None,
         raptor_processor: Any | None = None,
         raptor_repo: Optional[SupabaseRaptorRepository] = None,
-        visual_anchor_service: Optional[VisualAnchorService] = None,
+        visual_context_service: Optional[VisualContextService] = None,
         graph_enrichment_service: Optional[GraphEnrichmentService] = None,
         job_repository: Optional[JobRepository] = None,
     ) -> None:
         self.content_repo = content_repo
         self.state_manager = state_manager
+        self.source_repo = source_repo
         self.raptor_processor = raptor_processor
         self.raptor_repo = raptor_repo
-        self.visual_anchor_service = visual_anchor_service
+        self.visual_context_service = visual_context_service
         self.graph_enrichment_service = graph_enrichment_service or GraphEnrichmentService()
         self.job_repository = job_repository or JobRepository()
         self.metadata_extractor = MetadataEnricher()
@@ -114,9 +115,9 @@ class PostIngestionPipelineService:
         )
 
         visual_stats: Optional[Dict[str, Any]] = None
-        if include_visual and self.visual_anchor_service and visual_tasks:
+        if include_visual and self.visual_context_service and visual_tasks:
             try:
-                visual_stats = await self.visual_anchor_service.run_if_needed(
+                visual_stats = await self.visual_context_service.process_visual_tasks(
                     doc_id=doc_id, tenant_id=tenant_id, result=result_obj
                 )
             except Exception as exc:
@@ -188,25 +189,19 @@ class PostIngestionPipelineService:
             logger.warning("graph_enrichment_failed", doc_id=doc_id, error=str(exc))
 
     async def _load_persisted_chunks(self, doc_id: str) -> list[dict[str, Any]]:
-        client = await get_async_supabase_client()
-        response = await (
-            client.table("content_chunks")
-            .select("id,content,embedding,metadata,file_page_number")
-            .eq("source_id", str(doc_id))
-            .execute()
-        )
-        rows = response.data or []
+        rows = await self.content_repo.get_chunks_by_source_id(doc_id)
         for row in rows:
             if isinstance(row, dict):
                 row["embedding"] = normalize_embedding(row.get("embedding"))
         return rows
 
     async def _load_source_document_metadata(self, doc_id: str) -> Dict[str, Any]:
-        client = await get_async_supabase_client()
-        response = await client.table("source_documents").select("metadata").eq("id", str(doc_id)).limit(1).execute()
-        rows = response.data or []
-        if not rows: return {}
-        return rows[0].get("metadata") or {}
+        if not self.source_repo:
+            return {}
+        doc = await self.source_repo.get_by_id(doc_id)
+        if not doc:
+            return {}
+        return doc.get("metadata") or {}
 
     def _map_to_raptor_chunks(self, chunks: List[Any], tenant_id: Optional[str]) -> List[Any]:
         from app.domain.schemas.raptor_schemas import BaseChunk

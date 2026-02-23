@@ -15,8 +15,8 @@ from uuid import UUID, uuid4
 
 from app.domain.schemas.raptor_schemas import BaseChunk, SummaryNode, RaptorTreeResult
 from app.domain.ingestion.ports import IRaptorRepository
-from app.domain.ingestion.builders.clustering_service import GMMClusteringService
-from app.domain.ingestion.builders.summarization_service import SummarizationAgent
+from .clustering_service import GMMClusteringService
+from .summarization_service import SummarizationAgent
 from app.ai.embeddings import JinaEmbeddingService
 from app.infrastructure.settings import settings
 
