@@ -9,6 +9,14 @@ Bienvenido a la documentación técnica de **CIRE-RAG**. Este directorio contien
   - Detalles sobre el middleware de seguridad (LeakCanary).
   - Diagramas de secuencia de retrieval.
 
+- **[Retrieval Audit Modules](retrieval_audit_modules.md)**:
+  - Checklist modular para auditar ingesta, retrieval, reranking y síntesis.
+  - Referencias rápidas a rutas clave para troubleshooting técnico.
+
+- **[Architecture Boundaries](architecture_boundaries.md)**:
+  - Reglas de dependencia por capas (api/workflows/domain/infrastructure).
+  - Plan de refactor por fases con guardrails de tests.
+
 ## Configuración y Entorno
 
 El sistema se configura principalmente mediante variables de entorno en el archivo `.env.local` (basado en `.env.example`).

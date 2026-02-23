@@ -1,8 +1,13 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional, Protocol
 from uuid import UUID
 
-from app.ai.contracts import VisualParseResult
+
+class VisualParseLike(Protocol):
+    dense_summary: str
+    markdown_content: str
+    visual_metadata: dict[str, Any]
+
 
 class IVisualIntegrator(ABC):
     @abstractmethod
@@ -11,7 +16,7 @@ class IVisualIntegrator(ABC):
         parent_chunk_id: str,
         parent_chunk_text: str,
         image_path: str,
-        parse_result: VisualParseResult,
+        parse_result: VisualParseLike,
         content_type: str,
         anchor_context: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
@@ -19,6 +24,7 @@ class IVisualIntegrator(ABC):
         embedding_provider: Optional[str] = None,
     ) -> Any:
         pass
+
 
 class IVisualParser(ABC):
     @abstractmethod
@@ -28,5 +34,5 @@ class IVisualParser(ABC):
         image_bytes: Optional[bytes] = None,
         content_type: str = "table",
         source_metadata: Optional[Dict[str, Any]] = None,
-    ) -> VisualParseResult:
+    ) -> VisualParseLike:
         pass

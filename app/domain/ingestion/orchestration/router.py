@@ -12,7 +12,6 @@ from typing import Any
 import fitz
 import structlog
 
-from app.infrastructure.settings import settings
 from app.domain.ingestion.structure.structure_analyzer import PdfStructureAnalyzer
 
 logger = structlog.get_logger(__name__)
@@ -64,17 +63,6 @@ class VisualRoutingCostGuard:
     full_page_min_score: int = 5
     always_visual_score: int = 8
 
-    @classmethod
-    def from_env(cls) -> "VisualRoutingCostGuard":
-        """Load cost guard thresholds from centralized settings."""
-
-        return cls(
-            max_visual_ratio=settings.VISUAL_ROUTER_MAX_VISUAL_RATIO,
-            max_visual_pages=settings.VISUAL_ROUTER_MAX_VISUAL_PAGES,
-            full_page_min_score=settings.VISUAL_ROUTER_FULL_PAGE_MIN_SCORE,
-            always_visual_score=settings.VISUAL_ROUTER_ALWAYS_VISUAL_SCORE,
-        )
-
 
 class DocumentStructureRouter:
     """Fast heuristic router optimized for millisecond-level page decisions."""
@@ -89,7 +77,7 @@ class DocumentStructureRouter:
 
         self._analyzer = analyzer or PdfStructureAnalyzer()
         self._image_dpi = image_dpi
-        self._cost_guard = cost_guard or VisualRoutingCostGuard.from_env()
+        self._cost_guard = cost_guard or VisualRoutingCostGuard()
 
     def analyze_page(self, page: fitz.Page) -> RoutingDecision:
         """Classify page as TEXT_STANDARD or VISUAL_COMPLEX."""
@@ -129,7 +117,9 @@ class DocumentStructureRouter:
             reasons.append("tabular_lexical_pattern")
 
         # Bias toward false positives over false negatives for safety.
-        strategy = ProcessingStrategy.VISUAL_COMPLEX if score >= 3 else ProcessingStrategy.TEXT_STANDARD
+        strategy = (
+            ProcessingStrategy.VISUAL_COMPLEX if score >= 3 else ProcessingStrategy.TEXT_STANDARD
+        )
 
         content_type = IngestionContentType.TEXT
         if strategy == ProcessingStrategy.VISUAL_COMPLEX:
@@ -146,7 +136,9 @@ class DocumentStructureRouter:
             region=region,
         )
 
-    def route_document(self, file_path: str, temp_image_dir: str | None = None) -> list[IngestionTask]:
+    def route_document(
+        self, file_path: str, temp_image_dir: str | None = None
+    ) -> list[IngestionTask]:
         """Create page-level ingestion tasks (text or visual)."""
 
         tasks: list[IngestionTask] = []
@@ -183,7 +175,9 @@ class DocumentStructureRouter:
                         raw_content=str(image_path),
                         metadata={
                             "page": page_number,
-                            "bbox": self._analyzer.page_bbox_metadata(page=page, region=decision.region),
+                            "bbox": self._analyzer.page_bbox_metadata(
+                                page=page, region=decision.region
+                            ),
                             "router_score": decision.score,
                             "router_reasons": decision.reasons,
                         },
@@ -193,19 +187,21 @@ class DocumentStructureRouter:
                     # Filtramos márgenes (8% superior/inferior) directamente en el router
                     page_rect = page.rect
                     y_margin = page_rect.height * 0.08
-                    
+
                     blocks = page.get_text("blocks", sort=True)
                     page_blocks = []
-                    
+
                     for b in blocks:
                         # b = (x0, y0, x1, y1, "text", block_no, block_type)
                         block_rect = fitz.Rect(b[:4])
                         block_text = b[4].replace("\x00", "").strip()
-                        
+
                         # Ignorar encabezados/pies de página ruidosos
-                        if block_rect.y1 < y_margin or block_rect.y0 > (page_rect.height - y_margin):
+                        if block_rect.y1 < y_margin or block_rect.y0 > (
+                            page_rect.height - y_margin
+                        ):
                             continue
-                            
+
                         if block_text:
                             page_blocks.append(block_text)
 
@@ -263,7 +259,9 @@ class DocumentStructureRouter:
     def _compute_visual_budget(self, total_pages: int) -> int:
         """Compute how many pages are allowed through visual path."""
 
-        ratio_budget = max(1, math.ceil(total_pages * max(0.0, min(self._cost_guard.max_visual_ratio, 1.0))))
+        ratio_budget = max(
+            1, math.ceil(total_pages * max(0.0, min(self._cost_guard.max_visual_ratio, 1.0)))
+        )
         hard_budget = max(1, self._cost_guard.max_visual_pages)
         return min(ratio_budget, hard_budget)
 

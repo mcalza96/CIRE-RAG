@@ -1,23 +1,68 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol
 from uuid import UUID
 import structlog
 
-from .graph_extractor import GraphExtractor
-from app.infrastructure.supabase.repositories.supabase_graph_repository import SupabaseGraphRepository
-from app.ai.generation import get_llm
-from app.infrastructure.settings import settings
-from app.infrastructure.observability.ingestion_logging import emit_event
+from .graph_extractor import ChunkGraphExtraction
 from app.domain.ingestion.metadata.metadata_enricher import MetadataEnricher
 
 logger = structlog.get_logger(__name__)
+
+
+class IGraphExtractionBatcher(Protocol):
+    async def extract_graph_batch_async(self, texts: list[str]) -> list[ChunkGraphExtraction]: ...
+
+
+class IGraphRepository(Protocol):
+    async def upsert_document_structure(
+        self,
+        *,
+        tenant_id: UUID,
+        source_document_id: UUID,
+        toc_entries: list[dict[str, Any]],
+    ) -> dict[str, Any]: ...
+
+    async def upsert_knowledge_subgraph(
+        self,
+        *,
+        extraction: ChunkGraphExtraction,
+        chunk_id: UUID,
+        tenant_id: UUID,
+        embedding_mode: Optional[str] = None,
+        embedding_provider: Optional[str] = None,
+    ) -> dict[str, Any]: ...
+
+    async def link_chunks_to_structure(
+        self,
+        *,
+        tenant_id: UUID,
+        source_document_id: UUID,
+        chunks: list[Any],
+    ) -> dict[str, Any]: ...
+
+
+LogEventEmitter = Callable[..., None]
+LogStepCallback = Callable[..., Awaitable[Any]]
+
 
 class GraphEnrichmentService:
     """
     Domain service for coordinating graph extraction and enrichment.
     """
-    def __init__(self, graph_repository: Optional[SupabaseGraphRepository] = None):
-        self.graph_repository = graph_repository or SupabaseGraphRepository()
-        self.extractor = GraphExtractor(get_llm(temperature=0.0, capability="FORENSIC"))
+
+    def __init__(
+        self,
+        *,
+        graph_repository: IGraphRepository,
+        extractor: IGraphExtractionBatcher,
+        log_event_emitter: Optional[LogEventEmitter] = None,
+        graph_batch_size: int = 4,
+        graph_log_every_n: int = 25,
+    ):
+        self.graph_repository = graph_repository
+        self.extractor = extractor
+        self._log_event_emitter = log_event_emitter
+        self._graph_batch_size = max(1, int(graph_batch_size or 4))
+        self._graph_log_every_n = max(1, int(graph_log_every_n or 25))
         self.metadata_extractor = MetadataEnricher()
 
     async def run_enrichment(
@@ -26,7 +71,7 @@ class GraphEnrichmentService:
         tenant_id: str,
         chunks: List[Any],
         source_metadata: Optional[Dict[str, Any]] = None,
-        log_step_callback: Optional[Any] = None
+        log_step_callback: Optional[Any] = None,
     ) -> Dict[str, int]:
         """
         Runs the full graph enrichment pipeline for a document's chunks.
@@ -34,9 +79,6 @@ class GraphEnrichmentService:
         tenant_uuid = UUID(str(tenant_id))
         embedding_mode = self._resolve_embedding_mode(chunks)
         embedding_provider = self._resolve_embedding_provider(chunks)
-        
-        graph_batch_size = max(1, int(getattr(settings, "INGESTION_GRAPH_BATCH_SIZE", 4) or 4))
-        graph_log_every_n = max(1, int(getattr(settings, "INGESTION_GRAPH_CHUNK_LOG_EVERY_N", 25) or 25))
 
         totals = self._initialize_totals()
 
@@ -56,9 +98,9 @@ class GraphEnrichmentService:
 
         # 2. Semantic Graph Extraction
         candidate_chunks = self._prepare_candidate_chunks(chunks, totals)
-        
-        for batch_start in range(0, len(candidate_chunks), graph_batch_size):
-            batch = candidate_chunks[batch_start : batch_start + graph_batch_size]
+
+        for batch_start in range(0, len(candidate_chunks), self._graph_batch_size):
+            batch = candidate_chunks[batch_start : batch_start + self._graph_batch_size]
             batch_texts = [item[2] for item in batch]
             batch_extractions = await self.extractor.extract_graph_batch_async(batch_texts)
 
@@ -74,11 +116,19 @@ class GraphEnrichmentService:
                     embedding_mode=embedding_mode,
                     embedding_provider=embedding_provider,
                 )
-                
+
                 self._update_totals(totals, stats)
-                
+
                 if log_step_callback:
-                    await self._log_chunk_progress(log_step_callback, doc_id, tenant_id, idx, chunk_uuid, stats, graph_log_every_n)
+                    await self._log_chunk_progress(
+                        log_step_callback,
+                        doc_id,
+                        tenant_id,
+                        idx,
+                        chunk_uuid,
+                        stats,
+                        self._graph_log_every_n,
+                    )
 
         # 3. Link Chunks to Structure
         if toc_entries:
@@ -88,7 +138,9 @@ class GraphEnrichmentService:
                     source_document_id=UUID(str(doc_id)),
                     chunks=chunks,
                 )
-                totals["structure_links_upserted"] += int(structure_link_stats.get("links_upserted", 0))
+                totals["structure_links_upserted"] += int(
+                    structure_link_stats.get("links_upserted", 0)
+                )
             except Exception as exc:
                 logger.warning("chunk_structure_link_failed", doc_id=doc_id, error=str(exc))
 
@@ -113,19 +165,29 @@ class GraphEnrichmentService:
             "structure_links_upserted": 0,
         }
 
-    def _prepare_candidate_chunks(self, chunks: List[Any], totals: Dict[str, int]) -> List[tuple[int, UUID, str]]:
+    def _prepare_candidate_chunks(
+        self, chunks: List[Any], totals: Dict[str, int]
+    ) -> List[tuple[int, UUID, str]]:
         candidate_chunks = []
         for idx, chunk in enumerate(chunks, start=1):
-            content = chunk.get("content") if isinstance(chunk, dict) else getattr(chunk, "content", "")
-            chunk_id_raw = chunk.get("id") if isinstance(chunk, dict) else getattr(chunk, "id", None)
-            metadata = chunk.get("metadata") if isinstance(chunk, dict) and isinstance(chunk.get("metadata"), dict) else {}
-            
+            content = (
+                chunk.get("content") if isinstance(chunk, dict) else getattr(chunk, "content", "")
+            )
+            chunk_id_raw = (
+                chunk.get("id") if isinstance(chunk, dict) else getattr(chunk, "id", None)
+            )
+            metadata = (
+                chunk.get("metadata")
+                if isinstance(chunk, dict) and isinstance(chunk.get("metadata"), dict)
+                else {}
+            )
+
             totals["chunks_seen"] += 1
             if not content or not chunk_id_raw:
                 continue
             if not bool(metadata.get("retrieval_eligible", True)):
                 continue
-            
+
             candidate_chunks.append((idx, UUID(str(chunk_id_raw)), str(content)))
         return candidate_chunks
 
@@ -141,14 +203,26 @@ class GraphEnrichmentService:
         totals["links_upserted"] += stats.get("links_upserted", 0)
         totals["chunk_errors"] += len(stats.get("errors", []))
 
-    async def _log_chunk_progress(self, callback, doc_id, tenant_id, idx, chunk_uuid, stats, log_every):
+    async def _log_chunk_progress(
+        self,
+        callback: LogStepCallback,
+        doc_id: str,
+        tenant_id: str,
+        idx: int,
+        chunk_uuid: UUID,
+        stats: dict[str, Any],
+        log_every: int,
+    ):
         chunk_error_count = len(stats.get("errors", []))
         should_emit = chunk_error_count > 0 or idx == 1 or (idx % log_every) == 0
-        
-        if should_emit:
-             emit_event(
-                logger, "graphrag_chunk_metrics",
-                doc_id=doc_id, chunk_index=idx, chunk_id=str(chunk_uuid),
+
+        if should_emit and self._log_event_emitter is not None:
+            self._log_event_emitter(
+                logger,
+                "graphrag_chunk_metrics",
+                doc_id=doc_id,
+                chunk_index=idx,
+                chunk_id=str(chunk_uuid),
                 entities_extracted=stats.get("entities_extracted", 0),
                 relations_extracted=stats.get("relations_extracted", 0),
                 entities_inserted=stats.get("entities_inserted", 0),
@@ -163,33 +237,41 @@ class GraphEnrichmentService:
             doc_id,
             f"Graph chunk {idx}: entities={stats.get('entities_extracted', 0)} provenance={stats.get('links_upserted', 0)}",
             "INFO" if chunk_error_count == 0 else "WARNING",
-            tenant_id=tenant_id
+            tenant_id=tenant_id,
         )
 
     @staticmethod
     def _resolve_embedding_mode(chunks: list[Any]) -> Optional[str]:
         for chunk in chunks:
-            if not isinstance(chunk, dict): continue
+            if not isinstance(chunk, dict):
+                continue
             metadata = chunk.get("metadata")
-            if not isinstance(metadata, dict): continue
+            if not isinstance(metadata, dict):
+                continue
             raw_mode = metadata.get("embedding_mode") or metadata.get("jina_mode")
-            if not raw_mode: continue
+            if not raw_mode:
+                continue
             mode = str(raw_mode).upper().strip()
-            if mode in {"LOCAL", "CLOUD"}: return mode
+            if mode in {"LOCAL", "CLOUD"}:
+                return mode
         return None
 
     @staticmethod
     def _resolve_embedding_provider(chunks: list[Any]) -> Optional[str]:
         for chunk in chunks:
-            if not isinstance(chunk, dict): continue
+            if not isinstance(chunk, dict):
+                continue
             metadata = chunk.get("metadata")
-            if not isinstance(metadata, dict): continue
+            if not isinstance(metadata, dict):
+                continue
             raw_provider = metadata.get("embedding_provider")
             if raw_provider:
                 provider = str(raw_provider).strip().lower()
-                if provider: return provider
+                if provider:
+                    return provider
             profile = metadata.get("embedding_profile")
             if isinstance(profile, dict) and profile.get("provider"):
                 provider = str(profile.get("provider") or "").strip().lower()
-                if provider: return provider
+                if provider:
+                    return provider
         return None

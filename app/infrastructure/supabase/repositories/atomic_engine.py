@@ -221,7 +221,9 @@ class AtomicRetrievalEngine:
         }
         if source_standards and len(source_standards) > 1:
             import asyncio
-            quota = max(10, fetch_k // len(source_standards))
+            # Cap at 20 docs per norm to avoid fetching too many components
+            base_quota = fetch_k // len(source_standards)
+            quota = max(10, min(20, base_quota))
             coros = []
             for std_name in source_standards:
                 std_payload = dict(rpc_payload)

@@ -13,7 +13,11 @@ from app.infrastructure.container import CognitiveContainer
 from app.infrastructure.document_parsers.pdf_parser import PdfParserService
 from app.domain.ingestion.structure.toc_discovery import TocDiscoveryService
 from app.domain.ingestion.chunking import ChunkingService
-from app.domain.ingestion.orchestration.router import DocumentStructureRouter, IngestionTask, ProcessingStrategy
+from app.domain.ingestion.orchestration.router import (
+    DocumentStructureRouter,
+    IngestionTask,
+    ProcessingStrategy,
+)
 from app.ai.embeddings import JinaEmbeddingService
 from app.infrastructure.settings import settings
 
@@ -171,7 +175,7 @@ class CurriculumContentStrategy(IngestionStrategy):
             model=embedding_profile.get("model"),
             source_id=metadata.source_id,
         )
-        chunking_service = ChunkingService(parser)
+        chunking_service = ChunkingService(parser, embedding_service=embedding_engine)
 
         skip_structural_embeddings = bool(
             getattr(settings, "INGEST_SKIP_STRUCTURAL_EMBEDDING", True)
@@ -341,7 +345,7 @@ class FastCurriculumContentStrategy(CurriculumContentStrategy):
 
         # 3. Fast Chunking & Embedding
         chunk_size = 1000
-        chunking_service = ChunkingService(parser)
+        chunking_service = ChunkingService(parser, embedding_service=chunker)
         text_chunks = chunking_service.split_text(full_text, chunk_size)
 
         embedding_mode = (
@@ -474,7 +478,7 @@ class PreProcessedContentStrategy(IngestionStrategy):
         # 3. Late Chunking (default) + contextual fallback
         container = _get_container()
         parser: PdfParserService = container.pdf_parser_service
-        chunking_service = ChunkingService(parser)
+        chunking_service = ChunkingService(parser, embedding_service=embedding_engine)
 
         # 4. Chunk + Embedding (single production path)
         embedding_mode = (

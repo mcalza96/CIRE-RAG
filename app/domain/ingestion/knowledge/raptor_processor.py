@@ -14,13 +14,12 @@ from typing import Any, List, Optional, Dict
 from uuid import UUID, uuid4
 
 from app.domain.schemas.raptor_schemas import BaseChunk, SummaryNode, RaptorTreeResult
-from app.domain.ingestion.ports import IRaptorRepository
+from app.domain.ingestion.ports import IRaptorRepository, ITextEmbeddingService
 from .clustering_service import GMMClusteringService
 from .summarization_service import SummarizationAgent
-from app.ai.embeddings import JinaEmbeddingService
-from app.infrastructure.settings import settings
 
 logger = logging.getLogger(__name__)
+DEFAULT_RAPTOR_SUMMARIZATION_MAX_CONCURRENCY = 8
 
 
 # Prompts moved to app.core.prompt_registry.PromptRegistry
@@ -44,18 +43,26 @@ class RaptorProcessor:
     def __init__(
         self,
         repository: IRaptorRepository,
-        embedding_service: Optional[JinaEmbeddingService] = None,
+        embedding_service: ITextEmbeddingService,
         clustering_service: Optional[GMMClusteringService] = None,
         summarization_service: Optional[SummarizationAgent] = None,
         max_depth: int = 3,
+        summarization_max_concurrency: int = DEFAULT_RAPTOR_SUMMARIZATION_MAX_CONCURRENCY,
+        structural_mode_enabled: bool = True,
     ):
         self.repository = repository
-        self.embedding_service = embedding_service or JinaEmbeddingService.get_instance()
+        self.embedding_service = embedding_service
         self.clustering = clustering_service or GMMClusteringService()
-        self.summarizer = summarization_service or SummarizationAgent()
+        if summarization_service is None:
+            raise ValueError("RaptorProcessor requires summarization_service")
+        self.summarizer = summarization_service
         self.max_depth = max_depth
+        self.structural_mode_enabled = bool(structural_mode_enabled)
         self._summarization_semaphore = asyncio.Semaphore(
-            max(1, int(getattr(settings, "RAPTOR_SUMMARIZATION_MAX_CONCURRENCY", 8) or 8))
+            max(
+                1,
+                int(summarization_max_concurrency or DEFAULT_RAPTOR_SUMMARIZATION_MAX_CONCURRENCY),
+            )
         )
 
     async def _asummarize_cluster(self, cluster_texts: List[str]) -> tuple[str, str]:
@@ -243,7 +250,6 @@ class RaptorProcessor:
         current_level_nodes = base_chunks
         current_level = 0
         total_created = 0
-        structural_mode_enabled = bool(getattr(settings, "RAPTOR_STRUCTURAL_MODE_ENABLED", True))
         structural_bootstrap_done = False
 
         while True:
@@ -257,7 +263,7 @@ class RaptorProcessor:
                 logger.info("Single node remaining, stopping")
                 break
 
-            if structural_mode_enabled and not structural_bootstrap_done:
+            if self.structural_mode_enabled and not structural_bootstrap_done:
                 structural_nodes = await self._build_structural_level(
                     current_level_nodes=current_level_nodes,
                     current_level=current_level,

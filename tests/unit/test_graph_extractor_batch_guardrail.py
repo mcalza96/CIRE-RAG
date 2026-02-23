@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.knowledge.graph_extractor import (
+from app.domain.ingestion.graph.graph_extractor import (
     ChunkGraphExtraction,
     Entity,
     GraphExtractor,
@@ -50,15 +50,15 @@ async def test_batch_extraction_runs_per_chunk() -> None:
 
 @pytest.mark.asyncio
 async def test_batch_extraction_retries_retryable_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "app.services.knowledge.graph_extractor.settings.GRAPH_EXTRACTION_RETRY_MAX_ATTEMPTS", 2
-    )
-    monkeypatch.setattr(
-        "app.services.knowledge.graph_extractor.settings.GRAPH_EXTRACTION_RETRY_BASE_DELAY_SECONDS",
-        0.01,
-    )
+    del monkeypatch
     strict_engine = _DummyStrictEngine(fail_first=True)
-    extractor = GraphExtractor(strict_engine=strict_engine)
+    extractor = GraphExtractor(
+        strict_engine=strict_engine,
+        retry_max_attempts=2,
+        retry_base_delay_seconds=0.01,
+        retry_max_delay_seconds=0.01,
+        retry_jitter_seconds=0.0,
+    )
 
     out = await extractor.extract_graph_batch_async(["hello"])
 

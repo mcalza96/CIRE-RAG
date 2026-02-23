@@ -2,9 +2,13 @@ from uuid import UUID
 from typing import Dict, Any
 import structlog
 from app.domain.ingestion.knowledge.clustering_service import ClusteringService
+from app.ai.embeddings import JinaEmbeddingService
+from app.ai.generation import get_llm
+from app.infrastructure.supabase.client import get_async_supabase_client
 from app.infrastructure.supabase.repositories.community_job_repository import CommunityJobRepository
 
 logger = structlog.get_logger(__name__)
+
 
 class RebuildCommunitiesUseCase:
     """
@@ -12,12 +16,17 @@ class RebuildCommunitiesUseCase:
     This logic is shared between the generic Worker (listening to a queue)
     and the Scheduler (running periodically).
     """
+
     def __init__(
         self,
         clustering_service: ClusteringService = None,
-        repository: CommunityJobRepository = None
+        repository: CommunityJobRepository = None,
     ):
-        self.clustering_service = clustering_service or ClusteringService()
+        self.clustering_service = clustering_service or ClusteringService(
+            embedding_service=JinaEmbeddingService.get_instance(),
+            llm=get_llm(temperature=0.2, capability="CHAT"),
+            supabase_client_factory=get_async_supabase_client,
+        )
         self.repository = repository or CommunityJobRepository()
 
     async def execute(self, tenant_id: str) -> Dict[str, Any]:
@@ -27,7 +36,9 @@ class RebuildCommunitiesUseCase:
         try:
             tenant_uuid = UUID(str(tenant_id))
         except Exception as exc:
-            logger.error("invalid_tenant_id_for_community_rebuild", tenant_id=tenant_id, error=str(exc))
+            logger.error(
+                "invalid_tenant_id_for_community_rebuild", tenant_id=tenant_id, error=str(exc)
+            )
             return {"ok": False, "reason": "invalid_tenant_id", "tenant_id": tenant_id}
 
         logger.info("community_rebuild_start", tenant_id=tenant_id)

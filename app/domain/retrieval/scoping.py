@@ -11,17 +11,19 @@ import re
 from datetime import datetime, timezone
 from typing import Any, List, Dict, Optional, Tuple
 
-from app.infrastructure.settings import settings
+DEFAULT_SCOPE_EXTRACTION_REGEX = r"\bISO\s*[-:]?\s*\d{4,5}\b"
+DEFAULT_SCOPE_AMBIGUITY_REGEX = r"\b(?:\d+(?:\.\d+)+|cl(?:a|á)usula\s+\d+(?:\.\d+)*)\b"
 
 # ── Compiled patterns (Agnostic, from settings) ───────────────────────────
-_SCOPE_STANDARD_RE = re.compile(settings.SCOPE_EXTRACTION_REGEX, flags=re.IGNORECASE)
-_CLAUSE_RE = re.compile(settings.SCOPE_AMBIGUITY_REGEX)
+_SCOPE_STANDARD_RE = re.compile(DEFAULT_SCOPE_EXTRACTION_REGEX, flags=re.IGNORECASE)
+_CLAUSE_RE = re.compile(DEFAULT_SCOPE_AMBIGUITY_REGEX)
 _CLAUSE_HINT_RE = re.compile(
     r"\b(cl(?:a|á)usula|clause|numeral|apartado|secci[oó]n|standard|scope)\b",
     flags=re.IGNORECASE,
 )
 
 # ── Standard extraction ──────────────────────────────────────────────────
+
 
 def extract_requested_standards(query: str) -> tuple[str, ...]:
     """Return ordered, deduplicated scope labels found in *query*."""
@@ -35,26 +37,30 @@ def extract_requested_standards(query: str) -> tuple[str, ...]:
             ordered.append(value)
     return tuple(ordered)
 
+
 def extract_clause_refs(text: str) -> tuple[str, ...]:
     """Return ordered, deduplicated clause references from *text*."""
     return tuple(dict.fromkeys(_CLAUSE_RE.findall(text or "")))
 
+
 # ── Scope key / normalisation ─────────────────────────────────────────────
+
 
 def scope_key(value: str) -> str:
     """Normalise a scope label to a comparable key."""
     text = str(value or "").strip().upper()
     if not text:
         return ""
-    
+
     # Generic normalization: remove spaces/special chars, keep alphanumeric
     # But try to capture the pattern first if it exists
     match = _SCOPE_STANDARD_RE.search(text)
     if match:
         return re.sub(r"[^A-Z0-9]", "-", match.group(0).strip().upper())
-        
+
     compact = re.sub(r"[^A-Z0-9]", "", text)
     return compact
+
 
 def normalize_scope_name(value: Any) -> str:
     """Normalise a raw scope/standard value to human-readable format."""
@@ -66,22 +72,27 @@ def normalize_scope_name(value: Any) -> str:
         return match.group(0).strip().upper()
     return text
 
+
 def scope_clause_key(query: str, filters: Any = None) -> str:
     """Deterministic key for deduplicating identical subquery intents."""
-    standard = normalize_scope_name(filters.source_standard if filters and hasattr(filters, "source_standard") else "")
+    standard = normalize_scope_name(
+        filters.source_standard if filters and hasattr(filters, "source_standard") else ""
+    )
     clause_id = ""
     if filters and hasattr(filters, "metadata") and isinstance(filters.metadata, dict):
         clause_id = str(filters.metadata.get("clause_id") or "").strip()
-    
+
     if standard and clause_id:
         return f"scope_clause::{standard}::{clause_id}"
-    
+
     normalized_query = re.sub(r"\s+", " ", str(query or "").strip().lower())
     return f"query::{normalized_query}"
+
 
 # ── Row scope extraction ─────────────────────────────────────────────────
 
 _SCOPE_CANDIDATE_KEYS = ("source_standard", "standard", "scope", "norma")
+
 
 def extract_row_scope(item: dict[str, Any]) -> str:
     """Extract the scope label from any known nesting pattern."""
@@ -100,7 +111,9 @@ def extract_row_scope(item: dict[str, Any]) -> str:
             return value.strip().upper()
     return ""
 
+
 # ── Clause-near-standard detection ───────────────────────────────────────
+
 
 def clause_near_standard(query: str, standard: str) -> str | None:
     """If exactly one clause ref appears near *standard* in *query*, return it."""
@@ -121,11 +134,14 @@ def clause_near_standard(query: str, standard: str) -> str | None:
         return str(clauses[0])
     return None
 
+
 def is_clause_heavy_query(query_text: str) -> bool:
     """Return ``True`` if the query mentions a clause hint keyword."""
     return bool(_CLAUSE_HINT_RE.search(query_text or ""))
 
+
 # ── Requested scopes from context ────────────────────────────────────────
+
 
 def requested_scopes_from_context(
     scope_context: dict[str, Any] | None,
@@ -161,6 +177,7 @@ def requested_scopes_from_context(
         return ()
     return tuple(dict.fromkeys(values))
 
+
 def normalize_standard_filters(filters: dict[str, Any]) -> dict[str, Any]:
     """Standardize source_standard vs source_standards in filter dictionaries."""
     normalized: dict[str, Any] = dict(filters)
@@ -173,7 +190,7 @@ def normalize_standard_filters(filters: dict[str, Any]) -> dict[str, Any]:
             if isinstance(item, str) and str(item).strip()
         ]
         standards = list(dict.fromkeys(standards))
-    
+
     single = str(normalized.get("source_standard") or "").strip()
     if single and single not in standards:
         standards.insert(0, single)
@@ -190,7 +207,9 @@ def normalize_standard_filters(filters: dict[str, Any]) -> dict[str, Any]:
 
     return normalized
 
+
 # ── Scope penalty helpers ────────────────────────────────────────────────
+
 
 def apply_scope_penalty(
     results: list[dict[str, Any]],
@@ -238,9 +257,11 @@ def apply_scope_penalty(
 
     return reranked
 
+
 def count_scope_penalized(results: list[dict[str, Any]]) -> int:
     """Count how many items have been scope-penalised."""
     return sum(1 for item in results if bool(item.get("scope_penalized")))
+
 
 def scope_penalty_ratio(
     rows: list[dict[str, Any]],
@@ -266,9 +287,10 @@ def scope_penalty_ratio(
         return 0.0
     return penalized / considered
 
+
 class RetrievalScopeService:
     """
-    Handles scope enforcement, structural filtering, and tenant context stamping 
+    Handles scope enforcement, structural filtering, and tenant context stamping
     for retrieval results.
     """
 
@@ -332,7 +354,7 @@ class RetrievalScopeService:
                     nested["metadata"] = metadata
                 else:
                     nested.pop("metadata", None)
-            
+
         scoped["filters"] = nested
         return scoped
 
@@ -446,10 +468,12 @@ class RetrievalScopeService:
 
     @staticmethod
     def _parse_iso8601(value: str | None) -> datetime | None:
-        if not value: return None
+        if not value:
+            return None
         try:
             text = str(value).strip()
-            if not text: return None
+            if not text:
+                return None
             if text.endswith("Z"):
                 text = text[:-1] + "+00:00"
             parsed = datetime.fromisoformat(text)

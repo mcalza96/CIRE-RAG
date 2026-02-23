@@ -214,12 +214,13 @@ class RetrievalBroker:
         try:
             if plan.is_multihop:
                 raw_results = await self.atomic_engine.retrieve_context_from_plan(
-                    query=query, plan=plan, scope_context=filters, k=k, fetch_k=fetch_k, **kwargs
+                    query=query, plan=plan, scope_context=filters, k=fetch_k, fetch_k=fetch_k, **kwargs
                 )
             else:
                 raw_results = await self.atomic_engine.retrieve_context(
-                    query=query, scope_context=filters, k=k, fetch_k=fetch_k, **kwargs
+                    query=query, scope_context=filters, k=fetch_k, fetch_k=fetch_k, **kwargs
                 )
+                
                 
             atomic_trace = getattr(self.atomic_engine, "last_trace", {})
             if isinstance(atomic_trace, dict):

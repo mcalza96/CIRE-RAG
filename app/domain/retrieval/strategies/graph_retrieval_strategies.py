@@ -8,9 +8,8 @@ from uuid import UUID
 import structlog
 from langchain_core.language_models.chat_models import BaseChatModel
 
-from app.ai.generation import get_llm
-from app.infrastructure.supabase.repositories.supabase_graph_retrieval_repository import SupabaseGraphRetrievalRepository
-from app.ai.embeddings import JinaEmbeddingService
+from app.domain.ingestion.ports import ITextEmbeddingService
+from app.domain.retrieval.ports import IGraphRetrievalRepository
 
 logger = structlog.get_logger(__name__)
 
@@ -52,17 +51,14 @@ class LocalGraphSearch:
 
     def __init__(
         self,
-        supabase_client=None,
-        graph_repository: Optional[SupabaseGraphRetrievalRepository] = None,
-        llm_provider: Optional[BaseChatModel] = None,
-        embedding_service: Optional[JinaEmbeddingService] = None,
+        graph_repository: IGraphRetrievalRepository,
+        llm_provider: BaseChatModel,
+        embedding_service: ITextEmbeddingService,
         anchor_similarity_threshold: float = 0.72,
     ):
-        self._graph_repository = graph_repository or SupabaseGraphRetrievalRepository(
-            supabase_client=supabase_client
-        )
-        self._llm = llm_provider or get_llm(temperature=0.0, capability="FORENSIC")
-        self._embedding = embedding_service or JinaEmbeddingService.get_instance()
+        self._graph_repository = graph_repository
+        self._llm = llm_provider
+        self._embedding = embedding_service
         self._anchor_similarity_threshold = anchor_similarity_threshold
 
     async def extract_entities_from_query(self, query: str) -> list[str]:
@@ -71,7 +67,7 @@ class LocalGraphSearch:
 
         system_prompt = (
             "Extract potential named entities and domain anchors from a user query for graph retrieval. "
-            "Return strict JSON: {\"entities\": [\"...\"]}. "
+            'Return strict JSON: {"entities": ["..."]}. '
             "Do not include explanations."
         )
 
@@ -165,7 +161,9 @@ class LocalGraphSearch:
         if not candidates:
             return []
 
-        exact_batches = await asyncio.gather(*[self._match_exact_anchors(tenant_id, name) for name in candidates])
+        exact_batches = await asyncio.gather(
+            *[self._match_exact_anchors(tenant_id, name) for name in candidates]
+        )
         exact_rows = [row for batch in exact_batches for row in batch]
 
         dedup: dict[str, dict] = {str(row.get("id")): row for row in exact_rows if row.get("id")}
@@ -178,7 +176,9 @@ class LocalGraphSearch:
                 dedup[str(row.get("id"))] = row
         return list(dedup.values())[:8]
 
-    async def _fetch_one_hop(self, tenant_id: UUID, anchor_ids: list[str]) -> tuple[list[dict], list[dict]]:
+    async def _fetch_one_hop(
+        self, tenant_id: UUID, anchor_ids: list[str]
+    ) -> tuple[list[dict], list[dict]]:
         if not anchor_ids:
             return [], []
 
@@ -241,8 +241,12 @@ class LocalGraphSearch:
         if relations:
             lines.append("Relations (1-hop):")
             for rel in relations[:40]:
-                source = neighbor_by_id.get(str(rel.get("source_entity_id")), {}).get("name", rel.get("source_entity_id"))
-                target = neighbor_by_id.get(str(rel.get("target_entity_id")), {}).get("name", rel.get("target_entity_id"))
+                source = neighbor_by_id.get(str(rel.get("source_entity_id")), {}).get(
+                    "name", rel.get("source_entity_id")
+                )
+                target = neighbor_by_id.get(str(rel.get("target_entity_id")), {}).get(
+                    "name", rel.get("target_entity_id")
+                )
                 relation_text = rel.get("description") or ""
                 lines.append(
                     f"- {source} --{rel.get('relation_type', 'RELATED_TO')}--> {target}. {relation_text}".strip()
@@ -254,7 +258,9 @@ class LocalGraphSearch:
             for neighbor in non_anchor_neighbors[:40]:
                 lines.append(f"- {neighbor.get('name', 'Unknown')}")
 
-        citations = list(dict.fromkeys([str(item.get("id")) for item in anchors + neighbors if item.get("id")]))
+        citations = list(
+            dict.fromkeys([str(item.get("id")) for item in anchors + neighbors if item.get("id")])
+        )
         return {
             "context": "\n".join(lines),
             "citations": citations,
@@ -270,7 +276,10 @@ class LocalGraphSearch:
 
         sorted_rows = sorted(
             rows,
-            key=lambda item: (int(item.get("hop_depth") or 0), -float(item.get("similarity") or 0.0)),
+            key=lambda item: (
+                int(item.get("hop_depth") or 0),
+                -float(item.get("similarity") or 0.0),
+            ),
         )
         for item in sorted_rows[:40]:
             entity_id = str(item.get("entity_id") or "")
@@ -300,14 +309,11 @@ class GlobalGraphSearch:
 
     def __init__(
         self,
-        supabase_client=None,
-        graph_repository: Optional[SupabaseGraphRetrievalRepository] = None,
-        embedding_service: Optional[JinaEmbeddingService] = None,
+        graph_repository: IGraphRetrievalRepository,
+        embedding_service: ITextEmbeddingService,
     ):
-        self._graph_repository = graph_repository or SupabaseGraphRetrievalRepository(
-            supabase_client=supabase_client
-        )
-        self._embedding = embedding_service or JinaEmbeddingService.get_instance()
+        self._graph_repository = graph_repository
+        self._embedding = embedding_service
 
     async def search(self, query: str, tenant_id: UUID, top_k: int = 5) -> dict[str, Any]:
         if not query.strip():

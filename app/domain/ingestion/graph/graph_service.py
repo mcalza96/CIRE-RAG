@@ -3,11 +3,11 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 
-from app.ai.embeddings import JinaEmbeddingService
-from app.domain.ingestion.ports import IGraphRepository
+from app.domain.ingestion.ports import IGraphRepository, ITextEmbeddingService
 from .graph_extractor import ChunkGraphExtraction
 
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class GraphPersistenceResult:
@@ -15,6 +15,7 @@ class GraphPersistenceResult:
     edges_inserted: int = 0
     links_upserted: int = 0
     errors: List[str] = field(default_factory=list)
+
 
 class GraphGroundedRetrievalWorkflow:
     """
@@ -25,14 +26,12 @@ class GraphGroundedRetrievalWorkflow:
     def __init__(
         self,
         repository: IGraphRepository,
-        embedding_service: Optional[JinaEmbeddingService] = None,
+        embedding_service: Optional[ITextEmbeddingService] = None,
         generate_embeddings: bool = True,
     ):
         self.repository = repository
         self.generate_embeddings = generate_embeddings
-        self.embedding_service = embedding_service or (
-            JinaEmbeddingService.get_instance() if generate_embeddings else None
-        )
+        self.embedding_service = embedding_service
 
     async def persist_graph(
         self,
@@ -42,18 +41,20 @@ class GraphGroundedRetrievalWorkflow:
     ) -> GraphPersistenceResult:
         """Orchestrates persistence of knowledge entities and relations."""
         result = GraphPersistenceResult()
-        
+
         if extraction.is_empty():
             logger.info("Empty extraction, nothing to persist")
             return result
-        
+
         tenant_uuid = UUID(str(tenant_id))
         chunk_uuid = UUID(str(chunk_id)) if chunk_id else None
 
         entity_embeddings: Dict[str, List[float]] = {}
         if self.generate_embeddings and self.embedding_service and extraction.entities:
             try:
-                embedding_texts = [f"{entity.name}. {entity.description}" for entity in extraction.entities]
+                embedding_texts = [
+                    f"{entity.name}. {entity.description}" for entity in extraction.entities
+                ]
                 embeddings = await self.embedding_service.embed_texts(embedding_texts)
                 for entity, embedding in zip(extraction.entities, embeddings):
                     if embedding:
@@ -75,7 +76,9 @@ class GraphGroundedRetrievalWorkflow:
             if stats.get("errors"):
                 result.errors.extend(stats["errors"])
         except Exception as e:
-            logger.error("GraphGroundedRetrievalWorkflow failed to persist knowledge subgraph: %s", e)
+            logger.error(
+                "GraphGroundedRetrievalWorkflow failed to persist knowledge subgraph: %s", e
+            )
             result.errors.append(str(e))
 
         return result

@@ -1,6 +1,7 @@
 import asyncio
 from httpx import AsyncClient
 
+
 async def run():
     async with AsyncClient(base_url="http://localhost:8000") as client:
         payload = {
@@ -11,15 +12,22 @@ async def run():
             "fetch_k": 60,
             "filters": {},
             "rerank": {"enabled": True},
-            "graph": {"max_hops": 2}
+            "graph": {"max_hops": 2},
         }
-        res = await client.post("/api/v1/retrieval/comprehensive", json=payload, headers={"Authorization": "Bearer cire-service-secret"})
+        res = await client.post(
+            "/api/v1/retrieval/comprehensive",
+            json=payload,
+            headers={"Authorization": "Bearer cire-service-secret"},
+        )
         data = res.json()
-        
+
         items = data.get("items", [])
         print(f"Total items returned: {len(items)}")
         for i, item in enumerate(items[:5]):
-            print(f"[{i}] {item.get('source')} - score: {item.get('score')} - layer: {item.get('metadata', {}).get('source_layer')}")
-            
+            print(
+                f"[{i}] {item.get('source')} - score: {item.get('score')} - layer: {item.get('metadata', {}).get('source_layer')}"
+            )
+
+
 if __name__ == "__main__":
     asyncio.run(run())

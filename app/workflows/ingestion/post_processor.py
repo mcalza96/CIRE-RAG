@@ -8,22 +8,31 @@ import structlog
 
 from app.infrastructure.state_management.state_manager import IngestionStateManager
 from app.domain.ingestion.ports import IContentRepository, ISourceRepository
-from app.infrastructure.supabase.repositories.supabase_raptor_repository import SupabaseRaptorRepository
+from app.infrastructure.supabase.repositories.supabase_raptor_repository import (
+    SupabaseRaptorRepository,
+)
+from app.infrastructure.supabase.repositories.supabase_graph_repository import (
+    SupabaseGraphRepository,
+)
 from app.infrastructure.supabase.repositories.job_repository import JobRepository
 from app.domain.ingestion.graph.graph_enricher import GraphEnrichmentService
+from app.domain.ingestion.graph.graph_extractor import GraphExtractor
 from app.domain.ingestion.visual.context_service import VisualContextService
 from app.domain.ingestion.metadata.metadata_enricher import MetadataEnricher
 from app.domain.ingestion.chunking.text_normalization import normalize_embedding, ensure_chunk_ids
 from app.infrastructure.observability.ingestion_logging import compact_error, emit_event
+from app.ai.generation import get_strict_engine
+from app.infrastructure.settings import settings
 
 logger = structlog.get_logger(__name__)
 
 
 class PostIngestionPipelineService:
     """
-    Orchestrator for post-ingestion tasks: persisting chunks, and running 
+    Orchestrator for post-ingestion tasks: persisting chunks, and running
     enrichments (GraphRAG, RAPTOR, Visual Anchors).
     """
+
     def __init__(
         self,
         content_repo: IContentRepository,
@@ -41,7 +50,36 @@ class PostIngestionPipelineService:
         self.raptor_processor = raptor_processor
         self.raptor_repo = raptor_repo
         self.visual_context_service = visual_context_service
-        self.graph_enrichment_service = graph_enrichment_service or GraphEnrichmentService()
+        self.graph_enrichment_service = graph_enrichment_service or GraphEnrichmentService(
+            graph_repository=SupabaseGraphRepository(),
+            extractor=GraphExtractor(
+                strict_engine=get_strict_engine(),
+                max_concurrency=max(
+                    1,
+                    int(getattr(settings, "GRAPH_EXTRACTION_MAX_CONCURRENCY", 6) or 6),
+                ),
+                retry_max_attempts=max(
+                    1,
+                    int(getattr(settings, "GRAPH_EXTRACTION_RETRY_MAX_ATTEMPTS", 3) or 3),
+                ),
+                retry_base_delay_seconds=float(
+                    getattr(settings, "GRAPH_EXTRACTION_RETRY_BASE_DELAY_SECONDS", 0.8) or 0.8
+                ),
+                retry_max_delay_seconds=float(
+                    getattr(settings, "GRAPH_EXTRACTION_RETRY_MAX_DELAY_SECONDS", 8.0) or 8.0
+                ),
+                retry_jitter_seconds=float(
+                    getattr(settings, "GRAPH_EXTRACTION_RETRY_JITTER_SECONDS", 0.35) or 0.35
+                ),
+                error_formatter=compact_error,
+            ),
+            log_event_emitter=emit_event,
+            graph_batch_size=max(1, int(getattr(settings, "INGESTION_GRAPH_BATCH_SIZE", 4) or 4)),
+            graph_log_every_n=max(
+                1,
+                int(getattr(settings, "INGESTION_GRAPH_CHUNK_LOG_EVERY_N", 25) or 25),
+            ),
+        )
         self.job_repository = job_repository or JobRepository()
         self.metadata_extractor = MetadataEnricher()
 
@@ -125,7 +163,7 @@ class PostIngestionPipelineService:
 
         if include_raptor:
             await self.run_raptor_if_needed(doc_id, tenant_id, result_obj, collection_id)
-        
+
         if include_graph:
             await self.run_graph_if_needed(doc_id, tenant_id, result_obj, source_metadata)
 
@@ -140,20 +178,30 @@ class PostIngestionPipelineService:
         }
 
     async def run_raptor_if_needed(
-        self, doc_id: str, tenant_id: Optional[str], result: Any, collection_id: Optional[str] = None
+        self,
+        doc_id: str,
+        tenant_id: Optional[str],
+        result: Any,
+        collection_id: Optional[str] = None,
     ) -> None:
         if not self.raptor_processor or not self.raptor_repo or len(result.chunks) <= 5:
             return
 
-        await self.state_manager.log_step(doc_id, "Iniciando procesamiento RAPTOR...", tenant_id=tenant_id)
+        await self.state_manager.log_step(
+            doc_id, "Iniciando procesamiento RAPTOR...", tenant_id=tenant_id
+        )
         try:
             from app.domain.schemas.raptor_schemas import BaseChunk
+
             base_chunks = self._map_to_raptor_chunks(result.chunks, tenant_id)
-            if not base_chunks: return
+            if not base_chunks:
+                return
 
             tree_result = await self.raptor_processor.build_tree(
                 base_chunks=base_chunks,
-                tenant_id=UUID(tenant_id) if tenant_id else UUID("00000000-0000-0000-0000-000000000000"),
+                tenant_id=UUID(tenant_id)
+                if tenant_id
+                else UUID("00000000-0000-0000-0000-000000000000"),
                 source_document_id=UUID(doc_id),
                 collection_id=UUID(collection_id) if collection_id else None,
                 embedding_mode=self.graph_enrichment_service._resolve_embedding_mode(result.chunks),
@@ -163,27 +211,40 @@ class PostIngestionPipelineService:
                 await self.raptor_repo.backfill_collection_id(doc_id, collection_id)
 
             await self.state_manager.log_step(
-                doc_id, f"RAPTOR completado: {tree_result.total_nodes_created} nodos.", "SUCCESS", tenant_id=tenant_id
+                doc_id,
+                f"RAPTOR completado: {tree_result.total_nodes_created} nodos.",
+                "SUCCESS",
+                tenant_id=tenant_id,
             )
         except Exception as exc:
             logger.warning("raptor_processing_failed", doc_id=doc_id, error=str(exc))
 
     async def run_graph_if_needed(
-        self, doc_id: str, tenant_id: Optional[str], result: Any, source_metadata: Optional[Dict[str, Any]] = None
+        self,
+        doc_id: str,
+        tenant_id: Optional[str],
+        result: Any,
+        source_metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        if not tenant_id: return
+        if not tenant_id:
+            return
         try:
-            await self.state_manager.log_step(doc_id, "Iniciando extracción de grafo...", tenant_id=tenant_id)
+            await self.state_manager.log_step(
+                doc_id, "Iniciando extracción de grafo...", tenant_id=tenant_id
+            )
             stats = await self.graph_enrichment_service.run_enrichment(
                 doc_id=doc_id,
                 tenant_id=tenant_id,
                 chunks=result.chunks,
                 source_metadata=source_metadata,
-                log_step_callback=self.state_manager.log_step
+                log_step_callback=self.state_manager.log_step,
             )
             await self.state_manager.log_step(
-                doc_id, f"Grafo completado: nodes={stats['nodes_upserted']}, edges={stats['edges_upserted']}", 
-                "SUCCESS", tenant_id=tenant_id, metadata={"metrics": stats}
+                doc_id,
+                f"Grafo completado: nodes={stats['nodes_upserted']}, edges={stats['edges_upserted']}",
+                "SUCCESS",
+                tenant_id=tenant_id,
+                metadata={"metrics": stats},
             )
         except Exception as exc:
             logger.warning("graph_enrichment_failed", doc_id=doc_id, error=str(exc))
@@ -205,25 +266,41 @@ class PostIngestionPipelineService:
 
     def _map_to_raptor_chunks(self, chunks: List[Any], tenant_id: Optional[str]) -> List[Any]:
         from app.domain.schemas.raptor_schemas import BaseChunk
+
         base_chunks = []
         for chunk in chunks:
-            content = chunk.get("content") if isinstance(chunk, dict) else getattr(chunk, "content", "")
-            embedding = chunk.get("embedding") if isinstance(chunk, dict) else getattr(chunk, "embedding", None)
-            metadata = chunk.get("metadata", {}) if isinstance(chunk, dict) else getattr(chunk, "metadata", {})
-            
+            content = (
+                chunk.get("content") if isinstance(chunk, dict) else getattr(chunk, "content", "")
+            )
+            embedding = (
+                chunk.get("embedding")
+                if isinstance(chunk, dict)
+                else getattr(chunk, "embedding", None)
+            )
+            metadata = (
+                chunk.get("metadata", {})
+                if isinstance(chunk, dict)
+                else getattr(chunk, "metadata", {})
+            )
+
             if content and embedding:
-                base_chunks.append(BaseChunk(
-                    id=uuid4(),
-                    content=content,
-                    embedding=embedding,
-                    tenant_id=UUID(tenant_id) if tenant_id else UUID("00000000-0000-0000-0000-000000000000"),
-                    source_standard=str(metadata.get("source_standard") or "").strip() or None,
-                ))
+                base_chunks.append(
+                    BaseChunk(
+                        id=uuid4(),
+                        content=content,
+                        embedding=embedding,
+                        tenant_id=UUID(tenant_id)
+                        if tenant_id
+                        else UUID("00000000-0000-0000-0000-000000000000"),
+                        source_standard=str(metadata.get("source_standard") or "").strip() or None,
+                    )
+                )
         return base_chunks
 
     @staticmethod
     def _attach_collection_scope(chunks: list[Any], collection_id: Optional[str]) -> None:
-        if not collection_id: return
+        if not collection_id:
+            return
         for chunk in chunks:
             if isinstance(chunk, dict):
                 chunk["collection_id"] = collection_id

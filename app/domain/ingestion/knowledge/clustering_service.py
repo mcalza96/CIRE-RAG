@@ -1,13 +1,11 @@
 import logging
 import numpy as np
-from typing import List, Dict
+from typing import List, Dict, Optional, Callable, Awaitable, Any
 from uuid import UUID
 from sklearn.mixture import GaussianMixture
 import asyncio
 import networkx as nx
-from app.ai.generation import get_llm
-from app.infrastructure.supabase.client import get_async_supabase_client
-from app.ai.embeddings import JinaEmbeddingService
+from app.domain.ingestion.ports import ITextEmbeddingService
 from app.domain.schemas.raptor_schemas import ClusterResult, ClusterAssignment
 
 logger = logging.getLogger(__name__)
@@ -19,116 +17,113 @@ except ImportError:  # pragma: no cover - dependency guard
     ig = None
     leidenalg = None
 
+
 class GMMClusteringService:
     """
     Gaussian Mixture Model clustering for semantic grouping of chunks.
     Supports soft clustering where a chunk can belong to multiple clusters.
     """
-    
+
     def __init__(
-        self, 
+        self,
         min_clusters: int = 2,
         max_clusters: int = 10,
         soft_threshold: float = 0.3,
-        random_state: int = 42
+        random_state: int = 42,
     ):
         self.min_clusters = min_clusters
         self.max_clusters = max_clusters
         self.soft_threshold = soft_threshold
         self.random_state = random_state
-    
+
     def _determine_optimal_clusters(self, embeddings: np.ndarray) -> int:
         """
         Determine optimal number of clusters using BIC minimization.
         """
         n_samples = len(embeddings)
-        
+
         # Can't have more clusters than samples
         max_k = min(self.max_clusters, n_samples - 1)
         min_k = min(self.min_clusters, max_k)
-        
+
         if max_k <= min_k:
             return min_k
-        
-        best_bic = float('inf')
+
+        best_bic = float("inf")
         best_n = min_k
-        
+
         for n_components in range(min_k, max_k + 1):
             try:
                 gmm = GaussianMixture(
                     n_components=n_components,
                     random_state=self.random_state,
-                    covariance_type='diag',
-                    max_iter=100
+                    covariance_type="diag",
+                    max_iter=100,
                 )
                 gmm.fit(embeddings)
                 bic = gmm.bic(embeddings)
-                
+
                 if bic < best_bic:
                     best_bic = bic
                     best_n = n_components
-                    
+
             except Exception as e:
                 logger.warning(f"GMM failed for n={n_components}: {e}")
                 continue
-        
+
         logger.info(f"Optimal cluster count: {best_n} (BIC: {best_bic:.2f})")
         return best_n
-    
-    def cluster(
-        self, 
-        chunk_ids: List[UUID], 
-        embeddings: np.ndarray
-    ) -> ClusterResult:
+
+    def cluster(self, chunk_ids: List[UUID], embeddings: np.ndarray) -> ClusterResult:
         """
         Cluster embeddings using GMM with soft assignment.
         """
         n_samples = len(chunk_ids)
-        
+
         if n_samples < 2:
             return ClusterResult(
                 num_clusters=1,
-                assignments=[ClusterAssignment(
-                    chunk_id=chunk_ids[0],
-                    cluster_id=0,
-                    probability=1.0
-                )],
-                cluster_contents={0: chunk_ids}
+                assignments=[
+                    ClusterAssignment(chunk_id=chunk_ids[0], cluster_id=0, probability=1.0)
+                ],
+                cluster_contents={0: chunk_ids},
             )
-        
+
         n_clusters = self._determine_optimal_clusters(embeddings)
-        
+
         gmm = GaussianMixture(
             n_components=n_clusters,
             random_state=self.random_state,
-            covariance_type='diag',
-            max_iter=100
+            covariance_type="diag",
+            max_iter=100,
         )
         gmm.fit(embeddings)
-        
+
         proba = gmm.predict_proba(embeddings)
-        
+
         assignments: List[ClusterAssignment] = []
         cluster_contents: Dict[int, List[UUID]] = {i: [] for i in range(n_clusters)}
-        
+
         for i, chunk_id in enumerate(chunk_ids):
             for cluster_id in range(n_clusters):
                 prob = proba[i, cluster_id]
                 if prob >= self.soft_threshold:
-                    assignments.append(ClusterAssignment(
-                        chunk_id=chunk_id,
-                        cluster_id=cluster_id,
-                        probability=float(prob)
-                    ))
+                    assignments.append(
+                        ClusterAssignment(
+                            chunk_id=chunk_id, cluster_id=cluster_id, probability=float(prob)
+                        )
+                    )
                     cluster_contents[cluster_id].append(chunk_id)
-        
+
         cluster_contents = {k: v for k, v in cluster_contents.items() if v}
-        logger.info(f"GMM clustering: {n_samples} chunks -> {len(cluster_contents)} active clusters")
-        
+        logger.info(
+            f"GMM clustering: {n_samples} chunks -> {len(cluster_contents)} active clusters"
+        )
+
         return ClusterResult(
             num_clusters=len(cluster_contents),
             assignments=assignments,
-            cluster_contents=cluster_contents
+            cluster_contents=cluster_contents,
         )
 
 
@@ -141,32 +136,48 @@ class ClusteringService:
     def __init__(
         self,
         supabase_client=None,
-        embedding_service: JinaEmbeddingService | None = None,
+        embedding_service: Optional[ITextEmbeddingService] = None,
+        llm: Any = None,
+        supabase_client_factory: Optional[Callable[[], Awaitable[Any]]] = None,
         resolution: float = 1.0,
         max_entities_for_prompt: int = 60,
     ):
         self._supabase = supabase_client
-        self._embedding_service = embedding_service or JinaEmbeddingService.get_instance()
-        self._llm = get_llm(temperature=0.2, capability="CHAT")
+        self._supabase_client_factory = supabase_client_factory
+        self._embedding_service = embedding_service
+        self._llm = llm
         self._resolution = resolution
         self._max_entities_for_prompt = max_entities_for_prompt
 
+        if self._embedding_service is None:
+            raise ValueError("ClusteringService requires an embedding_service instance")
+        if self._llm is None:
+            raise ValueError("ClusteringService requires an llm instance")
+
     async def _get_client(self):
         if self._supabase is None:
-            self._supabase = await get_async_supabase_client()
+            if self._supabase_client_factory is None:
+                raise RuntimeError("ClusteringService requires a supabase client or factory")
+            self._supabase = await self._supabase_client_factory()
         return self._supabase
 
     async def _fetch_tenant_graph_data(self, tenant_id: UUID) -> tuple[list[dict], list[dict]]:
         client = await self._get_client()
         tenant_str = str(tenant_id)
 
-        entities_resp = await client.table("knowledge_entities").select(
-            "id,name,description"
-        ).eq("tenant_id", tenant_str).execute()
+        entities_resp = (
+            await client.table("knowledge_entities")
+            .select("id,name,description")
+            .eq("tenant_id", tenant_str)
+            .execute()
+        )
 
-        relations_resp = await client.table("knowledge_relations").select(
-            "source_entity_id,target_entity_id,weight"
-        ).eq("tenant_id", tenant_str).execute()
+        relations_resp = (
+            await client.table("knowledge_relations")
+            .select("source_entity_id,target_entity_id,weight")
+            .eq("tenant_id", tenant_str)
+            .execute()
+        )
 
         entities = entities_resp.data or []
         relations = relations_resp.data or []
@@ -296,9 +307,13 @@ class ClusteringService:
 
         entity_id_set = {entity_id for members in partition_map.values() for entity_id in members}
         entity_ids = list(entity_id_set)
-        entities_resp = await client.table("knowledge_entities").select(
-            "id,name,description"
-        ).eq("tenant_id", tenant_str).in_("id", entity_ids).execute()
+        entities_resp = (
+            await client.table("knowledge_entities")
+            .select("id,name,description")
+            .eq("tenant_id", tenant_str)
+            .in_("id", entity_ids)
+            .execute()
+        )
         entity_rows = entities_resp.data or []
         entity_by_id = {str(row.get("id")): row for row in entity_rows}
 
@@ -329,7 +344,9 @@ class ClusteringService:
                 "metadata": {"size": len(members)},
             }
 
-        await asyncio.gather(*[_build_payload(cid, members) for cid, members in partition_map.items()])
+        await asyncio.gather(
+            *[_build_payload(cid, members) for cid, members in partition_map.items()]
+        )
         return community_payloads
 
     async def persist_communities(self, tenant_id: UUID, communities: dict[int, dict]) -> int:
@@ -339,7 +356,13 @@ class ClusteringService:
         client = await self._get_client()
         tenant_str = str(tenant_id)
 
-        await client.table("knowledge_communities").delete().eq("tenant_id", tenant_str).eq("level", 0).execute()
+        await (
+            client.table("knowledge_communities")
+            .delete()
+            .eq("tenant_id", tenant_str)
+            .eq("level", 0)
+            .execute()
+        )
 
         rows = list(communities.values())
         batch_size = 100

@@ -1,4 +1,3 @@
-import asyncio
 from app.ai.rerankers.gravity_reranker import GravityReranker
 
 reranker = GravityReranker()

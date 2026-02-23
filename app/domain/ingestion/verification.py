@@ -1,19 +1,37 @@
-from typing import Any, List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 import structlog
-from app.ai.contracts import VerificationResult, BaseVLM, VisualParseResult
+
+
+class IVisualParseResult(Protocol):
+    dense_summary: str
+    markdown_content: str
+    visual_metadata: dict[str, Any]
+
+
+class IBaseVLM(Protocol): ...
+
+
+@dataclass(frozen=True)
+class VerificationResult:
+    is_valid: bool
+    discrepancies: list[str] = field(default_factory=list)
+
 
 logger = structlog.get_logger(__name__)
 
+
 class ExtractionVerifier:
     """
-    Dummy auditor for visual extraction. 
+    Dummy auditor for visual extraction.
     Can be expanded with real multi-vlm or rule-based verification logic.
     """
+
     async def verify(
         self,
         image_bytes: bytes,
-        parse_result: VisualParseResult,
-        model: BaseVLM,
+        parse_result: IVisualParseResult,
+        model: IBaseVLM,
         mime_type: str = "image/png",
     ) -> VerificationResult:
         """

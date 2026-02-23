@@ -1,28 +1,44 @@
 from pathlib import Path
 
 
-APP_ROOT = Path(__file__).resolve().parents[2] / "app" / "application"
+DOMAIN_ROOT = Path(__file__).resolve().parents[2] / "app" / "domain"
 
-# Sprint 1 baseline: these files still use direct Supabase client access and
-# are scheduled for migration in follow-up slices.
-ALLOWED_DIRECT_SUPABASE_FILES = {
-    "services/retrieval_router.py",
-    "services/visual_anchor_service.py",
-}
+# Baseline exceptions to keep runtime stable while we migrate dependencies by
+# slices. New files must not be added here.
+ALLOWED_DOMAIN_INFRA_IMPORTS: set[str] = set()
+
+ALLOWED_DOMAIN_AI_IMPORTS: set[str] = set()
 
 
-def test_application_layer_does_not_add_new_direct_supabase_calls() -> None:
+def _collect_import_offenders(root: Path, needles: tuple[str, ...]) -> list[str]:
     offenders: list[str] = []
-
-    for py_file in APP_ROOT.rglob("*.py"):
-        rel = py_file.relative_to(APP_ROOT).as_posix()
+    for py_file in root.rglob("*.py"):
+        rel = py_file.relative_to(root).as_posix()
         content = py_file.read_text(encoding="utf-8")
-        if "get_async_supabase_client" not in content:
-            continue
-        offenders.append(rel)
+        if any(needle in content for needle in needles):
+            offenders.append(rel)
+    return sorted(set(offenders))
 
-    unexpected = sorted(set(offenders) - ALLOWED_DIRECT_SUPABASE_FILES)
+
+def test_domain_layer_does_not_add_new_infrastructure_imports() -> None:
+    offenders = _collect_import_offenders(
+        DOMAIN_ROOT,
+        ("from app.infrastructure", "import app.infrastructure"),
+    )
+    unexpected = sorted(set(offenders) - ALLOWED_DOMAIN_INFRA_IMPORTS)
     assert not unexpected, (
-        "New direct Supabase calls were introduced in application layer: "
-        f"{unexpected}. Route data access through infrastructure repositories/services."
+        "New app.domain -> app.infrastructure imports detected: "
+        f"{unexpected}. Move dependency behind domain ports/adapters."
+    )
+
+
+def test_domain_layer_does_not_add_new_ai_imports() -> None:
+    offenders = _collect_import_offenders(
+        DOMAIN_ROOT,
+        ("from app.ai", "import app.ai"),
+    )
+    unexpected = sorted(set(offenders) - ALLOWED_DOMAIN_AI_IMPORTS)
+    assert not unexpected, (
+        "New app.domain -> app.ai imports detected: "
+        f"{unexpected}. Move dependency behind domain ports/application services."
     )

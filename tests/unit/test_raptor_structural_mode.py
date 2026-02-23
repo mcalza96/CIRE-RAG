@@ -4,9 +4,8 @@ import asyncio
 from typing import Any
 from uuid import uuid4
 
-from app.infrastructure.settings import settings
 from app.domain.schemas.raptor_schemas import BaseChunk
-from app.services.knowledge.raptor_processor import RaptorProcessor
+from app.domain.ingestion.knowledge.raptor_processor import RaptorProcessor
 
 
 class _FakeRepo:
@@ -35,9 +34,7 @@ class _ConvergingCluster:
         return type("Result", (), {"num_clusters": 1, "cluster_contents": {0: chunk_ids}})()
 
 
-def test_raptor_structural_bootstrap_groups_by_section(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "RAPTOR_STRUCTURAL_MODE_ENABLED", True)
-
+def test_raptor_structural_bootstrap_groups_by_section() -> None:
     repo = _FakeRepo()
     processor = RaptorProcessor(
         repository=repo,
@@ -45,6 +42,7 @@ def test_raptor_structural_bootstrap_groups_by_section(monkeypatch) -> None:
         summarization_service=_FakeSummarizer(),
         clustering_service=_ConvergingCluster(),
         max_depth=3,
+        structural_mode_enabled=True,
     )
 
     tenant_id = uuid4()

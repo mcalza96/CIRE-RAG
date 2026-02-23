@@ -6,14 +6,10 @@ import asyncio
 import logging
 import random
 import time
-from typing import Optional, Protocol, runtime_checkable
+from typing import Any, Callable, Optional, Protocol, runtime_checkable
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
-
-from app.infrastructure.settings import settings
-from app.ai.generation import StrictEngine, get_strict_engine
-from app.infrastructure.observability.ingestion_logging import compact_error
 
 try:
     from app.domain.graph_schemas import ExtractedNode, ExtractedEdge, GraphExtractionResult
@@ -42,6 +38,17 @@ except Exception:  # pragma: no cover - fallback for older branches
 
 
 logger = logging.getLogger(__name__)
+DEFAULT_GRAPH_EXTRACTION_MAX_CONCURRENCY = 6
+DEFAULT_GRAPH_EXTRACTION_RETRY_MAX_ATTEMPTS = 3
+DEFAULT_GRAPH_EXTRACTION_RETRY_BASE_DELAY_SECONDS = 0.8
+DEFAULT_GRAPH_EXTRACTION_RETRY_MAX_DELAY_SECONDS = 8.0
+DEFAULT_GRAPH_EXTRACTION_RETRY_JITTER_SECONDS = 0.35
+
+
+class IStrictEngine(Protocol):
+    def generate(self, *, prompt: str, schema: Any, system_prompt: str) -> Any: ...
+
+    async def agenerate(self, *, prompt: str, schema: Any, system_prompt: str) -> Any: ...
 
 
 class Entity(BaseModel):
@@ -132,29 +139,35 @@ class GraphExtractor(IGraphExtractor):
 
     def __init__(
         self,
-        llm: Optional[object] = None,
-        strict_engine: Optional[StrictEngine] = None,
+        strict_engine: IStrictEngine,
+        *,
+        max_concurrency: int = DEFAULT_GRAPH_EXTRACTION_MAX_CONCURRENCY,
+        retry_max_attempts: int = DEFAULT_GRAPH_EXTRACTION_RETRY_MAX_ATTEMPTS,
+        retry_base_delay_seconds: float = DEFAULT_GRAPH_EXTRACTION_RETRY_BASE_DELAY_SECONDS,
+        retry_max_delay_seconds: float = DEFAULT_GRAPH_EXTRACTION_RETRY_MAX_DELAY_SECONDS,
+        retry_jitter_seconds: float = DEFAULT_GRAPH_EXTRACTION_RETRY_JITTER_SECONDS,
+        error_formatter: Optional[Callable[[Exception], str]] = None,
     ):
-        self._unused_llm = llm
-        self._strict_engine = strict_engine or get_strict_engine()
+        self._strict_engine = strict_engine
+        self._error_formatter = error_formatter or (lambda err: str(err))
         self._max_concurrency = max(
-            1, int(getattr(settings, "GRAPH_EXTRACTION_MAX_CONCURRENCY", 6) or 6)
+            1, int(max_concurrency or DEFAULT_GRAPH_EXTRACTION_MAX_CONCURRENCY)
         )
         self._semaphore = asyncio.Semaphore(self._max_concurrency)
         self._retry_max_attempts = max(
-            1, int(getattr(settings, "GRAPH_EXTRACTION_RETRY_MAX_ATTEMPTS", 3) or 3)
+            1, int(retry_max_attempts or DEFAULT_GRAPH_EXTRACTION_RETRY_MAX_ATTEMPTS)
         )
         self._retry_base_delay = max(
             0.05,
-            float(getattr(settings, "GRAPH_EXTRACTION_RETRY_BASE_DELAY_SECONDS", 0.8) or 0.8),
+            float(retry_base_delay_seconds or DEFAULT_GRAPH_EXTRACTION_RETRY_BASE_DELAY_SECONDS),
         )
         self._retry_max_delay = max(
             self._retry_base_delay,
-            float(getattr(settings, "GRAPH_EXTRACTION_RETRY_MAX_DELAY_SECONDS", 8.0) or 8.0),
+            float(retry_max_delay_seconds or DEFAULT_GRAPH_EXTRACTION_RETRY_MAX_DELAY_SECONDS),
         )
         self._retry_jitter = max(
             0.0,
-            float(getattr(settings, "GRAPH_EXTRACTION_RETRY_JITTER_SECONDS", 0.35) or 0.35),
+            float(retry_jitter_seconds or DEFAULT_GRAPH_EXTRACTION_RETRY_JITTER_SECONDS),
         )
 
     @staticmethod
@@ -315,11 +328,14 @@ class GraphExtractor(IGraphExtractor):
                     "graph_extraction_retry attempt=%s delay=%.2f error=%s",
                     attempt,
                     delay,
-                    compact_error(err),
+                    self._error_formatter(err),
                 )
                 await asyncio.sleep(delay)
 
-        logger.error("graph_extraction_failed error=%s", compact_error(last_error or Exception("")))
+        logger.error(
+            "graph_extraction_failed error=%s",
+            self._error_formatter(last_error or Exception("")),
+        )
         return ChunkGraphExtraction()
 
     async def extract_graph_batch_async(self, texts: list[str]) -> list[ChunkGraphExtraction]:
@@ -361,12 +377,13 @@ class GraphExtractor(IGraphExtractor):
                     "graph_extraction_retry_sync attempt=%s delay=%.2f error=%s",
                     attempt,
                     delay,
-                    compact_error(err),
+                    self._error_formatter(err),
                 )
                 time.sleep(delay)
 
         logger.error(
-            "graph_extraction_sync_failed error=%s", compact_error(last_error or Exception(""))
+            "graph_extraction_sync_failed error=%s",
+            self._error_formatter(last_error or Exception("")),
         )
         return ChunkGraphExtraction()
 

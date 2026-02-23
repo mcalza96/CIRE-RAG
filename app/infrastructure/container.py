@@ -20,14 +20,20 @@ from app.infrastructure.state_management.state_manager import IngestionStateMana
 from app.workflows.retrieval.retrieval_broker import RetrievalBroker
 from app.workflows.ingestion.trigger import IngestionTrigger
 from app.infrastructure.filesystem.storage import StorageService
-from app.infrastructure.supabase.repositories.supabase_source_repository import SupabaseSourceRepository
-from app.infrastructure.supabase.repositories.supabase_content_repository import SupabaseContentRepository
+from app.infrastructure.supabase.repositories.supabase_source_repository import (
+    SupabaseSourceRepository,
+)
+from app.infrastructure.supabase.repositories.supabase_content_repository import (
+    SupabaseContentRepository,
+)
 from app.infrastructure.supabase.repositories.supabase_retrieval_repository import (
     SupabaseRetrievalRepository,
 )
 from app.infrastructure.supabase.repositories.supabase_atomic_retrieval_repository import (
     SupabaseAtomicRetrievalRepository,
 )
+from app.infrastructure.settings import settings
+from app.domain.ingestion.orchestration.router import VisualRoutingCostGuard
 
 
 class CognitiveContainer:
@@ -85,7 +91,13 @@ class CognitiveContainer:
     def document_structure_router(self) -> DocumentStructureRouter:
         if self._document_structure_router is None:
             self._document_structure_router = DocumentStructureRouter(
-                analyzer=self.structure_analyzer
+                analyzer=self.structure_analyzer,
+                cost_guard=VisualRoutingCostGuard(
+                    max_visual_ratio=float(settings.VISUAL_ROUTER_MAX_VISUAL_RATIO),
+                    max_visual_pages=int(settings.VISUAL_ROUTER_MAX_VISUAL_PAGES),
+                    full_page_min_score=int(settings.VISUAL_ROUTER_FULL_PAGE_MIN_SCORE),
+                    always_visual_score=int(settings.VISUAL_ROUTER_ALWAYS_VISUAL_SCORE),
+                ),
             )
         return self._document_structure_router
 
@@ -169,10 +181,12 @@ class CognitiveContainer:
     @property
     def ingestion_trigger(self) -> IngestionTrigger:
         if self._ingestion_trigger is None:
-            from app.infrastructure.supabase.repositories.taxonomy_repository import TaxonomyRepository
+            from app.infrastructure.supabase.repositories.taxonomy_repository import (
+                TaxonomyRepository,
+            )
+
             self._ingestion_trigger = IngestionTrigger(
-                repo=self.source_repository,
-                taxonomy_manager=TaxonomyRepository()
+                repo=self.source_repository, taxonomy_manager=TaxonomyRepository()
             )
         return self._ingestion_trigger
 

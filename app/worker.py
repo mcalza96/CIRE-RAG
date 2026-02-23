@@ -79,12 +79,27 @@ class IngestionWorker:
                 SupabaseRaptorRepository,
             )
             from app.domain.ingestion.knowledge.raptor_processor import RaptorProcessor
+            from app.domain.ingestion.knowledge.summarization_service import SummarizationAgent
+            from app.ai.generation import get_llm
 
             if resolved_container is None:
                 resolved_container = CognitiveContainer()
 
             raptor_repo = SupabaseRaptorRepository()
-            raptor_processor = RaptorProcessor(repository=raptor_repo)
+            raptor_processor = RaptorProcessor(
+                repository=raptor_repo,
+                embedding_service=resolved_container.embedding_service,
+                summarization_service=SummarizationAgent(
+                    llm=get_llm(temperature=0.3, capability="SUMMARIZATION")
+                ),
+                summarization_max_concurrency=max(
+                    1,
+                    int(getattr(settings, "RAPTOR_SUMMARIZATION_MAX_CONCURRENCY", 8) or 8),
+                ),
+                structural_mode_enabled=bool(
+                    getattr(settings, "RAPTOR_STRUCTURAL_MODE_ENABLED", True)
+                ),
+            )
             self.processor = DocumentProcessor(
                 repository=resolved_container.source_repository,
                 content_repo=resolved_container.content_repository,
@@ -98,7 +113,6 @@ class IngestionWorker:
                 download_service=resolved_container.download_service,
                 state_manager=resolved_container.state_manager,
             )
-
 
         if resolved_container is None:
             resolved_container = CognitiveContainer()

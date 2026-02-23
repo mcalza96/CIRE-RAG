@@ -12,22 +12,31 @@ from app.infrastructure.filesystem.storage import StorageService
 from app.infrastructure.observability.correlation import set_correlation_id
 from app.infrastructure.state_management.context_resolver import IngestionContextResolver
 from app.infrastructure.observability.logger_config import bind_context
-from app.infrastructure.supabase.repositories.supabase_raptor_repository import SupabaseRaptorRepository
+from app.infrastructure.supabase.repositories.supabase_raptor_repository import (
+    SupabaseRaptorRepository,
+)
 from app.infrastructure.network.downloader import DocumentDownloadService
 from app.infrastructure.state_management.state_manager import IngestionStateManager
 from app.domain.ingestion.visual.context_service import VisualContextService
+from app.domain.ingestion.visual.context_service import VisualCacheProfile
 from app.infrastructure.document_parsers.visual_parser import VisualDocumentParser
 from app.workflows.ingestion.integrator import VisualGraphIntegrator
-from app.infrastructure.supabase.repositories.supabase_visual_cache_repository import SupabaseVisualCacheRepository
+from app.infrastructure.supabase.repositories.supabase_visual_cache_repository import (
+    SupabaseVisualCacheRepository,
+)
+from app.infrastructure.caching.image_hasher import ImageHasher
+from app.ai.config import get_model_settings
 from app.infrastructure.settings import settings
 
 logger = structlog.get_logger(__name__)
+
 
 class DocumentProcessor:
     """
     Workflow orchestrator for document ingestion and enrichment.
     Formerly ProcessDocumentWorkerUseCase.
     """
+
     def __init__(
         self,
         repository: ISourceRepository,
@@ -307,12 +316,23 @@ class DocumentProcessor:
         return None
 
     def _build_visual_context_service(self) -> VisualContextService:
+        def _cache_profile() -> VisualCacheProfile:
+            ingest = get_model_settings()
+            return VisualCacheProfile(
+                provider=str(ingest.resolved_ingest_provider.value),
+                model_name=str(ingest.resolved_ingest_model_name),
+                prompt_version=str(settings.VISUAL_CACHE_PROMPT_VERSION or "v1"),
+                schema_version=str(settings.VISUAL_CACHE_SCHEMA_VERSION or "VisualParseResult:v1"),
+            )
+
         return VisualContextService(
             source_repository=self.repo,
             content_repository=self.content_repo,
             visual_cache_repository=SupabaseVisualCacheRepository(),
             visual_parser=self.visual_parser,
             visual_integrator=self.visual_integrator,
+            image_hasher=ImageHasher.sha256_bytes,
+            cache_profile_resolver=_cache_profile,
         )
 
     def _build_post_ingestion_service(

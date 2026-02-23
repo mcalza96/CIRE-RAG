@@ -9,6 +9,22 @@ from app.domain.ingestion.chunking.facade import ChunkingService
 from app.infrastructure.document_parsers.pdf_parser import PdfParserService
 
 
+class _NoopEmbeddingService:
+    async def chunk_and_encode(
+        self, text: str, mode: str | None = None, provider: str | None = None
+    ):
+        raise RuntimeError("Not used in this manual debug flow")
+
+    async def embed_texts(
+        self,
+        texts: list[str],
+        task: str = "retrieval.passage",
+        mode: str | None = None,
+        provider: str | None = None,
+    ):
+        raise RuntimeError("Not used in this manual debug flow")
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Debug extraction/chunking pipeline for a PDF file"
@@ -38,7 +54,7 @@ async def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     parser = PdfParserService()
-    chunker = ChunkingService(parser)
+    chunker = ChunkingService(parser, embedding_service=_NoopEmbeddingService())
 
     print(f"Analyzing PDF: {pdf_path}")
     print("1) Running structured markdown extraction...")

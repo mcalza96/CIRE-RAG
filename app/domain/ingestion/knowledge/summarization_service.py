@@ -1,11 +1,14 @@
 import logging
 import re
-from typing import List, Tuple
+from typing import Any, List, Protocol, Tuple
 
-from app.ai.generation import get_llm
 from app.domain.prompts.prompt_registry import PromptRegistry
 
 logger = logging.getLogger(__name__)
+
+
+class IAsyncChatModel(Protocol):
+    async def ainvoke(self, messages: list[dict[str, Any]]) -> Any: ...
 
 
 class SummarizationAgent:
@@ -14,8 +17,8 @@ class SummarizationAgent:
     Uses the centralized get_llm() factory and PromptRegistry.
     """
 
-    def __init__(self, temperature: float = 0.3):
-        self.llm = get_llm(temperature=temperature, capability="SUMMARIZATION")
+    def __init__(self, llm: IAsyncChatModel):
+        self.llm = llm
 
     @staticmethod
     def _normalize_inputs(texts: List[str]) -> List[str]:

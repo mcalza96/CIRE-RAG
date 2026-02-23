@@ -6,6 +6,7 @@ import structlog
 
 from app.api.v1.errors import ApiError
 from app.api.middleware.security import SecurityViolationError, LeakCanary
+from app.ai.generation import get_llm
 from app.domain.retrieval.config import retrieval_settings
 from app.infrastructure.settings import settings
 from app.infrastructure.observability.scope_metrics import scope_metrics_store
@@ -15,6 +16,9 @@ from app.domain.schemas.knowledge_schemas import RetrievalIntent, AgentRole, Tas
 from app.domain.schemas.retrieval_payloads import GroundedContext
 from app.domain.retrieval.ports import IScopeResolverPolicy
 from app.domain.retrieval.strategies.agnostic_scope_strategy import GeneralScopeResolverPolicy
+from app.infrastructure.supabase.repositories.supabase_graph_retrieval_repository import (
+    SupabaseGraphRetrievalRepository,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -27,12 +31,14 @@ class GroundedRetrievalWorkflow:
     """
 
     def __init__(
-        self, 
-        container: Optional[Any] = None,
-        scope_policy: Optional[IScopeResolverPolicy] = None
+        self, container: Optional[Any] = None, scope_policy: Optional[IScopeResolverPolicy] = None
     ) -> None:
         self._container = container
-        self._scope_policy = scope_policy or GeneralScopeResolverPolicy()
+        self._scope_policy = scope_policy or GeneralScopeResolverPolicy(
+            scope_extraction_regex=str(settings.SCOPE_EXTRACTION_REGEX or ""),
+            scope_ambiguity_regex=str(settings.SCOPE_AMBIGUITY_REGEX or ""),
+            scope_keyword_map_json=str(settings.SCOPE_KEYWORD_MAP or "{}"),
+        )
 
     async def get_grounded_context(
         self, query: str, institution_id: str, k: int = retrieval_settings.TOP_K
@@ -44,7 +50,7 @@ class GroundedRetrievalWorkflow:
         start = perf_now()
         selected_mode = "retrieval_router" if self._use_retrieval_router() else "vector_only"
         scope_metrics_store.record_request(institution_id)
-        
+
         scope_resolution = self._resolve_scope(query)
         logger.info(
             "scope_resolution",
@@ -87,6 +93,7 @@ class GroundedRetrievalWorkflow:
 
         if self._container is None:
             from app.infrastructure.container import CognitiveContainer
+
             self._container = CognitiveContainer()
 
         container = self._container
@@ -137,6 +144,12 @@ class GroundedRetrievalWorkflow:
     ) -> GroundedContext:
         orchestrator = RetrievalRouter(
             vector_tools=container.retrieval_tools,
+            reranker=container.authority_reranker,
+            llm_provider=get_llm(temperature=0.0, capability="FORENSIC"),
+            embedding_service=container.embedding_service,
+            graph_repository=SupabaseGraphRetrievalRepository(),
+            scope_metrics=scope_metrics_store,
+            scope_strict_filtering=bool(settings.SCOPE_STRICT_FILTERING),
         )
 
         intent = RetrievalIntent(
@@ -154,10 +167,10 @@ class GroundedRetrievalWorkflow:
         results = output.get("results", []) or []
         filtered_results = self._filter_results_by_scope(results, requested_standards)
         scope_mismatch = bool(requested_standards and results and not filtered_results)
-        
+
         if filtered_results:
             results = filtered_results
-            
+
         if scope_mismatch:
             scope_metrics_store.record_mismatch_detected(institution_id)
             logger.warning(
@@ -187,7 +200,9 @@ class GroundedRetrievalWorkflow:
 
         context_map = {str(r.get("id")): r for r in results if r.get("id")}
         context_map = self._dedupe_by_content(context_map)
-        context_chunks = [str(r.get("content", "")) for r in context_map.values() if r.get("content")]
+        context_chunks = [
+            str(r.get("content", "")) for r in context_map.values() if r.get("content")
+        ]
 
         return {
             "context_chunks": context_chunks,
@@ -217,15 +232,15 @@ class GroundedRetrievalWorkflow:
                 "source_standards": list(requested_standards),
                 "source_standard": requested_standards[0],
             }
-            
+
         retrieve_start = perf_now()
         results = await retrieval_tools.retrieve(query=query, scope_context=scope, k=k)
         filtered_results = self._filter_results_by_scope(results, requested_standards)
         scope_mismatch = bool(requested_standards and results and not filtered_results)
-        
+
         if filtered_results:
             results = filtered_results
-            
+
         if scope_mismatch:
             scope_metrics_store.record_mismatch_detected(institution_id)
             logger.warning(
@@ -266,7 +281,9 @@ class GroundedRetrievalWorkflow:
         # 3. Process results
         context_map = {str(r.get("id")): r for r in results if r.get("id")}
         context_map = self._dedupe_by_content(context_map)
-        context_chunks = [str(r.get("content", "")) for r in context_map.values() if r.get("content")]
+        context_chunks = [
+            str(r.get("content", "")) for r in context_map.values() if r.get("content")
+        ]
 
         return {
             "context_chunks": context_chunks,
@@ -288,7 +305,7 @@ class GroundedRetrievalWorkflow:
 
     @staticmethod
     def _dedupe_by_content(context_map: Dict[str, Any]) -> Dict[str, Any]:
-        seen_hashes: Dict[str, str] = {}  
+        seen_hashes: Dict[str, str] = {}
         deduped: Dict[str, Any] = {}
 
         for doc_id, doc in context_map.items():
@@ -342,9 +359,9 @@ class GroundedRetrievalWorkflow:
                 key=lambda r: float(r.get("similarity") or r.get("score") or 0.0),
                 default={},
             )
-            global_summary = best_chunk.get("metadata", {}).get(
-                "global_summary"
-            ) or best_chunk.get("source_metadata", {}).get("global_summary")
+            global_summary = best_chunk.get("metadata", {}).get("global_summary") or best_chunk.get(
+                "source_metadata", {}
+            ).get("global_summary")
 
         context_text = "\n\n".join(context_chunks) if context_chunks else "General Knowledge"
 

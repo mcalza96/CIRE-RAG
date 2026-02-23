@@ -8,9 +8,6 @@ from uuid import UUID
 import structlog
 from langchain_core.language_models.chat_models import BaseChatModel
 
-from app.ai.generation import get_llm
-from app.infrastructure.settings import settings
-from app.infrastructure.observability.scope_metrics import scope_metrics_store
 from app.domain.schemas.query_plan import PlannedSubQuery, QueryPlan
 from app.domain.schemas.knowledge_schemas import (
     AgentRole,
@@ -18,10 +15,11 @@ from app.domain.schemas.knowledge_schemas import (
     RetrievalIntent,
     TaskType,
 )
-from app.infrastructure.supabase.client import get_async_supabase_client
-from app.ai.embeddings import JinaEmbeddingService
-from app.domain.retrieval.strategies.graph_retrieval_strategies import LocalGraphSearch, GlobalGraphSearch
-from app.ai.rerankers.gravity_reranker import GravityReranker
+from app.domain.retrieval.strategies.graph_retrieval_strategies import (
+    LocalGraphSearch,
+    GlobalGraphSearch,
+)
+from app.domain.retrieval.ports import IGraphRetrievalRepository
 
 logger = structlog.get_logger(__name__)
 
@@ -45,35 +43,37 @@ class RetrievalRouter:
     def __init__(
         self,
         vector_tools,
+        reranker: Any,
+        llm_provider: BaseChatModel,
+        embedding_service: Any,
+        *,
         graph_service: Optional[Any] = None,
         raptor_service: Optional[Any] = None,
-        reranker: Optional[GravityReranker] = None,
-        supabase_client=None,
-        llm_provider: Optional[BaseChatModel] = None,
-        embedding_service: Optional[JinaEmbeddingService] = None,
+        graph_repository: Optional[IGraphRetrievalRepository] = None,
+        scope_metrics: Any = None,
+        scope_strict_filtering: bool = False,
     ):
         self.vector_tools = vector_tools
         self.graph_service = graph_service
         self.raptor_service = raptor_service
-        self.reranker = reranker or GravityReranker()
-        self._supabase = supabase_client
-        self._llm = llm_provider or get_llm(temperature=0.0, capability="FORENSIC")
-        self._embedding = embedding_service or JinaEmbeddingService.get_instance()
+        self.reranker = reranker
+        self._llm = llm_provider
+        self._embedding = embedding_service
+        self._scope_metrics = scope_metrics
+        self._scope_strict_filtering = bool(scope_strict_filtering)
+
+        if graph_repository is None:
+            raise ValueError("RetrievalRouter requires graph_repository")
 
         self.local_graph = LocalGraphSearch(
-            supabase_client=supabase_client,
+            graph_repository=graph_repository,
             llm_provider=self._llm,
             embedding_service=self._embedding,
         )
         self.global_graph = GlobalGraphSearch(
-            supabase_client=supabase_client,
+            graph_repository=graph_repository,
             embedding_service=self._embedding,
         )
-
-    async def _get_client(self):
-        if self._supabase is None:
-            self._supabase = await get_async_supabase_client()
-        return self._supabase
 
     @staticmethod
     def _scope_from_intent(intent: RetrievalIntent) -> dict[str, Any]:
@@ -447,12 +447,13 @@ class RetrievalRouter:
         if requested_scopes:
             merged = self._apply_scope_penalty(merged, requested_scopes)
             scope_penalized_count = sum(1 for item in merged if bool(item.get("scope_penalized")))
-            scope_metrics_store.record_rerank_penalized(
-                tenant_id=intent.tenant_id,
-                penalized_count=scope_penalized_count,
-                candidate_count=len(merged),
-            )
-            if settings.SCOPE_STRICT_FILTERING:
+            if self._scope_metrics is not None:
+                self._scope_metrics.record_rerank_penalized(
+                    tenant_id=intent.tenant_id,
+                    penalized_count=scope_penalized_count,
+                    candidate_count=len(merged),
+                )
+            if self._scope_strict_filtering:
                 strict_filtered = [item for item in merged if not bool(item.get("scope_penalized"))]
                 if strict_filtered:
                     merged = strict_filtered

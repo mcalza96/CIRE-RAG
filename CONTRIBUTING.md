@@ -18,8 +18,8 @@ cp .env.example .env.local
 Run before opening a PR:
 
 ```bash
-ruff check app tests scripts run_worker.py
-mypy --config-file mypy.ini -m app.domain.schemas.ingestion_schemas -m app.core.config.model_config -m app.services.retrieval.atomic_engine -m app.services.ingestion.visual_parser
+ruff check app tests scripts scripts/run_worker.py
+mypy --config-file mypy.ini -m app.domain.schemas.ingestion_schemas -m app.infrastructure.settings -m app.infrastructure.supabase.repositories.atomic_engine -m app.infrastructure.document_parsers.visual_parser
 pytest tests/unit tests/integration tests/tools -q
 ```
 

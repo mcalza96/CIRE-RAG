@@ -1,21 +1,20 @@
 import structlog
 from typing import List, Dict, Any, Optional
+from app.domain.ingestion.ports import IChunkEmbeddingService, IPageLocator
 from app.domain.ingestion.chunking.identity_service import ChunkIdentityService
 from app.domain.ingestion.chunking.splitter_strategies import (
     RecursiveTextSplitter,
     SemanticHeadingSplitter,
 )
-from app.infrastructure.document_parsers.pdf_parser import PdfParserService
 from app.domain.ingestion.structure.structure_mapper import StructureMapper
 from app.domain.schemas.ingestion_schemas import IngestionMetadata
-from app.ai.contracts import AIModelConfig
 from app.domain.ingestion.metadata.metadata_enricher import enrich_metadata
-from app.ai.embeddings import JinaEmbeddingService
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 import re
 
 logger = structlog.get_logger(__name__)
+DEFAULT_MAX_CHARACTERS_PER_CHUNKING_BLOCK = 6000
 
 
 _TOC_DOT_LEADER_LINE = re.compile(r"^\s*.+\.{3,}\s*\d+\s*$", re.MULTILINE)
@@ -65,13 +64,15 @@ class LateChunkResult(BaseModel):
 class ChunkingService:
     def __init__(
         self,
-        parser: PdfParserService,
+        parser: IPageLocator,
+        embedding_service: IChunkEmbeddingService,
         *,
         recursive_splitter: Optional[RecursiveTextSplitter] = None,
         semantic_splitter: Optional[SemanticHeadingSplitter] = None,
         identity_service: Optional[ChunkIdentityService] = None,
     ):
         self.parser = parser
+        self.embedding_service = embedding_service
         self.recursive_splitter = recursive_splitter or RecursiveTextSplitter()
         self.semantic_splitter = semantic_splitter or SemanticHeadingSplitter(
             self.recursive_splitter
@@ -127,9 +128,15 @@ class ChunkingService:
             is_clause_like = bool(_TOC_CLAUSE_LINE.match(stripped)) and len(stripped) < 90
             # Also catch non-clause ToC lines like "Prólogo", "Bibliografía", "Anexo"
             is_toc_keyword = stripped.lower() in (
-                "contenido", "índice", "indice", "contents",
-                "table of contents", "prólogo", "prologo",
-                "bibliografía", "bibliografia",
+                "contenido",
+                "índice",
+                "indice",
+                "contents",
+                "table of contents",
+                "prólogo",
+                "prologo",
+                "bibliografía",
+                "bibliografia",
             ) or stripped.lower().startswith("anexo ")
 
             if is_clause_like or is_toc_keyword:
@@ -212,7 +219,7 @@ class ChunkingService:
         full_text: str,
         embedding_mode: str,
         embedding_provider: Optional[str] = None,
-        max_chars: int = AIModelConfig.MAX_CHARACTERS_PER_CHUNKING_BLOCK,
+        max_chars: int = DEFAULT_MAX_CHARACTERS_PER_CHUNKING_BLOCK,
     ) -> List[Dict[str, Any]]:
         """
         Default chunking strategy for production ingestion.
@@ -229,7 +236,7 @@ class ChunkingService:
             return []
 
         sections = self.split_by_headings(normalized_text, max_chars=max_chars)
-        chunker = JinaEmbeddingService.get_instance()
+        chunker = self.embedding_service
 
         try:
             late_chunks = await chunker.chunk_and_encode(
@@ -258,7 +265,7 @@ class ChunkingService:
         full_text: str,
         embedding_mode: str,
         embedding_provider: Optional[str] = None,
-        max_chars: int = AIModelConfig.MAX_CHARACTERS_PER_CHUNKING_BLOCK,
+        max_chars: int = DEFAULT_MAX_CHARACTERS_PER_CHUNKING_BLOCK,
         *,
         skip_structural_embedding: bool = True,
     ) -> List[Dict[str, Any]]:
@@ -268,7 +275,7 @@ class ChunkingService:
         if not normalized_text.strip():
             return []
         sections = self.split_by_headings(normalized_text, max_chars=max_chars)
-        chunker = JinaEmbeddingService.get_instance()
+        chunker = self.embedding_service
         contextual = await self._contextual_section_chunking(
             sections,
             chunker,
@@ -303,7 +310,7 @@ class ChunkingService:
     async def _contextual_section_chunking(
         self,
         sections: List[Dict[str, Any]],
-        chunker: JinaEmbeddingService,
+        chunker: IChunkEmbeddingService,
         embedding_mode: str,
         embedding_provider: Optional[str],
         *,
@@ -373,7 +380,7 @@ class ChunkingService:
         plus a structural overview (total sections count).
         """
         # Extract the document title from the first section's content
-        first_content = (sections[0].get("content", "") if sections else "")
+        first_content = sections[0].get("content", "") if sections else ""
         # Grab only the first meaningful non-empty line as title hint
         title_line = ""
         for line in first_content.split("\n"):
@@ -464,7 +471,7 @@ class ChunkingService:
             "char_start": char_start,
             "char_end": char_end,
             "strategy": strategy_name,
-            "model": str(profile.get("model") or AIModelConfig.JINA_MODEL_NAME),
+            "model": str(profile.get("model") or "jina-embeddings-v3"),
             "authority_level": metadata.authority_level.value,
             "embedding_mode": embedding_mode,
             "embedding_provider": str(profile.get("provider") or "jina"),
